@@ -41,9 +41,11 @@ module Quonfig
     DEFAULT_MAX_EVAL_SUMMARIES = 100_000
 
     DEFAULT_SOURCES = [
-      "https://primary.reforge.com",
-      "https://secondary.reforge.com",
+      "https://primary.quonfig.com",
+      "https://secondary.quonfig.com",
     ].freeze
+
+    DEFAULT_TELEMETRY_URL = "https://telemetry.quonfig.com"
 
     private def init(
       sources: nil,
@@ -109,11 +111,7 @@ module Quonfig
       @sse_sources = @sources
       @config_sources = @sources
 
-      @telemetry_destination = @sources.select do |source|
-        source.start_with?('https://') && (source.include?("primary") || source.include?("secondary") || source.include?("belt") || source.include?("suspenders"))
-      end.map do |source|
-        source.sub(/(primary|secondary)\./, 'telemetry.').sub(/(belt|suspenders)\./, 'telemetry.')
-      end[0]
+      @telemetry_destination = ENV['QUONFIG_TELEMETRY_URL'] || DEFAULT_TELEMETRY_URL
 
       if quonfig_api_url
         warn '[DEPRECATION] quonfig_api_url is deprecated. Please provide `sources` if you need to override the default sources'

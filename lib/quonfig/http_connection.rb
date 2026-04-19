@@ -1,12 +1,16 @@
 # frozen_string_literal: true
 
+require 'base64'
+require 'json'
+
 module Quonfig
   class HttpConnection
-    AUTH_USER = 'authuser'
-    PROTO_HEADERS = {
-      'Content-Type' => 'application/x-protobuf',
-      'Accept' => 'application/x-protobuf',
-      'X-Quonfig-SDK-Version' => "sdk-ruby-#{Quonfig::VERSION}"
+    SDK_VERSION = 'ruby-0.1.0'
+
+    JSON_HEADERS = {
+      'Content-Type' => 'application/json',
+      'Accept' => 'application/json',
+      'X-Quonfig-SDK-Version' => SDK_VERSION
     }.freeze
 
     def initialize(uri, sdk_key)
@@ -19,27 +23,24 @@ module Quonfig
     end
 
     def get(path, headers = {})
-      connection(PROTO_HEADERS.merge(headers)).get(path)
+      connection(headers).get(path)
     end
 
     def post(path, body)
-      connection(PROTO_HEADERS).post(path, body.to_proto)
+      connection.post(path, body.to_json)
     end
 
     def connection(headers = {})
-      if Faraday::VERSION[0].to_i >= 2
-        Faraday.new(@uri) do |conn|
-          conn.request :authorization, :basic, AUTH_USER, @sdk_key
-
-          conn.headers.merge!(headers)
-        end
-      else
-        Faraday.new(@uri) do |conn|
-          conn.request :basic_auth, AUTH_USER, @sdk_key
-
-          conn.headers.merge!(headers)
-        end
+      merged = JSON_HEADERS.merge('Authorization' => auth_header).merge(headers)
+      Faraday.new(@uri) do |conn|
+        conn.headers.merge!(merged)
       end
+    end
+
+    private
+
+    def auth_header
+      'Basic ' + Base64.strict_encode64("1:#{@sdk_key}")
     end
   end
 end
