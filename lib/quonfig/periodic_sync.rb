@@ -67,7 +67,7 @@ module Quonfig
       if sync_interval.is_a?(Numeric)
         proc { sync_interval }
       else
-        sync_interval || ExponentialBackoff.new(initial_delay: 8, max_delay: 60 * 5)
+        sync_interval || ExponentialBackoff.new(initial_delay: 8, max_delay: 600, multiplier: 1.5)
       end
     end
   end
