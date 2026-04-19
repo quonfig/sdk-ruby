@@ -25,18 +25,25 @@ module Quonfig
     end
 
     def variant_index(percent_through_distribution)
-      distribution_space = @weights.inject(0) { |sum, v| sum + v.weight }
+      distribution_space = @weights.inject(0) { |sum, v| sum + weight_of(v) }
       bucket = distribution_space * percent_through_distribution
 
       sum = 0
-      @weights.each_with_index do |variant_weight, index|
-        return index if bucket < sum + variant_weight.weight
+      @weights.each_with_index do |variant, index|
+        w = weight_of(variant)
+        return index if bucket < sum + w
 
-        sum += variant_weight.weight
+        sum += w
       end
 
       # In the event that all weights are zero, return the last variant
       @weights.size - 1
+    end
+
+    private
+
+    def weight_of(variant)
+      variant[:weight] || variant['weight']
     end
   end
 end
