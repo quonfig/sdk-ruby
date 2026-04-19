@@ -92,8 +92,9 @@ module Quonfig
       @feature_flag_client ||= Quonfig::FeatureFlagClient.new(self)
     end
 
-    def log_level_client
-      @log_level_client ||= Quonfig::LogLevelClient.new(self)
+    def semantic_logger_filter(key_prefix: Quonfig::SemanticLoggerFilter::DEFAULT_KEY_PREFIX)
+      @semantic_logger_filters ||= {}
+      @semantic_logger_filters[key_prefix] ||= Quonfig::SemanticLoggerFilter.new(self, key_prefix: key_prefix)
     end
 
     def context_shape_aggregator

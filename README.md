@@ -178,6 +178,31 @@ client.get_json('homepage.layout')
 client.enabled?('beta-feature', user: { key: 'user-123' })
 ```
 
+## Dynamic log levels (SemanticLogger)
+
+Quonfig can drive per-class log levels at runtime. Set config keys like
+`log-levels.my_app.foo.bar` to one of `trace`, `debug`, `info`, `warn`, `error`,
+`fatal` and wire the filter into SemanticLogger:
+
+```ruby
+require 'quonfig'
+require 'semantic_logger'
+
+client = Quonfig::Client.new(sdk_key: ENV['QUONFIG_BACKEND_SDK_KEY'])
+SemanticLogger.add_appender(io: $stdout, filter: client.semantic_logger_filter)
+```
+
+Lookup is exact-match only: logger name `MyApp::Foo::Bar` normalizes to
+`log-levels.my_app.foo.bar`. If no key is set the log is allowed through and
+SemanticLogger's static level decides. There is no hierarchy walk — a value on
+`log-levels.my_app` does not affect `log-levels.my_app.foo.bar`.
+
+Pass `key_prefix:` to use a prefix other than `log-levels.`:
+
+```ruby
+client.semantic_logger_filter(key_prefix: 'debug.')
+```
+
 ## Documentation
 
 Full documentation, including SPEC, SDK reference, and operational guides, is
