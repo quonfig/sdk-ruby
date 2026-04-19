@@ -5,13 +5,24 @@ module Quonfig
   class Evaluation
     attr_reader :value, :context
 
-    def initialize(config:, value:, value_index:, config_row_index:, context:, resolver:)
+    def initialize(config:, value:, value_index:, config_row_index:, context:, resolver:, conditional_value: nil)
       @config = config
       @value = value
       @value_index = value_index
       @config_row_index = config_row_index
       @context = context
       @resolver = resolver
+      @conditional_value = conditional_value
+    end
+
+    def reason
+      @reason ||= @conditional_value ?
+        Quonfig::Reason.compute(
+          config: @config,
+          conditional_value: @conditional_value,
+          weighted_value_index: deepest_value.weighted_value_index
+        ) :
+        Quonfig::Reason::UNKNOWN
     end
 
     def unwrapped_value

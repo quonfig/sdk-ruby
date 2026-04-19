@@ -245,7 +245,8 @@ module Quonfig
             value_index: value_index,
             config_row_index: config_row_index,
             context: properties,
-            resolver: @resolver
+            resolver: @resolver,
+            conditional_value: conditional_value
           )
         end
       end
