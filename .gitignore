@@ -61,5 +61,9 @@ lib/tes*
 *.iml
 .idea/**
 
-# Claude Code settings
-.claude/
+# Claude Code settings: .claude/rules/ is checked in, but local/ephemeral files are not
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# macOS
+.DS_Store
