@@ -3,17 +3,18 @@
 require_relative 'periodic_sync'
 
 module Quonfig
-  # This class aggregates example contexts. It dedupes based on the
-  # concatenation of the keys of the contexts.
-  #
-  # It shouldn't send the same context more than once per hour.
+  # Aggregates example contexts, deduped per grouped-key, and flushes them as
+  # telemetry to POST /api/v1/telemetry/ as a single consolidated JSON body
+  # (see api-telemetry TelemetryEventsSchema). The same grouped key is never
+  # shipped more than once per hour.
   class ExampleContextsAggregator
     include Quonfig::PeriodicSync
     LOG = Quonfig::InternalLogger.new(self)
 
-    attr_reader :data, :cache
-
+    TELEMETRY_PATH = '/api/v1/telemetry/'
     ONE_HOUR = 60 * 60
+
+    attr_reader :data, :cache
 
     def initialize(client:, max_contexts:, sync_interval:)
       @client = client
@@ -46,32 +47,32 @@ module Quonfig
       pool.post do
         LOG.debug "Flushing #{to_ship.size} examples"
 
-        result = post('/api/v1/telemetry', events(to_ship))
+        payload = {
+          instanceHash: @client.instance_hash,
+          events: [
+            {
+              exampleContexts: {
+                examples: examples_json(to_ship)
+              }
+            }
+          ]
+        }
+
+        result = post(TELEMETRY_PATH, payload)
 
         LOG.debug "Uploaded #{to_ship.size} examples: #{result.status}"
       end
     end
 
-    def example_contexts(to_ship)
+    def examples_json(to_ship)
       to_ship.map do |contexts|
-        PrefabProto::ExampleContext.new(
+        {
           timestamp: contexts.seen_at * 1000,
-          contextSet: contexts.slim_proto
-        )
+          contextSet: {
+            contexts: contexts.contexts.map { |_, named| { type: named.name, values: named.to_h } }
+          }
+        }
       end
-    end
-
-    def events(to_ship)
-      event = PrefabProto::TelemetryEvent.new(
-        example_contexts: PrefabProto::ExampleContexts.new(
-          examples: example_contexts(to_ship)
-        )
-      )
-
-      PrefabProto::TelemetryEvents.new(
-        instance_hash: @client.instance_hash,
-        events: [event]
-      )
     end
   end
 end

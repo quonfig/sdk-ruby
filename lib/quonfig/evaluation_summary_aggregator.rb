@@ -3,12 +3,14 @@
 require_relative 'periodic_sync'
 
 module Quonfig
-  # This class aggregates the number of times each config is evaluated, and
-  # details about how the config is evaluated This data is reported to the
-  # server at a regular interval defined by `sync_interval`.
+  # Aggregates per-config evaluation counts and flushes them as telemetry to
+  # POST /api/v1/telemetry/ as a single consolidated JSON body (see api-telemetry
+  # TelemetryEventsSchema).
   class EvaluationSummaryAggregator
     include Quonfig::PeriodicSync
     LOG = Quonfig::InternalLogger.new(self)
+
+    TELEMETRY_PATH = '/api/v1/telemetry/'
 
     attr_reader :data
 
@@ -34,53 +36,50 @@ module Quonfig
 
     private
 
-    def counter_proto(counter, count)
-      PrefabProto::ConfigEvaluationCounter.new(
-        config_id: counter[:config_id],
-        selected_index: counter[:selected_index],
-        config_row_index: counter[:config_row_index],
-        conditional_value_index: counter[:conditional_value_index],
-        weighted_value_index: counter[:weighted_value_index],
-        selected_value: counter[:selected_value],
-        count: count
-      )
-    end
-
     def flush(to_ship, start_at_was)
       pool.post do
         LOG.debug "Flushing #{to_ship.size} summaries"
 
-        summaries_proto = PrefabProto::ConfigEvaluationSummaries.new(
-          start: start_at_was,
-          end: Quonfig::TimeHelpers.now_in_ms,
-          summaries: summaries(to_ship)
-        )
+        payload = {
+          instanceHash: @client.instance_hash,
+          events: [
+            {
+              summaries: {
+                start: start_at_was,
+                end: Quonfig::TimeHelpers.now_in_ms,
+                summaries: summaries_json(to_ship)
+              }
+            }
+          ]
+        }
 
-        result = post('/api/v1/telemetry', events(summaries_proto))
+        result = post(TELEMETRY_PATH, payload)
 
         LOG.debug "Uploaded #{to_ship.size} summaries: #{result.status}"
       end
     end
 
-    def events(summaries)
-      event = PrefabProto::TelemetryEvent.new(summaries: summaries)
-
-      PrefabProto::TelemetryEvents.new(
-        instance_hash: @client.instance_hash,
-        events: [event]
-      )
+    def summaries_json(to_ship)
+      to_ship.map do |(config_key, config_type), counters|
+        {
+          key: config_key,
+          type: config_type.to_s,
+          counters: counters.map { |counter, count| counter_json(counter, count) }
+        }
+      end
     end
 
-    def summaries(data)
-      data.map do |(config_key, config_type), counters|
-        counter_protos = counters.map { |counter, count| counter_proto(counter, count) }
-
-        PrefabProto::ConfigEvaluationSummary.new(
-          key: config_key,
-          type: config_type,
-          counters: counter_protos
-        )
-      end
+    def counter_json(counter, count)
+      out = {
+        configId: counter[:config_id],
+        conditionalValueIndex: counter[:conditional_value_index],
+        configRowIndex: counter[:config_row_index],
+        selectedValue: counter[:selected_value],
+        count: count
+      }
+      out[:reason] = counter[:reason] if counter.key?(:reason)
+      out[:weightedValueIndex] = counter[:weighted_value_index] unless counter[:weighted_value_index].nil?
+      out
     end
   end
 end

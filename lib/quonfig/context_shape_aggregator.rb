@@ -3,9 +3,14 @@
 require_relative 'periodic_sync'
 
 module Quonfig
+  # Aggregates observed context shapes (field name → type number) and flushes
+  # them as telemetry to POST /api/v1/telemetry/ as a single consolidated JSON
+  # body (see api-telemetry TelemetryEventsSchema).
   class ContextShapeAggregator
     include Quonfig::PeriodicSync
     LOG = Quonfig::InternalLogger.new(self)
+
+    TELEMETRY_PATH = '/api/v1/telemetry/'
 
     attr_reader :data
 
@@ -46,22 +51,18 @@ module Quonfig
       pool.post do
         LOG.debug "Uploading context shapes for #{to_ship.values.size}"
 
-        events = PrefabProto::TelemetryEvents.new(
-          instance_hash: instance_hash,
+        payload = {
+          instanceHash: instance_hash,
           events: [
-            PrefabProto::TelemetryEvent.new(context_shapes:
-              PrefabProto::ContextShapes.new(
-                shapes: to_ship.map do |name, shape|
-                  PrefabProto::ContextShape.new(
-                    name: name,
-                    field_types: shape
-                  )
-                end
-              ))
+            {
+              contextShapes: {
+                shapes: to_ship.map { |name, shape| { name: name, fieldTypes: shape } }
+              }
+            }
           ]
-        )
+        }
 
-        result = post('/api/v1/telemetry', events)
+        result = post(TELEMETRY_PATH, payload)
 
         LOG.debug "Uploaded #{to_ship.values.size} shapes: #{result.status}"
       end
