@@ -19,6 +19,13 @@ class TestOptions < Minitest::Test
     end
   end
 
+  def test_default_sources_point_to_quonfig
+    assert_equal [
+      'https://primary.quonfig.com',
+      'https://secondary.quonfig.com',
+    ], Quonfig::Options::DEFAULT_SOURCES
+  end
+
   def test_overriding_sources
     assert_equal Quonfig::Options::DEFAULT_SOURCES, Quonfig::Options.new.sources
 
@@ -38,21 +45,59 @@ class TestOptions < Minitest::Test
     assert_equal API_KEY, Quonfig::Options.new({ sdk_key: API_KEY }).sdk_key
   end
 
+  def test_sdk_key_reads_from_quonfig_backend_sdk_key
+    with_env('QUONFIG_BACKEND_SDK_KEY', 'env-key') do
+      assert_equal 'env-key', Quonfig::Options.new.sdk_key
+    end
+  end
+
+  def test_environment_reads_from_quonfig_environment
+    with_env('QUONFIG_ENVIRONMENT', 'staging') do
+      assert_equal 'staging', Quonfig::Options.new.environment
+    end
+  end
+
+  def test_environment_explicit_overrides_env_var
+    with_env('QUONFIG_ENVIRONMENT', 'staging') do
+      assert_equal 'production', Quonfig::Options.new(environment: 'production').environment
+    end
+  end
+
+  def test_enable_sse_defaults_true
+    assert_equal true, Quonfig::Options.new.enable_sse
+    assert_equal false, Quonfig::Options.new(enable_sse: false).enable_sse
+  end
+
+  def test_enable_polling_defaults_true
+    assert_equal true, Quonfig::Options.new.enable_polling
+    assert_equal false, Quonfig::Options.new(enable_polling: false).enable_polling
+  end
+
+  def test_datadir_reads_from_quonfig_dir_env
+    with_env('QUONFIG_DIR', '/tmp/some/workspace') do
+      assert_equal '/tmp/some/workspace', Quonfig::Options.new.datadir
+    end
+  end
+
+  def test_datadir_explicit_overrides_env_var
+    with_env('QUONFIG_DIR', '/tmp/env/workspace') do
+      assert_equal '/tmp/explicit', Quonfig::Options.new(datadir: '/tmp/explicit').datadir
+    end
+  end
+
+  def test_datadir_predicate
+    assert_equal false, Quonfig::Options.new.datadir?
+    assert_equal true, Quonfig::Options.new(datadir: '/tmp/ws').datadir?
+  end
+
+  def test_local_only_uses_datadir_presence
+    refute Quonfig::Options.new.local_only?
+    assert Quonfig::Options.new(datadir: '/tmp/ws').local_only?
+  end
+
   def test_collect_max_paths
     assert_equal 1000, Quonfig::Options.new.collect_max_paths
     assert_equal 100, Quonfig::Options.new(collect_max_paths: 100).collect_max_paths
-  end
-
-  def test_collect_max_paths_with_local_only
-    options = Quonfig::Options.new(collect_max_paths: 100,
-                                  prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY)
-    assert_equal 0, options.collect_max_paths
-  end
-
-  def test_collect_max_paths_with_collect_logger_counts_false
-    options = Quonfig::Options.new(collect_max_paths: 100,
-                                  collect_logger_counts: false)
-    assert_equal 0, options.collect_max_paths
   end
 
   def test_collect_max_evaluation_summaries
@@ -70,8 +115,8 @@ class TestOptions < Minitest::Test
     assert_equal 0, options.collect_max_example_contexts
   end
 
-  def test_context_upload_mode_shape_only
-    options = Quonfig::Options.new(context_upload_mode: :shape_only, context_max_size: 100)
+  def test_context_upload_mode_shapes_only
+    options = Quonfig::Options.new(context_upload_mode: :shapes_only, context_max_size: 100)
     assert_equal 100, options.collect_max_shapes
 
     options = Quonfig::Options.new(context_upload_mode: :none)
@@ -86,8 +131,18 @@ class TestOptions < Minitest::Test
     assert_equal 0, options.collect_max_shapes
   end
 
-  def test_loading_a_datafile
-    options = Quonfig::Options.new(datafile: "#{Dir.pwd}/test/fixtures/datafile.json")
-    assert_equal "#{Dir.pwd}/test/fixtures/datafile.json", options.datafile
+  def test_telemetry_destination_reads_env_first
+    with_env('QUONFIG_TELEMETRY_URL', 'https://custom-telemetry.example.com') do
+      assert_equal 'https://custom-telemetry.example.com', Quonfig::Options.new.telemetry_destination
+    end
+  end
+
+  def test_telemetry_destination_derives_from_default_sources
+    assert_equal 'https://telemetry.quonfig.com', Quonfig::Options.new.telemetry_destination
+  end
+
+  def test_telemetry_destination_derives_from_custom_quonfig_sources
+    options = Quonfig::Options.new(sources: ['https://primary.eu.quonfig.com'])
+    assert_equal 'https://telemetry.eu.quonfig.com', options.telemetry_destination
   end
 end

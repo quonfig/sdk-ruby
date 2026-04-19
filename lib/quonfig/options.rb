@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 
 module Quonfig
-  # This class contains all the options that can be passed to the Prefab client.
+  # Options passed to Quonfig::Client at construction time.
   class Options
     attr_reader :sdk_key
-    attr_reader :namespace
+    attr_reader :environment
     attr_reader :sources
     attr_reader :sse_sources
     attr_reader :telemetry_destination
@@ -13,12 +13,11 @@ module Quonfig
     attr_reader :initialization_timeout_sec
     attr_reader :on_init_failure
     attr_reader :collect_sync_interval
-    attr_reader :use_local_cache
-    attr_reader :datafile
+    attr_reader :datadir
+    attr_reader :enable_sse
+    attr_reader :enable_polling
     attr_reader :global_context
     attr_accessor :is_fork
-    attr_reader :symbolize_json_names
-    attr_reader :logger_key
 
     module ON_INITIALIZATION_FAILURE
       RAISE = :raise
@@ -30,71 +29,51 @@ module Quonfig
       RETURN_NIL = :return_nil
     end
 
-    module DATASOURCES
-      ALL = :all
-      LOCAL_ONLY = :local_only
-    end
-
     DEFAULT_MAX_PATHS = 1_000
     DEFAULT_MAX_KEYS = 100_000
     DEFAULT_MAX_EXAMPLE_CONTEXTS = 100_000
     DEFAULT_MAX_EVAL_SUMMARIES = 100_000
 
     DEFAULT_SOURCES = [
-      "https://primary.quonfig.com",
-      "https://secondary.quonfig.com",
+      'https://primary.quonfig.com',
+      'https://secondary.quonfig.com',
     ].freeze
-
-    DEFAULT_TELEMETRY_URL = "https://telemetry.quonfig.com"
 
     private def init(
       sources: nil,
-      sdk_key: ENV['QUONFIG_BACKEND_SDK_KEY'] || ENV['QUONFIG_BACKEND_SDK_KEY'],
-      namespace: '',
-      quonfig_api_url: nil,
-      on_no_default: ON_NO_DEFAULT::RAISE, # options :raise, :warn_and_return_nil,
-      initialization_timeout_sec: 10, # how long to wait before on_init_failure
+      sdk_key: ENV['QUONFIG_BACKEND_SDK_KEY'],
+      environment: ENV['QUONFIG_ENVIRONMENT'],
+      datadir: ENV['QUONFIG_DIR'],
+      enable_sse: true,
+      enable_polling: true,
+      on_no_default: ON_NO_DEFAULT::RAISE,
+      initialization_timeout_sec: 10,
       on_init_failure: ON_INITIALIZATION_FAILURE::RAISE,
-      prefab_datasources: (ENV['QUONFIG_DATASOURCES'] || ENV['QUONFIG_DATASOURCES']) == 'LOCAL_ONLY' ? DATASOURCES::LOCAL_ONLY : DATASOURCES::ALL,
-      collect_logger_counts: true,
       collect_max_paths: DEFAULT_MAX_PATHS,
       collect_sync_interval: nil,
-      context_upload_mode: :periodic_example, # :periodic_example, :shape_only, :none
+      context_upload_mode: :periodic_example, # :periodic_example, :shapes_only, :none
       context_max_size: DEFAULT_MAX_EVAL_SUMMARIES,
       collect_evaluation_summaries: true,
       collect_max_evaluation_summaries: DEFAULT_MAX_EVAL_SUMMARIES,
       allow_telemetry_in_local_mode: false,
-      datafile: ENV['QUONFIG_DATAFILE'] || ENV['QUONFIG_DIR'],
-      x_datafile: nil, # DEPRECATED in favor of `datafile`
-      x_use_local_cache: false,
-      symbolize_json_names: false,
-      global_context: {},
-      logger_key: 'log-levels.default'
+      global_context: {}
     )
       @sdk_key = sdk_key
-      @namespace = namespace
+      @environment = environment
+      @datadir = datadir
+      @enable_sse = enable_sse
+      @enable_polling = enable_polling
       @on_no_default = on_no_default
       @initialization_timeout_sec = initialization_timeout_sec
       @on_init_failure = on_init_failure
-      @prefab_datasources = prefab_datasources
 
-      @datafile = datafile || x_datafile
-
-      if !x_datafile.nil?
-        warn '[DEPRECATION] x_datafile is deprecated. Please provide `datafile` instead'
-      end
-
-      @collect_logger_counts = collect_logger_counts
       @collect_max_paths = collect_max_paths
       @collect_sync_interval = collect_sync_interval
       @collect_evaluation_summaries = collect_evaluation_summaries
       @collect_max_evaluation_summaries = collect_max_evaluation_summaries
       @allow_telemetry_in_local_mode = allow_telemetry_in_local_mode
-      @use_local_cache = x_use_local_cache
       @is_fork = false
       @global_context = global_context
-      @symbolize_json_names = symbolize_json_names
-      @logger_key = logger_key
 
       # defaults that may be overridden by context_upload_mode
       @collect_shapes = false
@@ -106,30 +85,26 @@ module Quonfig
         sources = ENV['QUONFIG_SOURCES']
       end
 
-      @sources = Array(sources || DEFAULT_SOURCES).map {|source| remove_trailing_slash(source) }
+      @sources = Array(sources || DEFAULT_SOURCES).map { |source| remove_trailing_slash(source) }
 
       @sse_sources = @sources
       @config_sources = @sources
 
-      @telemetry_destination = ENV['QUONFIG_TELEMETRY_URL'] || DEFAULT_TELEMETRY_URL
-
-      if quonfig_api_url
-        warn '[DEPRECATION] quonfig_api_url is deprecated. Please provide `sources` if you need to override the default sources'
-      end
+      @telemetry_destination = ENV['QUONFIG_TELEMETRY_URL'] || derive_telemetry_destination(@sources)
 
       case context_upload_mode
       when :none
-        # do nothing
+        # no context telemetry
       when :periodic_example
         @collect_example_contexts = true
         @collect_max_example_contexts = context_max_size
         @collect_shapes = true
         @collect_max_shapes = context_max_size
-      when :shape_only
+      when :shapes_only
         @collect_shapes = true
         @collect_max_shapes = context_max_size
       else
-        raise "Unknown context_upload_mode #{context_upload_mode}. Please provide :periodic_example, :shape_only, or :none."
+        raise "Unknown context_upload_mode #{context_upload_mode}. Please provide :periodic_example, :shapes_only, or :none."
       end
     end
 
@@ -137,16 +112,18 @@ module Quonfig
       init(**options)
     end
 
+    # In datadir mode the SDK evaluates config from a local workspace and does
+    # not connect to the delivery service.
     def local_only?
-      @prefab_datasources == DATASOURCES::LOCAL_ONLY
+      !@datadir.nil?
     end
 
-    def datafile?
-      !@datafile.nil?
+    def datadir?
+      !@datadir.nil?
     end
 
     def collect_max_paths
-      return 0 unless telemetry_allowed?(@collect_logger_counts)
+      return 0 unless telemetry_allowed?(true)
 
       @collect_max_paths
     end
@@ -170,7 +147,7 @@ module Quonfig
     end
 
     def sdk_key_id
-      @sdk_key&.split("-")&.first
+      @sdk_key&.split('-')&.first
     end
 
     def for_fork
@@ -187,6 +164,17 @@ module Quonfig
 
     def remove_trailing_slash(url)
       url.end_with?('/') ? url[0..-2] : url
+    end
+
+    # Derive a telemetry URL from the configured sources by swapping the
+    # primary/secondary host prefix for `telemetry` on a *.quonfig.com host.
+    # Falls back to https://telemetry.quonfig.com if no source matches.
+    def derive_telemetry_destination(sources)
+      sources.each do |source|
+        match = source.match(%r{\Ahttps?://(?:primary|secondary)\.([^/]*quonfig\.com)}i)
+        return "https://telemetry.#{match[1]}" if match
+      end
+      'https://telemetry.quonfig.com'
     end
   end
 end

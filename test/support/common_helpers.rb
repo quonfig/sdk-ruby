@@ -64,7 +64,7 @@ module CommonHelpers
   EFFECTIVELY_NEVER = 99_999 # we sync manually
 
   DEFAULT_NEW_CLIENT_OPTIONS = {
-    prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY,
+    datadir: '/tmp/quonfig-test-datadir',
     collect_sync_interval: EFFECTIVELY_NEVER,
   }.freeze
 
