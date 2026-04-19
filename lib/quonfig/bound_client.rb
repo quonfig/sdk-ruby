@@ -44,8 +44,28 @@ module Quonfig
       @client.enabled?(feature_name, @context)
     end
 
+    # Returns a new BoundClient whose bound context is the merge of this
+    # bound context and +additional+. Merge is one level deep per named
+    # context (mirrors sdk-node's mergeContexts): later values override
+    # earlier within the same named context; keys unique to each side are
+    # preserved.
+    def in_context(additional)
+      self.class.new(@client, merge_contexts(@context, additional || {}))
+    end
+
     def inspect
       "#<Quonfig::BoundClient context=#{@context.inspect}>"
+    end
+
+    private
+
+    def merge_contexts(left, right)
+      merged = {}
+      left.each  { |name, ctx| merged[name] = ctx.dup }
+      right.each do |name, ctx|
+        merged[name] = merged[name] ? merged[name].merge(ctx) : ctx.dup
+      end
+      merged
     end
   end
 end
