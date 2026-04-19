@@ -33,12 +33,51 @@ module Quonfig
       config_client
     end
 
+    def in_context(properties, &block)
+      bound = Quonfig::BoundClient.new(self, properties)
+      Quonfig::Context.with_context(properties) do
+        block.call(bound)
+      end
+    end
+
     def with_context(properties, &block)
-      Quonfig::Context.with_context(properties, &block)
+      if block_given?
+        in_context(properties, &block)
+      else
+        Quonfig::BoundClient.new(self, properties)
+      end
     end
 
     def context
       Quonfig::Context.current
+    end
+
+    def get_string(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
+      typed_get(key, String, default: default, context: context)
+    end
+
+    def get_int(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
+      typed_get(key, Integer, default: default, context: context)
+    end
+
+    def get_float(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
+      typed_get(key, Float, default: default, context: context)
+    end
+
+    def get_bool(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
+      typed_get(key, :bool, default: default, context: context)
+    end
+
+    def get_string_list(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
+      typed_get(key, :string_list, default: default, context: context)
+    end
+
+    def get_duration(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
+      typed_get(key, :duration, default: default, context: context)
+    end
+
+    def get_json(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
+      typed_get(key, Hash, default: default, context: context)
     end
 
     def config_client(timeout: 5.0)
@@ -128,6 +167,47 @@ module Quonfig
       raw = config_client.send(:raw, key)
 
       raw && raw.allowable_values.any?
+    end
+
+    private
+
+    def typed_get(key, expected_type, default:, context:)
+      jit_context = context == NO_DEFAULT_PROVIDED ? NO_DEFAULT_PROVIDED : context
+      value = get(key, default, jit_context)
+
+      # Missing-key path: resolver returned the caller's default (or nil under on_no_default=:return_nil) — skip type coercion
+      return value if default != NO_DEFAULT_PROVIDED && value.equal?(default)
+      return nil if value.nil?
+
+      coerce_and_check(key, value, expected_type)
+    end
+
+    def coerce_and_check(key, value, expected_type)
+      case expected_type
+      when :bool
+        unless value == true || value == false
+          raise Quonfig::Errors::TypeMismatchError.new(key, 'Boolean', value)
+        end
+        value
+      when :string_list
+        arr = value.respond_to?(:to_a) ? value.to_a : value
+        unless arr.is_a?(Array) && arr.all? { |v| v.is_a?(String) }
+          raise Quonfig::Errors::TypeMismatchError.new(key, 'Array<String>', value)
+        end
+        arr
+      when :duration
+        unless value.is_a?(Quonfig::Duration)
+          raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', value)
+        end
+        (value.in_seconds * 1000).to_i
+      when Class
+        unless value.is_a?(expected_type)
+          raise Quonfig::Errors::TypeMismatchError.new(key, "expected #{expected_type}", value)
+        end
+        value
+      else
+        value
+      end
     end
   end
 end
