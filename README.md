@@ -1,205 +1,188 @@
-# Reforge SDK for Ruby
+# quonfig
 
-Ruby Client for Reforge Feature Flags and Config as a Service: https://launch.reforge.com
+Ruby SDK for [Quonfig](https://quonfig.com) — Feature Flags, Live Config, and Dynamic Log Levels.
 
-```ruby
-Reforge.init
-
-context = {
-  user: {
-    team_id: 432,
-    id: 123,
-    subscription_level: 'pro',
-    email: "alice@example.com"
-  }
-}
-
-result = Reforge.enabled? "my-first-feature-flag", context
-
-puts "my-first-feature-flag is: #{result}"
-```
-
-See full documentation https://docs.reforge.com/docs/sdks/ruby
-
-## Supports
-
-- Feature Flags
-- Live Config
-- WebUI for tweaking config and feature flags
+> **Note:** This SDK is pre-1.0 and the API is not yet stable.
 
 ## Installation
 
 Add the gem to your Gemfile:
 
 ```ruby
-gem 'sdk-reforge'
+gem 'quonfig'
 ```
 
 Or install directly:
 
 ```bash
-gem install sdk-reforge
+gem install quonfig
 ```
 
-## Important note about Forking and realtime updates
-
-Many ruby web servers fork. When the process is forked, the current realtime update stream is disconnected. If you're using Puma or Unicorn, do the following.
+## Quickstart
 
 ```ruby
-#config/application.rb
-Reforge.init # reads REFORGE_BACKEND_SDK_KEY env var by default
-```
+require 'quonfig'
 
-```ruby
-#puma.rb
-on_worker_boot do
-  Reforge.fork
+client = Quonfig::Client.new(sdk_key: ENV['QUONFIG_BACKEND_SDK_KEY'])
+
+# Feature flags
+if client.enabled?('new-dashboard')
+  # show new dashboard
 end
+
+# Typed config values
+limit   = client.get_int('rate-limit')
+name    = client.get_string('app.display-name')
+regions = client.get_string_list('allowed-regions')
+
+# Context-aware evaluation — pass a context hash as the last argument
+value = client.get_string('homepage-hero', user: { key: 'user-123', country: 'US' })
 ```
 
+## Context
+
+Contexts are hashes grouped by scope (`user`, `team`, `device`, etc.). You can
+attach a context in three ways:
+
+### 1. Per-call context
+
 ```ruby
-# unicorn.rb
-after_fork do |server, worker|
-  Reforge.fork
-end
+client.get_bool('beta-feature', user: { key: 'user-123', plan: 'pro' })
 ```
 
-## Dynamic Log Levels
+### 2. `in_context` block
 
-Reforge supports dynamic log level management for Ruby logging frameworks. This allows you to change log levels in real-time without redeploying your application.
-
-Supported loggers:
-- SemanticLogger (optional dependency)
-- Ruby stdlib Logger
-
-### Setup with SemanticLogger
-
-Add semantic_logger to your Gemfile:
+Everything evaluated inside the block sees the supplied context. The block's
+return value is returned from `in_context`.
 
 ```ruby
-# Gemfile
-gem "semantic_logger"
-```
-
-### Plain Ruby
-
-```ruby
-require "semantic_logger"
-require "sdk-reforge"
-
-client = Reforge::Client.new(
-  sdk_key: ENV['REFORGE_BACKEND_SDK_KEY'],
-  logger_key: 'log-levels.default' # optional, this is the default
-)
-
-SemanticLogger.sync!
-SemanticLogger.default_level = :trace # Reforge will handle filtering
-SemanticLogger.add_appender(
-  io: $stdout,
-  formatter: :json,
-  filter: client.log_level_client.method(:semantic_filter)
-)
-```
-
-### With Rails
-
-```ruby
-# Gemfile
-gem "amazing_print"
-gem "rails_semantic_logger"
-```
-
-```ruby
-# config/application.rb
-$reforge_client = Reforge::Client.new # reads REFORGE_BACKEND_SDK_KEY env var
-
-# config/initializers/logging.rb
-SemanticLogger.sync!
-SemanticLogger.default_level = :trace # Reforge will handle filtering
-SemanticLogger.add_appender(
-  io: $stdout,
-  formatter: Rails.env.development? ? :color : :json,
-  filter: $reforge_client.log_level_client.method(:semantic_filter)
-)
-```
-
-```ruby
-# puma.rb
-on_worker_boot do
-  SemanticLogger.reopen
-  Reforge.fork
-end
-```
-
-### With Ruby stdlib Logger
-
-If you're using Ruby's standard library Logger, you can use a dynamic formatter:
-
-```ruby
-require "logger"
-require "sdk-reforge"
-
-client = Reforge::Client.new(
-  sdk_key: ENV['REFORGE_BACKEND_SDK_KEY'],
-  logger_key: 'log-levels.default' # optional, this is the default
-)
-
-logger = Logger.new($stdout)
-logger.level = Logger::DEBUG # Set to most verbose level, Reforge will handle filtering
-logger.formatter = client.log_level_client.stdlib_formatter('MyApp')
-```
-
-The formatter will check dynamic log levels from Reforge and only output logs that meet the configured threshold.
-
-### Configuration
-
-In Reforge Launch, create a `LOG_LEVEL_V2` config with your desired key (default: `log-levels.default`). The config will be evaluated with the following context:
-
-```ruby
-{
-  "reforge-sdk-logging" => {
-    "lang" => "ruby",
-    "logger-path" => "your_app.your_class" # class name converted to lowercase with dots
+result = client.in_context(user: { key: 'user-123', plan: 'pro' }) do |bound|
+  {
+    hero:   bound.get_string('homepage-hero'),
+    limit:  bound.get_int('rate-limit'),
+    beta?:  bound.enabled?('beta-feature')
   }
-}
+end
 ```
 
-You can set different log levels for different classes/modules using criteria on the `reforge-sdk-logging.logger-path` property.
+### 3. `with_context` — BoundClient for repeated lookups
 
-## Contributing to reforge sdk for ruby
+`with_context` returns an immutable `BoundClient` that carries the context on
+every call. Useful when you want to pass a context-bound handle down the stack.
 
-- Check out the latest master to make sure the feature hasn't been implemented or the bug hasn't been fixed yet.
-- Check out the issue tracker to make sure someone already hasn't requested it and/or contributed it.
-- Fork the project.
-- Start a feature/bugfix branch.
-- Commit and push until you are happy with your contribution.
-- Make sure to add tests for it. This is important so I don't break it in a future version unintentionally.
-- Please try not to mess with the Rakefile, version, or history. If you want to have your own version, or is otherwise necessary, that is fine, but please isolate to its own commit so I can cherry-pick around it.
+```ruby
+bound = client.with_context(user: { key: 'user-123', plan: 'pro' })
 
-## Release
-
-Release is automated via GitHub Actions using RubyGems trusted publishing. When tests pass on the main branch, a new version is automatically published to RubyGems.
-
-To release a new version:
-
-```shell
-# Update the version
-echo "1.9.1" > VERSION
-
-# Update the changelog with your changes
-# Edit CHANGELOG.md
-
-# Regenerate the gemspec
-bundle exec rake gemspec:generate
-
-# Create PR with changes
-git checkout -b release-1.9.1
-git commit -am "Release 1.9.1"
-git push origin release-1.9.1
-# Then create and merge PR to main
+bound.get_string('homepage-hero')
+bound.enabled?('beta-feature')
+bound.get_int('rate-limit')
 ```
 
-## Copyright
+## Datadir / offline mode
 
-Copyright (c) 2025 Reforge Inc. See LICENSE.txt for further details.
+For tests, CI, or air-gapped environments, point the client at a local workspace
+directory instead of the Quonfig API. In datadir mode the SDK loads JSON config
+files from disk and performs no network I/O.
 
+```ruby
+client = Quonfig::Client.new(
+  datadir:     '/path/to/workspace',
+  environment: 'production'
+)
+
+client.get_bool('feature-x')
+```
+
+You can also set `QUONFIG_DIR` in the environment and omit the `datadir:`
+option; when `QUONFIG_DIR` is set the SDK switches to datadir mode
+automatically. `environment` is required in datadir mode — it can be provided
+via the option or via `QUONFIG_ENVIRONMENT`.
+
+```bash
+export QUONFIG_DIR=/path/to/workspace
+export QUONFIG_ENVIRONMENT=production
+```
+
+```ruby
+client = Quonfig::Client.new  # reads QUONFIG_DIR + QUONFIG_ENVIRONMENT
+```
+
+## Environment variables
+
+| Variable                    | Purpose                                                                                  |
+|-----------------------------|------------------------------------------------------------------------------------------|
+| `QUONFIG_BACKEND_SDK_KEY`   | SDK key used to authenticate against the Quonfig API. Used when `sdk_key:` is omitted.   |
+| `QUONFIG_DIR`               | Path to a workspace directory. When set, the SDK runs in datadir/offline mode.           |
+| `QUONFIG_ENVIRONMENT`       | Environment name (`production`, `staging`, `development`) evaluated in datadir mode.     |
+| `QUONFIG_TELEMETRY_URL`     | Overrides the telemetry endpoint. Defaults to `https://telemetry.quonfig.com`.           |
+
+## Constructor options
+
+```ruby
+Quonfig::Client.new(
+  sdk_key:         '...',                          # required unless QUONFIG_BACKEND_SDK_KEY is set
+  api_urls:        ['https://primary.quonfig.com'],
+  telemetry_url:   'https://telemetry.quonfig.com',
+  enable_sse:      true,
+  enable_polling:  false,
+  poll_interval:   60,
+  init_timeout:    10,
+  on_no_default:   :error,
+  global_context:  {},
+  datadir:         '/path/to/workspace',
+  environment:     'production'
+)
+```
+
+| Option            | Type                       | Default                                                             | Description                                                                                       |
+|-------------------|----------------------------|---------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|
+| `sdk_key`         | `String`                   | `ENV['QUONFIG_BACKEND_SDK_KEY']`                                    | SDK key for API authentication.                                                                   |
+| `api_urls`        | `Array<String>`            | `['https://primary.quonfig.com', 'https://secondary.quonfig.com']`  | Ordered list of API base URLs to try.                                                             |
+| `telemetry_url`   | `String`                   | `https://telemetry.quonfig.com` (or `ENV['QUONFIG_TELEMETRY_URL']`) | Base URL for the telemetry service.                                                               |
+| `enable_sse`      | `Boolean`                  | `true`                                                              | Receive real-time updates over Server-Sent Events.                                                |
+| `enable_polling`  | `Boolean`                  | `false`                                                             | Poll the API on an interval as a fallback.                                                        |
+| `poll_interval`   | `Integer` (seconds)        | `60`                                                                | Polling interval when `enable_polling` is `true`.                                                 |
+| `init_timeout`    | `Integer` (seconds)        | `10`                                                                | Maximum time to wait for the initial config load.                                                 |
+| `on_no_default`   | `Symbol`                   | `:error`                                                            | Behavior when a key has no value and no default: `:error`, `:warn`, or `:ignore`.                 |
+| `global_context`  | `Hash`                     | `{}`                                                                | Context applied to every evaluation.                                                              |
+| `datadir`         | `String`                   | `ENV['QUONFIG_DIR']`                                                | Path to a local workspace. When set, the SDK runs offline from disk.                              |
+| `environment`     | `String`                   | `ENV['QUONFIG_ENVIRONMENT']`                                        | Environment to evaluate in datadir mode. Required when `datadir` is set.                          |
+
+## Typed getters
+
+Each typed getter takes a config key and an optional context hash. If the key
+is missing or the stored value does not match the requested type, the getter
+returns `nil`.
+
+| Method                                          | Returns                       |
+|-------------------------------------------------|-------------------------------|
+| `get_string(key, contexts = nil)`               | `String` or `nil`             |
+| `get_int(key, contexts = nil)`                  | `Integer` or `nil`            |
+| `get_float(key, contexts = nil)`                | `Float` or `nil`              |
+| `get_bool(key, contexts = nil)`                 | `true`, `false`, or `nil`     |
+| `get_string_list(key, contexts = nil)`          | `Array<String>` or `nil`      |
+| `get_duration(key, contexts = nil)`             | `Float` (seconds) or `nil`    |
+| `get_json(key, contexts = nil)`                 | `Hash`, `Array`, or `nil`     |
+| `enabled?(feature_name, contexts = nil)`        | `true` or `false`             |
+
+Example:
+
+```ruby
+client.get_string('app.display-name')
+client.get_int('rate-limit', user: { key: 'user-123' })
+client.get_float('pricing.multiplier')
+client.get_bool('flags.new-checkout')
+client.get_string_list('allowed-regions')
+client.get_duration('request-timeout')
+client.get_json('homepage.layout')
+client.enabled?('beta-feature', user: { key: 'user-123' })
+```
+
+## Documentation
+
+Full documentation, including SPEC, SDK reference, and operational guides, is
+available at [https://quonfig.com/docs](https://quonfig.com/docs).
+
+## License
+
+MIT
