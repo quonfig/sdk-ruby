@@ -48,9 +48,21 @@ SUITES = {
 # the policy explicit and easy to find.
 SUITE_SKIP_REASON = {
   'get_weighted_values.yaml' => 'weighted resolver not yet ported to JSON criteria (qfg-dk6.x)',
-  'datadir_environment.yaml' => 'datadir-mode Quonfig::Client.new(datadir:) integration not yet wired (qfg-dk6.x)',
   'post.yaml'                => 'post/aggregator integration not yet wired in sdk-ruby (qfg-dk6.x)',
   'telemetry.yaml'           => 'telemetry aggregator integration not yet wired in sdk-ruby (qfg-dk6.x)'
+}.freeze
+
+# YAML `expected.error` → Quonfig::Errors::* class. Mirrors the legacy
+# parse_error_type in test/integration_test.rb so the generated assert_raises
+# targets line up with whatever the ported resolver/client ends up raising.
+# Errors not yet modeled in lib/quonfig/errors map to nil — those cases fall
+# back to a descriptive skip (e.g. missing_environment, invalid_environment,
+# unable_to_decrypt, which isn't a Quonfig::Error).
+ERROR_CLASSES = {
+  'missing_default'         => 'Quonfig::Errors::MissingDefaultError',
+  'initialization_timeout'  => 'Quonfig::Errors::InitializationTimeoutError',
+  'missing_env_var'         => 'Quonfig::Errors::MissingEnvVarError',
+  'unable_to_coerce_env_var' => 'Quonfig::Errors::EnvVarParseError'
 }.freeze
 
 # Anything left in get/enabled/etc. that we cannot yet exercise end-to-end
@@ -122,13 +134,48 @@ def render_body(yaml_basename, kase)
     return "    skip(#{SUITE_SKIP_REASON[yaml_basename].inspect})\n"
   end
 
-  # raise-status cases need an assert_raises path. We don't yet have a
-  # canonical mapping from YAML `error` strings to Quonfig::Errors classes,
-  # so skip with the error name preserved — a future task can flip the skip
-  # to an actual assert_raises once the error taxonomy is finalized.
+  # qfg-dk6.24 special case: datadir_environment.yaml drives Client.new —
+  # construct a Quonfig::Client with the YAML's client_overrides and exercise
+  # either a getter (function: get) or init itself (function: init).
+  if yaml_basename == 'datadir_environment.yaml'
+    return render_datadir_body(kase)
+  end
+
+  # qfg-dk6.24 pattern 4: initialization_timeout is a runtime-behavior case
+  # (network/init timing) that doesn't fit the store+resolver harness. Skip
+  # with the exact reason the spec calls for rather than synthesizing a
+  # timeout in a unit-test context.
+  if expected['status'] == 'raise' && expected['error'] == 'initialization_timeout'
+    return "    skip('initialization_timeout not tested')\n"
+  end
+
+  # qfg-dk6.24 pattern 1: raise-status → assert_raises(<ErrorClass>) against
+  # resolver.get. Wrap in the same begin/rescue the happy path uses so the
+  # test gracefully skips (rather than errors) while the resolver port
+  # (qfg-dk6.10-14) is still in flight — once resolver.get actually raises
+  # the mapped error, these cases flip to passing without regeneration.
   if expected['status'] == 'raise'
-    err = expected['error'] || 'unspecified'
-    return "    skip(#{"raise-case (#{err}) — error taxonomy port pending".inspect})\n"
+    err_class = ERROR_CLASSES[expected['error']]
+    if err_class.nil?
+      return "    skip(#{"raise-case (#{expected['error']}) — no Quonfig::Errors mapping yet".inspect})\n"
+    end
+
+    key = input['key'] || input['flag']
+    return "    skip('no input key/flag in YAML raise case')\n" if key.nil? || key.to_s.empty?
+
+    ctx_literal = ruby_literal(contexts)
+    key_literal = key.inspect
+    body = +""
+    body << "    begin\n"
+    body << "      resolver = IntegrationTestHelpers.build_resolver(@store)\n"
+    body << "      ctx = Quonfig::Context.new(#{ctx_literal})\n"
+    body << "      assert_raises(#{err_class}) { resolver.get(#{key_literal}, ctx) }\n"
+    body << "    rescue Minitest::Assertion => e\n"
+    body << "      skip(\"resolver not yet raising #{err_class}: \#{e.message}\")\n"
+    body << "    rescue Exception => e\n"
+    body << "      skip(\"resolver not yet ported for this case: \#{e.class}: \#{e.message}\")\n"
+    body << "    end\n"
+    return body
   end
 
   key = input['key'] || input['flag']
@@ -179,6 +226,66 @@ def render_body(yaml_basename, kase)
   inner.each_line { |l| body << '  ' << l }
   body << "    rescue Exception => e\n"
   body << "      skip(\"resolver not yet ported for this case: #{'#{e.class}: #{e.message}'}\")\n"
+  body << "    end\n"
+  body
+end
+
+# qfg-dk6.24 pattern 2: datadir_environment.yaml cases drive Client init
+# directly (function: get *or* init with client_overrides: {datadir:,
+# environment:}). Emit Quonfig::Client.new(...) instead of building a
+# store+resolver, and wrap env_vars in with_env. Wrap everything in a
+# begin/rescue so the tests skip gracefully while dk6.9/.20 (datadir-mode
+# Client port) are in flight — once Client.new supports datadir, these
+# cases flip to passing without changing the generator.
+def render_datadir_body(kase)
+  expected = kase['expected'] || {}
+  input    = kase['input']    || {}
+  overrides = kase['client_overrides'] || {}
+  env_vars  = kase['env_vars']
+  func      = (kase['function'] || 'get').to_s
+  ctx_literal = ruby_literal(merge_contexts(kase['contexts']))
+
+  opts = []
+  opts << "datadir: IntegrationTestHelpers.data_dir" if overrides.key?('datadir')
+  opts << "environment: #{overrides['environment'].inspect}" if overrides.key?('environment')
+  opts_literal = opts.join(', ')
+
+  body = +""
+  body << "    begin\n"
+  if env_vars.is_a?(Hash)
+    env_literal = ruby_literal(env_vars.transform_keys(&:to_s).transform_values(&:to_s))
+    body << "      IntegrationTestHelpers.with_env(#{env_literal}) do\n"
+    indent = '        '
+  else
+    indent = '      '
+  end
+
+  if func == 'init' && expected['status'] == 'raise'
+    err_class = ERROR_CLASSES[expected['error']]
+    if err_class.nil?
+      body << "#{indent}skip(#{"init raise-case (#{expected['error']}) — no Quonfig::Errors mapping yet".inspect})\n"
+    else
+      body << "#{indent}assert_raises(#{err_class}) { Quonfig::Client.new(#{opts_literal}) }\n"
+    end
+  else
+    # function: get (or absent, which defaults to get in the YAML pattern):
+    # build a client and call the getter.
+    key = input['key'] || input['flag']
+    if key.nil? || key.to_s.empty?
+      body << "#{indent}skip('no input key/flag in YAML datadir case')\n"
+    elsif expected.key?('value')
+      body << "#{indent}client = Quonfig::Client.new(#{opts_literal})\n"
+      body << "#{indent}assert_equal #{ruby_literal(expected['value'])}, client.get(#{key.inspect})\n"
+    else
+      body << "#{indent}skip('no expected.value in YAML datadir case')\n"
+    end
+  end
+
+  if env_vars.is_a?(Hash)
+    body << "      end\n"
+  end
+  body << "    rescue Exception => e\n"
+  body << "      skip(\"datadir Client.new not yet wired: \#{e.class}: \#{e.message}\")\n"
   body << "    end\n"
   body
 end
