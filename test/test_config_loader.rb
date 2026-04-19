@@ -1,82 +1,70 @@
 # frozen_string_literal: true
 
 require 'test_helper'
+require 'ostruct'
+require 'json'
 
 class TestConfigLoader < Minitest::Test
   def setup
     super
     options = Quonfig::Options.new(
+      sdk_key: '1-test-sdk-key',
+      sources: ['https://primary.example.test']
     )
     @loader = Quonfig::ConfigLoader.new(MockBaseClient.new(options))
   end
 
+  def test_fetch_200_populates_configs_and_stores_etag_then_304_is_a_noop
+    body = JSON.generate(
+      'configs' => [
+        { 'key' => 'my.flag', 'type' => 'config', 'valueType' => 'bool',
+          'default' => { 'rules' => [] } }
+      ],
+      'meta' => { 'version' => 'v1', 'environment' => 'production' }
+    )
+    ok_response = Faraday::Response.new(
+      status: 200, body: body,
+      response_headers: { 'ETag' => 'W/"etag-one"' }
+    )
+    not_modified = Faraday::Response.new(
+      status: 304, body: '', response_headers: {}
+    )
 
+    observed_headers = []
 
+    http_conn = Minitest::Mock.new
+    http_conn.expect(:get, ok_response) do |path, headers|
+      observed_headers << headers.dup
+      path == '/api/v2/configs' && !headers.key?('If-None-Match')
+    end
+    http_conn.expect(:get, not_modified) do |path, headers|
+      observed_headers << headers.dup
+      path == '/api/v2/configs' && headers['If-None-Match'] == 'W/"etag-one"'
+    end
 
+    Quonfig::HttpConnection.stub :new, ->(_uri, _key) { http_conn } do
+      assert_equal :updated, @loader.fetch!
+      assert_equal :not_modified, @loader.fetch!
+    end
 
-  def test_highwater
-    assert_equal 0, @loader.highwater_mark
-    @loader.set(PrefabProto::Config.new(id: 1, key: 'sample_int', rows: [config_row(PrefabProto::ConfigValue.new(int: 456))]),
-                'test')
-    assert_equal 1, @loader.highwater_mark
-
-    @loader.set(PrefabProto::Config.new(id: 5, key: 'sample_int', rows: [config_row(PrefabProto::ConfigValue.new(int: 456))]),
-                'test')
-    assert_equal 5, @loader.highwater_mark
-    @loader.set(PrefabProto::Config.new(id: 2, key: 'sample_int', rows: [config_row(PrefabProto::ConfigValue.new(int: 456))]),
-                'test')
-    assert_equal 5, @loader.highwater_mark
+    assert_equal 'W/"etag-one"', @loader.etag
+    calc = @loader.calc_config
+    assert calc.key?('my.flag'), "expected 'my.flag' to be loaded"
+    assert_equal 'W/"etag-one"', observed_headers[1]['If-None-Match']
+    http_conn.verify
   end
 
-  def test_keeps_most_recent
-    assert_equal 0, @loader.highwater_mark
-    @loader.set(PrefabProto::Config.new(id: 1, key: 'sample_int', rows: [config_row(PrefabProto::ConfigValue.new(int: 1))]),
-                'test')
-    assert_equal 1, @loader.highwater_mark
-    should_be :int, 1, 'sample_int'
+  def test_set_and_rm_preserved
+    config = OpenStruct.new(key: 'x', rows: [1])
+    @loader.set(config, :test)
+    assert @loader.calc_config.key?('x')
 
-    @loader.set(PrefabProto::Config.new(id: 4, key: 'sample_int', rows: [config_row(PrefabProto::ConfigValue.new(int: 4))]),
-                'test')
-    assert_equal 4, @loader.highwater_mark
-    should_be :int, 4, 'sample_int'
-
-    @loader.set(PrefabProto::Config.new(id: 2, key: 'sample_int', rows: [config_row(PrefabProto::ConfigValue.new(int: 2))]),
-                'test')
-    assert_equal 4, @loader.highwater_mark
-    should_be :int, 4, 'sample_int'
+    @loader.rm('x')
+    refute @loader.calc_config.key?('x')
   end
 
-
-  def test_api_deltas
-    val = PrefabProto::ConfigValue.new(int: 456)
-    config = PrefabProto::Config.new(key: 'sample_int', rows: [config_row(val)])
-    @loader.set(config, 'test')
-
-    configs = PrefabProto::Configs.new
-    configs.configs << config
-    assert_equal configs, @loader.get_api_deltas
-  end
-
-  def test_loading_tombstones_removes_entries
-    val = PrefabProto::ConfigValue.new(int: 456)
-    config = PrefabProto::Config.new(key: 'sample_int', rows: [config_row(val)], id: 2)
-    @loader.set(config, 'test')
-
-    config = PrefabProto::Config.new(key: 'sample_int', rows: [], id: 3)
-    @loader.set(config, 'test')
-
-    configs = PrefabProto::Configs.new
-    assert_equal configs, @loader.get_api_deltas
-  end
-
-  private
-
-  def should_be(type, value, key)
-    assert_equal type, @loader.calc_config[key][:config].rows[0].values[0].value.type
-    assert_equal value, @loader.calc_config[key][:config].rows[0].values[0].value.send(type)
-  end
-
-  def config_row(value)
-    PrefabProto::ConfigRow.new(values: [PrefabProto::ConditionalValue.new(value: value)])
+  def test_no_highwater_mark_attribute
+    refute @loader.respond_to?(:highwater_mark),
+           'highwater_mark should be removed from ConfigLoader'
   end
 end
