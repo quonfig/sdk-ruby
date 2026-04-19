@@ -10,9 +10,10 @@ module Quonfig
     ERROR = :error
     FATAL = :fatal
 
-    # Map from PrefabProto::LogLevel enum symbols (uppercase) to our public LogLevel constants (lowercase)
-    # When unwrapped, the proto returns uppercase symbols like :INFO, :DEBUG, etc.
-    PROTO_SYMBOL_TO_LOG_LEVEL = {
+    # JSON wire-format symbol map. Will be repopulated with the final JSON
+    # log-level enum values in qfg-dk6.5+. Kept as a constant so callers continue
+    # to load; unknown inputs fall back to DEBUG.
+    WIRE_SYMBOL_TO_LOG_LEVEL = {
       :NOT_SET_LOG_LEVEL => DEBUG,
       :TRACE => TRACE,
       :DEBUG => DEBUG,
@@ -22,23 +23,12 @@ module Quonfig
       :FATAL => FATAL
     }.freeze
 
-    # Map from PrefabProto::LogLevel enum integer values to our public LogLevel constants
-    PROTO_INT_TO_LOG_LEVEL = {
-      PrefabProto::LogLevel::NOT_SET_LOG_LEVEL => DEBUG,
-      PrefabProto::LogLevel::TRACE => TRACE,
-      PrefabProto::LogLevel::DEBUG => DEBUG,
-      PrefabProto::LogLevel::INFO => INFO,
-      PrefabProto::LogLevel::WARN => WARN,
-      PrefabProto::LogLevel::ERROR => ERROR,
-      PrefabProto::LogLevel::FATAL => FATAL
-    }.freeze
-
-    def self.from_proto(proto_log_level)
-      case proto_log_level
+    def self.from_wire(wire_log_level)
+      case wire_log_level
       when Symbol
-        PROTO_SYMBOL_TO_LOG_LEVEL.fetch(proto_log_level, DEBUG)
-      when Integer
-        PROTO_INT_TO_LOG_LEVEL.fetch(proto_log_level, DEBUG)
+        WIRE_SYMBOL_TO_LOG_LEVEL.fetch(wire_log_level, DEBUG)
+      when String
+        WIRE_SYMBOL_TO_LOG_LEVEL.fetch(wire_log_level.to_sym, DEBUG)
       else
         DEBUG
       end

@@ -62,9 +62,6 @@ GEM
       faraday (>= 0.8, < 2)
       hashie (~> 3.5, >= 3.5.2)
       oauth2 (~> 1.0)
-    google-protobuf (3.25.5)
-    googleapis-common-protos-types (1.14.0)
-      google-protobuf (~> 3.18)
     hashie (3.6.0)
     highline (3.0.1)
     http (5.2.0)
@@ -164,8 +161,6 @@ DEPENDENCIES
   bundler
   concurrent-ruby (~> 1.0, >= 1.0.5)
   faraday
-  google-protobuf
-  googleapis-common-protos-types
   juwelier (~> 2.4.9)
   ld-eventsource
   minitest

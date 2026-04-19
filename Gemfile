@@ -2,8 +2,6 @@ source 'https://rubygems.org'
 
 gem 'concurrent-ruby', '~> 1.0', '>= 1.0.5'
 gem 'faraday'
-gem 'googleapis-common-protos-types', platforms: :ruby
-gem 'google-protobuf', platforms: :ruby
 gem 'ld-eventsource'
 gem 'uuid'
 

@@ -28,8 +28,6 @@ Gem::Specification.new do |s|
     "README.md",
     "Rakefile",
     "VERSION",
-    "compile_protos.sh",
-    "lib/prefab_pb.rb",
     "lib/quonfig.rb",
     "lib/quonfig/caching_http_connection.rb",
     "lib/quonfig/client.rb",
@@ -125,8 +123,6 @@ Gem::Specification.new do |s|
 
   s.add_runtime_dependency(%q<concurrent-ruby>.freeze, ["~> 1.0", ">= 1.0.5"])
   s.add_runtime_dependency(%q<faraday>.freeze, [">= 0"])
-  s.add_runtime_dependency(%q<googleapis-common-protos-types>.freeze, [">= 0"])
-  s.add_runtime_dependency(%q<google-protobuf>.freeze, [">= 0"])
   s.add_runtime_dependency(%q<ld-eventsource>.freeze, [">= 0"])
   s.add_runtime_dependency(%q<uuid>.freeze, [">= 0"])
   s.add_runtime_dependency(%q<activesupport>.freeze, [">= 4"])
