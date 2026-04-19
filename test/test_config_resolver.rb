@@ -42,7 +42,7 @@ class TestConfigResolver < Minitest::Test
                   PrefabProto::Criterion.new(
                     operator: PrefabProto::Criterion::CriterionOperator::HIERARCHICAL_MATCH,
                     value_to_match: PrefabProto::ConfigValue.new(string: 'projectB.subprojectX'),
-                    property_name: Reforge::CriteriaEvaluator::NAMESPACE_KEY
+                    property_name: Quonfig::CriteriaEvaluator::NAMESPACE_KEY
                   )
                 ],
                 value: PrefabProto::ConfigValue.new(string: 'projectB.subprojectX')
@@ -52,7 +52,7 @@ class TestConfigResolver < Minitest::Test
                   PrefabProto::Criterion.new(
                     operator: PrefabProto::Criterion::CriterionOperator::HIERARCHICAL_MATCH,
                     value_to_match: PrefabProto::ConfigValue.new(string: 'projectB.subprojectY'),
-                    property_name: Reforge::CriteriaEvaluator::NAMESPACE_KEY
+                    property_name: Quonfig::CriteriaEvaluator::NAMESPACE_KEY
                   )
                 ],
                 value: PrefabProto::ConfigValue.new(string: 'projectB.subprojectY')
@@ -62,7 +62,7 @@ class TestConfigResolver < Minitest::Test
                   PrefabProto::Criterion.new(
                     operator: PrefabProto::Criterion::CriterionOperator::HIERARCHICAL_MATCH,
                     value_to_match: PrefabProto::ConfigValue.new(string: 'projectA'),
-                    property_name: Reforge::CriteriaEvaluator::NAMESPACE_KEY
+                    property_name: Quonfig::CriteriaEvaluator::NAMESPACE_KEY
                   )
                 ],
                 value: PrefabProto::ConfigValue.new(string: 'valueA')
@@ -72,7 +72,7 @@ class TestConfigResolver < Minitest::Test
                   PrefabProto::Criterion.new(
                     operator: PrefabProto::Criterion::CriterionOperator::HIERARCHICAL_MATCH,
                     value_to_match: PrefabProto::ConfigValue.new(string: 'projectB'),
-                    property_name: Reforge::CriteriaEvaluator::NAMESPACE_KEY
+                    property_name: Quonfig::CriteriaEvaluator::NAMESPACE_KEY
                   )
                 ],
                 value: PrefabProto::ConfigValue.new(string: 'valueB')
@@ -82,7 +82,7 @@ class TestConfigResolver < Minitest::Test
                   PrefabProto::Criterion.new(
                     operator: PrefabProto::Criterion::CriterionOperator::HIERARCHICAL_MATCH,
                     value_to_match: PrefabProto::ConfigValue.new(string: 'projectB.subprojectX'),
-                    property_name: Reforge::CriteriaEvaluator::NAMESPACE_KEY
+                    property_name: Quonfig::CriteriaEvaluator::NAMESPACE_KEY
                   )
                 ],
                 value: PrefabProto::ConfigValue.new(string: 'projectB.subprojectX')
@@ -92,7 +92,7 @@ class TestConfigResolver < Minitest::Test
                   PrefabProto::Criterion.new(
                     operator: PrefabProto::Criterion::CriterionOperator::HIERARCHICAL_MATCH,
                     value_to_match: PrefabProto::ConfigValue.new(string: 'projectB.subprojectY'),
-                    property_name: Reforge::CriteriaEvaluator::NAMESPACE_KEY
+                    property_name: Quonfig::CriteriaEvaluator::NAMESPACE_KEY
                   )
                 ],
                 value: PrefabProto::ConfigValue.new(string: 'projectB.subprojectY')
@@ -154,8 +154,8 @@ class TestConfigResolver < Minitest::Test
       ]
 
       assert_equal @resolverBX.presenter.to_h, {
-        'key' => Reforge::ResolvedConfigPresenter::ConfigRow.new('key', 'value_none', nil, nil),
-        'key2' => Reforge::ResolvedConfigPresenter::ConfigRow.new('key2', 'valueB2', nil, nil)
+        'key' => Quonfig::ResolvedConfigPresenter::ConfigRow.new('key', 'value_none', nil, nil),
+        'key2' => Quonfig::ResolvedConfigPresenter::ConfigRow.new('key2', 'valueB2', nil, nil)
       }
 
       resolved_lines = []
@@ -242,8 +242,8 @@ class TestConfigResolver < Minitest::Test
     loader = MockConfigLoader.new
 
     loader.stub :calc_config, loaded_values do
-      options = Reforge::Options.new
-      resolver = Reforge::ConfigResolver.new(MockBaseClient.new(options), loader)
+      options = Quonfig::Options.new
+      resolver = Quonfig::ConfigResolver.new(MockBaseClient.new(options), loader)
       resolver.project_env_id = PRODUCTION_ENV_ID
 
       assert_equal_context_and_jit DEFAULT_VALUE, resolver, CONFIG_KEY,
@@ -312,8 +312,8 @@ class TestConfigResolver < Minitest::Test
     loader = MockConfigLoader.new
 
     loader.stub :calc_config, loaded_values do
-      options = Reforge::Options.new
-      resolver = Reforge::ConfigResolver.new(MockBaseClient.new(options), loader)
+      options = Quonfig::Options.new
+      resolver = Quonfig::ConfigResolver.new(MockBaseClient.new(options), loader)
 
       assert_equal_context_and_jit IN_SEGMENT_VALUE, resolver, CONFIG_KEY, { user: { email: 'test@hotmail.com' } }
       assert_equal_context_and_jit NOT_IN_SEGMENT_VALUE, resolver, CONFIG_KEY, { user: { email: 'test@something-else.com' } }
@@ -352,11 +352,11 @@ class TestConfigResolver < Minitest::Test
     loader = MockConfigLoader.new
 
     loader.stub :calc_config, { CONFIG_KEY => { config: config } } do
-      options = Reforge::Options.new
-      resolver = Reforge::ConfigResolver.new(MockBaseClient.new(options), loader)
+      options = Quonfig::Options.new
+      resolver = Quonfig::ConfigResolver.new(MockBaseClient.new(options), loader)
       resolver.project_env_id = TEST_ENV_ID
 
-      Reforge::Context.with_context({ user: { email: 'test@example.com' } }) do
+      Quonfig::Context.with_context({ user: { email: 'test@example.com' } }) do
         assert_equal DEFAULT_VALUE, resolver.get(CONFIG_KEY).unwrapped_value
         assert_equal DEFAULT_VALUE, resolver.get(CONFIG_KEY, { team: { plan: 'freebie' } }).unwrapped_value
         assert_equal DESIRED_VALUE, resolver.get(CONFIG_KEY, { team: { plan: 'pro' } }).unwrapped_value
@@ -396,11 +396,11 @@ class TestConfigResolver < Minitest::Test
     loader = MockConfigLoader.new
 
     loader.stub :calc_config, { CONFIG_KEY => { config: config } } do
-      options = Reforge::Options.new
-      resolver = Reforge::ConfigResolver.new(MockBaseClient.new(options), loader)
+      options = Quonfig::Options.new
+      resolver = Quonfig::ConfigResolver.new(MockBaseClient.new(options), loader)
       resolver.project_env_id = TEST_ENV_ID
 
-      Reforge::Context.with_context({ user: { email: 'test@hotmail.com' }, team: { plan: 'pro' } }) do
+      Quonfig::Context.with_context({ user: { email: 'test@hotmail.com' }, team: { plan: 'pro' } }) do
         assert_equal DEFAULT_VALUE, resolver.get(CONFIG_KEY).unwrapped_value
         assert_equal DESIRED_VALUE, resolver.get(CONFIG_KEY, { user: { email: 'test@example.com' } }).unwrapped_value
         assert_equal DEFAULT_VALUE, resolver.get(CONFIG_KEY, { team: { plan: 'freebie' } }).unwrapped_value
@@ -419,7 +419,7 @@ class TestConfigResolver < Minitest::Test
     client = new_client(global_context: global_context, config: [config])
 
     # we fake getting the default context from the API
-    Reforge::Context.default_context = default_context
+    Quonfig::Context.default_context = default_context
 
     resolver = client.resolver
 
@@ -459,7 +459,7 @@ class TestConfigResolver < Minitest::Test
     client = new_client(global_context: global_context, config: [config])
 
     # we fake getting the default context from the API
-    Reforge::Context.default_context = default_context
+    Quonfig::Context.default_context = default_context
 
     resolver = client.resolver
 
@@ -483,10 +483,10 @@ class TestConfigResolver < Minitest::Test
   private
 
   def resolver_for_namespace(namespace, loader, project_env_id: TEST_ENV_ID)
-    options = Reforge::Options.new(
+    options = Quonfig::Options.new(
       namespace: namespace
     )
-    resolver = Reforge::ConfigResolver.new(MockBaseClient.new(options), loader)
+    resolver = Quonfig::ConfigResolver.new(MockBaseClient.new(options), loader)
     resolver.project_env_id = project_env_id
     resolver.update
     resolver
@@ -495,7 +495,7 @@ class TestConfigResolver < Minitest::Test
   def assert_equal_context_and_jit(expected_value, resolver, key, properties)
     assert_equal expected_value, resolver.get(key, properties).unwrapped_value
 
-    Reforge::Context.with_context(properties) do
+    Quonfig::Context.with_context(properties) do
       assert_equal expected_value, resolver.get(key).unwrapped_value
     end
   end

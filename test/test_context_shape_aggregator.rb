@@ -6,7 +6,7 @@ require 'timecop'
 class TestContextShapeAggregator < Minitest::Test
   DOB = Date.new
 
-  CONTEXT_1 = Reforge::Context.new({
+  CONTEXT_1 = Quonfig::Context.new({
                                     'user' => {
                                       'name' => 'user-name',
                                       'email' => 'user.email',
@@ -18,7 +18,7 @@ class TestContextShapeAggregator < Minitest::Test
                                     }
                                   }).freeze
 
-  CONTEXT_2 = Reforge::Context.new({
+  CONTEXT_2 = Quonfig::Context.new({
                                     'user' => {
                                       'name' => 'other-user-name',
                                       'dob' => DOB
@@ -30,7 +30,7 @@ class TestContextShapeAggregator < Minitest::Test
                                     }
                                   }).freeze
 
-  CONTEXT_3 = Reforge::Context.new({
+  CONTEXT_3 = Quonfig::Context.new({
                                     'subscription' => {
                                       'plan' => 'pro',
                                       'trial' => true
@@ -136,15 +136,15 @@ class TestContextShapeAggregator < Minitest::Test
 
   def new_client(overrides = {})
     super(**{
-      prefab_datasources: Reforge::Options::DATASOURCES::ALL,
+      prefab_datasources: Quonfig::Options::DATASOURCES::ALL,
       initialization_timeout_sec: 0,
-      on_init_failure: Reforge::Options::ON_INITIALIZATION_FAILURE::RETURN,
+      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN,
       sdk_key: '123-development-yourapikey-SDK',
       context_upload_mode: :shape_only
     }.merge(overrides))
   end
 
   def new_aggregator(max_shapes: 1000)
-    Reforge::ContextShapeAggregator.new(client: new_client, sync_interval: 1000, max_shapes: max_shapes)
+    Quonfig::ContextShapeAggregator.new(client: new_client, sync_interval: 1000, max_shapes: max_shapes)
   end
 end

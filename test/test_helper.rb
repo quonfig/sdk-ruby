@@ -5,7 +5,7 @@ require 'minitest/focus'
 require 'minitest/reporters'
 Minitest::Reporters.use! unless ENV['RM_INFO']
 
-require 'sdk-reforge'
+require 'quonfig'
 
 Dir.glob(File.join(File.dirname(__FILE__), 'support', '**', '*.rb')).each do |file|
   require file

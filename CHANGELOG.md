@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Rename:** gem renamed from `sdk-reforge` to `quonfig`; top-level module `Reforge` → `Quonfig`.
+- **Env vars:** canonical names are now `QUONFIG_BACKEND_SDK_KEY`, `QUONFIG_DIR`, `QUONFIG_DATASOURCES`, `QUONFIG_SOURCES`. Legacy `REFORGE_*` / `PREFAB_*` env vars are no longer read.
+- **Requires:** `require 'sdk-reforge'` → `require 'quonfig'`.
+
 ## 1.12.0 - 2025-10-31
 
 - Restore log level functionality with LOG_LEVEL_V2 support

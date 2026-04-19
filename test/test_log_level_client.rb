@@ -5,12 +5,12 @@ require 'test_helper'
 class TestLogLevelClient < Minitest::Test
   def setup
     super
-    @options = Reforge::Options.new(
-      prefab_datasources: Reforge::Options::DATASOURCES::LOCAL_ONLY,
+    @options = Quonfig::Options.new(
+      prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY,
       logger_key: 'test.log.level.key'
     )
 
-    @client = Reforge::Client.new(@options)
+    @client = Quonfig::Client.new(@options)
   end
 
   def test_get_log_level_returns_debug_when_no_config_exists
@@ -32,7 +32,7 @@ class TestLogLevelClient < Minitest::Test
               criteria: [
                 PrefabProto::Criterion.new(
                   operator: PrefabProto::Criterion::CriterionOperator::PROP_IS_ONE_OF,
-                  property_name: 'reforge-sdk-logging.logger-path',
+                  property_name: 'quonfig-sdk-logging.logger-path',
                   value_to_match: PrefabProto::ConfigValue.new(
                     string_list: PrefabProto::StringList.new(values: ['MyApp::DebugClass'])
                   )
@@ -44,7 +44,7 @@ class TestLogLevelClient < Minitest::Test
               criteria: [
                 PrefabProto::Criterion.new(
                   operator: PrefabProto::Criterion::CriterionOperator::PROP_IS_ONE_OF,
-                  property_name: 'reforge-sdk-logging.logger-path',
+                  property_name: 'quonfig-sdk-logging.logger-path',
                   value_to_match: PrefabProto::ConfigValue.new(
                     string_list: PrefabProto::StringList.new(values: ['MyApp::InfoClass'])
                   )
@@ -92,7 +92,7 @@ class TestLogLevelClient < Minitest::Test
               criteria: [
                 PrefabProto::Criterion.new(
                   operator: PrefabProto::Criterion::CriterionOperator::PROP_IS_ONE_OF,
-                  property_name: 'reforge-sdk-logging.logger-path',
+                  property_name: 'quonfig-sdk-logging.logger-path',
                   value_to_match: PrefabProto::ConfigValue.new(
                     string_list: PrefabProto::StringList.new(values: ['TraceLogger'])
                   )
@@ -104,7 +104,7 @@ class TestLogLevelClient < Minitest::Test
               criteria: [
                 PrefabProto::Criterion.new(
                   operator: PrefabProto::Criterion::CriterionOperator::PROP_IS_ONE_OF,
-                  property_name: 'reforge-sdk-logging.logger-path',
+                  property_name: 'quonfig-sdk-logging.logger-path',
                   value_to_match: PrefabProto::ConfigValue.new(
                     string_list: PrefabProto::StringList.new(values: ['ErrorLogger'])
                   )
@@ -116,7 +116,7 @@ class TestLogLevelClient < Minitest::Test
               criteria: [
                 PrefabProto::Criterion.new(
                   operator: PrefabProto::Criterion::CriterionOperator::PROP_IS_ONE_OF,
-                  property_name: 'reforge-sdk-logging.logger-path',
+                  property_name: 'quonfig-sdk-logging.logger-path',
                   value_to_match: PrefabProto::ConfigValue.new(
                     string_list: PrefabProto::StringList.new(values: ['FatalLogger'])
                   )
@@ -140,22 +140,22 @@ class TestLogLevelClient < Minitest::Test
   end
 
   def test_get_log_level_returns_debug_when_logger_key_is_nil
-    options = Reforge::Options.new(
-      prefab_datasources: Reforge::Options::DATASOURCES::LOCAL_ONLY,
+    options = Quonfig::Options.new(
+      prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY,
       logger_key: nil
     )
-    client = Reforge::Client.new(options)
+    client = Quonfig::Client.new(options)
 
     log_level = client.log_level_client.get_log_level('MyApp::MyClass')
     assert_equal :debug, log_level
   end
 
   def test_get_log_level_returns_debug_when_logger_key_is_empty
-    options = Reforge::Options.new(
-      prefab_datasources: Reforge::Options::DATASOURCES::LOCAL_ONLY,
+    options = Quonfig::Options.new(
+      prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY,
       logger_key: ''
     )
-    client = Reforge::Client.new(options)
+    client = Quonfig::Client.new(options)
 
     log_level = client.log_level_client.get_log_level('MyApp::MyClass')
     assert_equal :debug, log_level
@@ -189,18 +189,18 @@ class TestLogLevelClient < Minitest::Test
   end
 
   def test_log_level_enum_from_proto
-    assert_equal :trace, Reforge::LogLevel.from_proto(PrefabProto::LogLevel::TRACE)
-    assert_equal :debug, Reforge::LogLevel.from_proto(PrefabProto::LogLevel::DEBUG)
-    assert_equal :info, Reforge::LogLevel.from_proto(PrefabProto::LogLevel::INFO)
-    assert_equal :warn, Reforge::LogLevel.from_proto(PrefabProto::LogLevel::WARN)
-    assert_equal :error, Reforge::LogLevel.from_proto(PrefabProto::LogLevel::ERROR)
-    assert_equal :fatal, Reforge::LogLevel.from_proto(PrefabProto::LogLevel::FATAL)
-    assert_equal :debug, Reforge::LogLevel.from_proto(PrefabProto::LogLevel::NOT_SET_LOG_LEVEL)
+    assert_equal :trace, Quonfig::LogLevel.from_proto(PrefabProto::LogLevel::TRACE)
+    assert_equal :debug, Quonfig::LogLevel.from_proto(PrefabProto::LogLevel::DEBUG)
+    assert_equal :info, Quonfig::LogLevel.from_proto(PrefabProto::LogLevel::INFO)
+    assert_equal :warn, Quonfig::LogLevel.from_proto(PrefabProto::LogLevel::WARN)
+    assert_equal :error, Quonfig::LogLevel.from_proto(PrefabProto::LogLevel::ERROR)
+    assert_equal :fatal, Quonfig::LogLevel.from_proto(PrefabProto::LogLevel::FATAL)
+    assert_equal :debug, Quonfig::LogLevel.from_proto(PrefabProto::LogLevel::NOT_SET_LOG_LEVEL)
   end
 
   def test_default_logger_key
-    options = Reforge::Options.new(
-      prefab_datasources: Reforge::Options::DATASOURCES::LOCAL_ONLY
+    options = Quonfig::Options.new(
+      prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY
     )
 
     assert_equal 'log-levels.default', options.logger_key
@@ -254,11 +254,11 @@ class TestLogLevelClient < Minitest::Test
 
   def test_semantic_logger_levels_mapping
     # Verify our SEMANTIC_LOGGER_LEVELS constant matches expectations
-    assert_equal 0, Reforge::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:trace]
-    assert_equal 1, Reforge::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:debug]
-    assert_equal 2, Reforge::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:info]
-    assert_equal 3, Reforge::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:warn]
-    assert_equal 4, Reforge::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:error]
-    assert_equal 5, Reforge::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:fatal]
+    assert_equal 0, Quonfig::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:trace]
+    assert_equal 1, Quonfig::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:debug]
+    assert_equal 2, Quonfig::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:info]
+    assert_equal 3, Quonfig::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:warn]
+    assert_equal 4, Quonfig::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:error]
+    assert_equal 5, Quonfig::LogLevelClient::SEMANTIC_LOGGER_LEVELS[:fatal]
   end
 end

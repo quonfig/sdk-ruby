@@ -5,10 +5,10 @@ require 'timecop'
 
 class TestExampleContextsAggregator < Minitest::Test
   def test_record
-    aggregator = Reforge::ExampleContextsAggregator.new(client: MockBaseClient.new, max_contexts: 2,
+    aggregator = Quonfig::ExampleContextsAggregator.new(client: MockBaseClient.new, max_contexts: 2,
                                                        sync_interval: EFFECTIVELY_NEVER)
 
-    context = Reforge::Context.new(user: { key: 'abc' }, device: { key: 'def', mobile: true })
+    context = Quonfig::Context.new(user: { key: 'abc' }, device: { key: 'def', mobile: true })
 
     aggregator.record(context)
     assert_equal [context], aggregator.data
@@ -17,7 +17,7 @@ class TestExampleContextsAggregator < Minitest::Test
     aggregator.record(context)
     assert_equal [context], aggregator.data
 
-    new_context = Reforge::Context.new(
+    new_context = Quonfig::Context.new(
       user: { key: 'ghi', admin: true },
       team: { key: '999' }
     )
@@ -26,15 +26,15 @@ class TestExampleContextsAggregator < Minitest::Test
     assert_equal [context, new_context], aggregator.data
 
     # this doesn't get recorded because we're at max_contexts
-    aggregator.record(Reforge::Context.new(user: { key: 'new' }))
+    aggregator.record(Quonfig::Context.new(user: { key: 'new' }))
     assert_equal [context, new_context], aggregator.data
   end
 
   def test_prepare_data
-    aggregator = Reforge::ExampleContextsAggregator.new(client: MockBaseClient.new, max_contexts: 10,
+    aggregator = Quonfig::ExampleContextsAggregator.new(client: MockBaseClient.new, max_contexts: 10,
                                                        sync_interval: EFFECTIVELY_NEVER)
 
-    context = Reforge::Context.new(
+    context = Quonfig::Context.new(
       user: { key: 'abc' },
       device: { key: 'def', mobile: true }
     )
@@ -46,10 +46,10 @@ class TestExampleContextsAggregator < Minitest::Test
   end
 
   def test_record_with_expiry
-    aggregator = Reforge::ExampleContextsAggregator.new(client: MockBaseClient.new, max_contexts: 10,
+    aggregator = Quonfig::ExampleContextsAggregator.new(client: MockBaseClient.new, max_contexts: 10,
                                                        sync_interval: EFFECTIVELY_NEVER)
 
-    context = Reforge::Context.new(
+    context = Quonfig::Context.new(
       user: { key: 'abc' },
       device: { key: 'def', mobile: true }
     )
@@ -78,10 +78,10 @@ class TestExampleContextsAggregator < Minitest::Test
 
     client = MockBaseClient.new
 
-    aggregator = Reforge::ExampleContextsAggregator.new(client: client, max_contexts: 10,
+    aggregator = Quonfig::ExampleContextsAggregator.new(client: client, max_contexts: 10,
                                                        sync_interval: EFFECTIVELY_NEVER)
 
-    context = Reforge::Context.new(
+    context = Quonfig::Context.new(
       user: { key: 'abc' },
       device: { key: 'def', mobile: true }
     )
@@ -91,13 +91,13 @@ class TestExampleContextsAggregator < Minitest::Test
     aggregator.record(context)
 
     aggregator.record(
-      Reforge::Context.new(
+      Quonfig::Context.new(
         user: { key: 'ghi' },
         device: { key: 'jkl', mobile: false }
       )
     )
 
-    aggregator.record(Reforge::Context.new(user: { key: 'kev', name: 'kevin', age: 48.5 }))
+    aggregator.record(Quonfig::Context.new(user: { key: 'kev', name: 'kevin', age: 48.5 }))
 
     assert_equal 3, aggregator.cache.data.size
 
@@ -187,7 +187,7 @@ class TestExampleContextsAggregator < Minitest::Test
     # a sync past the expiry should clear the cache
     Timecop.freeze(now + (60 * 60) + 1) do
       # we need a new piece of data for the sync to happen
-      aggregator.record(Reforge::Context.new(user: { key: 'bozo', name: 'Bozo', age: 99 }))
+      aggregator.record(Quonfig::Context.new(user: { key: 'bozo', name: 'Bozo', age: 99 }))
 
       requests = wait_for_post_requests(client) do
         aggregator.sync

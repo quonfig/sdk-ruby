@@ -3,7 +3,7 @@
 require 'minitest/autorun'
 require 'test_helper'
 
-module Reforge
+module Quonfig
   class FixedSizeHashTest < Minitest::Test
     def setup
       @max_size = 3

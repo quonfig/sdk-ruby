@@ -1,0 +1,64 @@
+# frozen_string_literal: true
+
+module Quonfig
+  NO_DEFAULT_PROVIDED = :no_default_provided
+  VERSION = File.read(File.dirname(__FILE__) + '/../VERSION').strip
+end
+
+begin
+  require 'semantic_logger'
+rescue LoadError
+  # semantic_logger is optional - only needed for dynamic log level filtering
+end
+
+require 'quonfig/internal_logger'
+require 'concurrent/atomics'
+require 'concurrent'
+require 'faraday'
+require 'openssl'
+require 'ld-eventsource'
+require 'prefab_pb'
+require 'quonfig/time_helpers'
+require 'quonfig/error'
+require 'quonfig/duration'
+require 'quonfig/evaluation'
+require 'quonfig/encryption'
+require 'quonfig/exponential_backoff'
+require 'quonfig/errors/initialization_timeout_error'
+require 'quonfig/errors/invalid_sdk_key_error'
+require 'quonfig/errors/missing_default_error'
+require 'quonfig/errors/env_var_parse_error'
+require 'quonfig/errors/missing_env_var_error'
+require 'quonfig/errors/uninitialized_error'
+require 'quonfig/options'
+require 'quonfig/rate_limit_cache'
+require 'quonfig/context_shape_aggregator'
+require 'quonfig/example_contexts_aggregator'
+require 'quonfig/evaluation_summary_aggregator'
+require 'quonfig/weighted_value_resolver'
+require 'quonfig/config_value_wrapper'
+require 'quonfig/config_value_unwrapper'
+require 'quonfig/criteria_evaluator'
+require 'quonfig/config_loader'
+require 'quonfig/context_shape'
+require 'quonfig/local_config_parser'
+require 'quonfig/yaml_config_parser'
+require 'quonfig/resolved_config_presenter'
+require 'quonfig/config_resolver'
+require 'quonfig/http_connection'
+require 'quonfig/context'
+require 'active_support/deprecation'
+require 'active_support'
+require 'quonfig/sse_config_client'
+require 'quonfig/client'
+require 'quonfig/config_client_presenter'
+require 'quonfig/config_client'
+require 'quonfig/feature_flag_client'
+require 'quonfig/log_level'
+require 'quonfig/log_level_client'
+require 'quonfig/quonfig'
+require 'quonfig/murmer3'
+require 'quonfig/javascript_stub'
+require 'quonfig/semver'
+require 'quonfig/fixed_size_hash'
+require 'quonfig/caching_http_connection'

@@ -5,23 +5,23 @@ require 'test_helper'
 class TestConfigClient < Minitest::Test
   def setup
     super
-    options = Reforge::Options.new(
-      prefab_datasources: Reforge::Options::DATASOURCES::LOCAL_ONLY,
+    options = Quonfig::Options.new(
+      prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY,
       x_use_local_cache: true,
     )
 
-    @config_client = Reforge::ConfigClient.new(MockBaseClient.new(options), 10)
+    @config_client = Quonfig::ConfigClient.new(MockBaseClient.new(options), 10)
   end
 
 
   def test_initialization_timeout_error
-    options = Reforge::Options.new(
+    options = Quonfig::Options.new(
       sdk_key: '123-ENV-KEY-SDK',
       initialization_timeout_sec: 0.01
     )
 
-    err = assert_raises(Reforge::Errors::InitializationTimeoutError) do
-      Reforge::Client.new(options).config_client.get('anything')
+    err = assert_raises(Quonfig::Errors::InitializationTimeoutError) do
+      Quonfig::Client.new(options).config_client.get('anything')
     end
 
     assert_match(/couldn't initialize in 0.01 second timeout/, err.message)
@@ -29,22 +29,22 @@ class TestConfigClient < Minitest::Test
 
 
   def test_invalid_api_key_error
-    options = Reforge::Options.new(
+    options = Quonfig::Options.new(
       sdk_key: ''
     )
 
-    err = assert_raises(Reforge::Errors::InvalidSdkKeyError) do
-      Reforge::Client.new(options).config_client.get('anything')
+    err = assert_raises(Quonfig::Errors::InvalidSdkKeyError) do
+      Quonfig::Client.new(options).config_client.get('anything')
     end
 
     assert_match(/No SDK key/, err.message)
 
-    options = Reforge::Options.new(
+    options = Quonfig::Options.new(
       sdk_key: 'invalid'
     )
 
-    err = assert_raises(Reforge::Errors::InvalidSdkKeyError) do
-      Reforge::Client.new(options).config_client.get('anything')
+    err = assert_raises(Quonfig::Errors::InvalidSdkKeyError) do
+      Quonfig::Client.new(options).config_client.get('anything')
     end
 
     assert_match(/format is invalid/, err.message)
@@ -67,27 +67,27 @@ class TestConfigClient < Minitest::Test
   end
 
   def test_cache_path_respects_xdg
-    options = Reforge::Options.new(
-      prefab_datasources: Reforge::Options::DATASOURCES::LOCAL_ONLY,
+    options = Quonfig::Options.new(
+      prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY,
       x_use_local_cache: true,
       sdk_key: "123-ENV-KEY-SDK",)
 
-    config_client = Reforge::ConfigClient.new(MockBaseClient.new(options), 10)
+    config_client = Quonfig::ConfigClient.new(MockBaseClient.new(options), 10)
     assert_equal "#{Dir.home}/.cache/prefab.cache.123.json", config_client.send(:cache_path)
 
     with_env('XDG_CACHE_HOME', '/tmp') do
-      config_client = Reforge::ConfigClient.new(MockBaseClient.new(options), 10)
+      config_client = Quonfig::ConfigClient.new(MockBaseClient.new(options), 10)
       assert_equal "/tmp/prefab.cache.123.json", config_client.send(:cache_path)
     end
   end
 
   def test_load_url_with_empty_body
-    options = Reforge::Options.new(
-      prefab_datasources: Reforge::Options::DATASOURCES::LOCAL_ONLY,
+    options = Quonfig::Options.new(
+      prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY,
       x_use_local_cache: true,
       sdk_key: "123-ENV-KEY-SDK",)
 
-    config_client = Reforge::ConfigClient.new(MockBaseClient.new(options), 10)
+    config_client = Quonfig::ConfigClient.new(MockBaseClient.new(options), 10)
 
     # Mock connection with empty response body
     mock_conn = Minitest::Mock.new
@@ -108,12 +108,12 @@ class TestConfigClient < Minitest::Test
   end
 
   def test_load_cache_with_empty_file
-    options = Reforge::Options.new(
-      prefab_datasources: Reforge::Options::DATASOURCES::LOCAL_ONLY,
+    options = Quonfig::Options.new(
+      prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY,
       x_use_local_cache: true,
       sdk_key: "123-ENV-KEY-SDK",)
 
-    config_client = Reforge::ConfigClient.new(MockBaseClient.new(options), 10)
+    config_client = Quonfig::ConfigClient.new(MockBaseClient.new(options), 10)
     cache_path = config_client.send(:cache_path)
 
     # Create an empty cache file
@@ -129,12 +129,12 @@ class TestConfigClient < Minitest::Test
   end
 
   def test_load_json_file_with_empty_file
-    options = Reforge::Options.new(
-      prefab_datasources: Reforge::Options::DATASOURCES::LOCAL_ONLY,
+    options = Quonfig::Options.new(
+      prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY,
       x_use_local_cache: true,
       sdk_key: "123-ENV-KEY-SDK",)
 
-    config_client = Reforge::ConfigClient.new(MockBaseClient.new(options), 10)
+    config_client = Quonfig::ConfigClient.new(MockBaseClient.new(options), 10)
 
     # Create a temporary empty datafile
     temp_file = File.join(Dir.tmpdir, 'test_empty_datafile.json')

@@ -25,12 +25,12 @@ unless ENV['CI']
   require 'juwelier'
   Juwelier::Tasks.new do |gem|
     # gem is a Gem::Specification... see http://guides.rubygems.org/specification-reference/ for more options
-    gem.name = 'sdk-reforge'
-    gem.homepage = 'http://github.com/ReforgeHQ/sdk-ruby'
+    gem.name = 'quonfig'
+    gem.homepage = 'https://github.com/quonfig/sdk-ruby'
     gem.license = 'MIT'
-    gem.summary = %(Reforge Launch Ruby Infrastructure)
-    gem.description = %(Feature Flags, Live Config as a service)
-    gem.email = 'jeff.dwyer@reforge.com.cloud'
+    gem.summary = %(Quonfig Ruby SDK)
+    gem.description = %(Quonfig — feature flags and live config, stored as files in git.)
+    gem.email = 'jeff@quonfig.com'
     gem.authors = ['Jeff Dwyer']
 
     # dependencies defined in Gemfile
@@ -48,7 +48,7 @@ unless ENV['CI']
     version = File.exist?('VERSION') ? File.read('VERSION') : ''
 
     rdoc.rdoc_dir = 'rdoc'
-    rdoc.title = "sdk-reforge #{version}"
+    rdoc.title = "quonfig #{version}"
     rdoc.rdoc_files.include('README*')
     rdoc.rdoc_files.include('lib/**/*.rb')
   end
@@ -58,7 +58,7 @@ end
 task :release do
   sh 'mkdir -p pkg'
   version = File.read('VERSION').strip
-  gem_file = "pkg/sdk-reforge-#{version}.gem"
-  sh "gem build sdk-reforge.gemspec --output #{gem_file}"
+  gem_file = "pkg/quonfig-#{version}.gem"
+  sh "gem build quonfig.gemspec --output #{gem_file}"
   sh "gem push #{gem_file}"
 end

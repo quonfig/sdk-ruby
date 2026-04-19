@@ -7,68 +7,68 @@ class TestContext < Minitest::Test
 
   def setup
     super
-    Reforge::Context.current = nil
+    Quonfig::Context.current = nil
   end
 
   def test_initialize_with_empty_context
-    context = Reforge::Context.new({})
+    context = Quonfig::Context.new({})
     assert_empty context.contexts
   end
 
   def test_initialize_with_hash
-    context = Reforge::Context.new(test: { foo: 'bar' })
+    context = Quonfig::Context.new(test: { foo: 'bar' })
     assert_equal 1, context.contexts.size
     assert_equal 'bar', context.get("test.foo")
   end
 
   def test_initialize_with_multiple_hashes
-    context = Reforge::Context.new(test: { foo: 'bar' }, other: { foo: 'baz' })
+    context = Quonfig::Context.new(test: { foo: 'bar' }, other: { foo: 'baz' })
     assert_equal 2, context.contexts.size
     assert_equal 'bar', context.get("test.foo")
     assert_equal 'baz', context.get("other.foo")
   end
 
   def test_initialize_with_invalid_argument
-    assert_raises(ArgumentError) { Reforge::Context.new([]) }
+    assert_raises(ArgumentError) { Quonfig::Context.new([]) }
   end
 
   def test_current
-    context = Reforge::Context.current
-    assert_instance_of Reforge::Context, context
+    context = Quonfig::Context.current
+    assert_instance_of Quonfig::Context, context
     assert_empty context.to_h
   end
 
   def test_current_set
-    context = Reforge::Context.new(EXAMPLE_PROPERTIES)
-    Reforge::Context.current = context.to_h
-    assert_instance_of Reforge::Context, context
+    context = Quonfig::Context.new(EXAMPLE_PROPERTIES)
+    Quonfig::Context.current = context.to_h
+    assert_instance_of Quonfig::Context, context
     assert_equal stringify(EXAMPLE_PROPERTIES), context.to_h
   end
 
   def test_with_context
-    Reforge::Context.with_context(EXAMPLE_PROPERTIES) do
-      context = Reforge::Context.current
+    Quonfig::Context.with_context(EXAMPLE_PROPERTIES) do
+      context = Quonfig::Context.current
       assert_equal(stringify(EXAMPLE_PROPERTIES), context.to_h)
       assert_equal('some-user-key', context.get('user.key'))
     end
   end
 
   def test_with_context_nesting
-    Reforge::Context.with_context(EXAMPLE_PROPERTIES) do
-      Reforge::Context.with_context({ user: { key: 'abc', other: 'different' } }) do
-        context = Reforge::Context.current
+    Quonfig::Context.with_context(EXAMPLE_PROPERTIES) do
+      Quonfig::Context.with_context({ user: { key: 'abc', other: 'different' } }) do
+        context = Quonfig::Context.current
         assert_equal({ 'user' => { 'key' => 'abc', 'other' => 'different' } }, context.to_h)
       end
 
-      context = Reforge::Context.current
+      context = Quonfig::Context.current
       assert_equal(stringify(EXAMPLE_PROPERTIES), context.to_h)
     end
   end
 
   def test_with_context_merge_nesting
-    Reforge::Context.with_context(EXAMPLE_PROPERTIES) do
-      Reforge::Context.with_merged_context({ user: { key: 'hij', other: 'different' } }) do
-        context = Reforge::Context.current
+    Quonfig::Context.with_context(EXAMPLE_PROPERTIES) do
+      Quonfig::Context.with_merged_context({ user: { key: 'hij', other: 'different' } }) do
+        context = Quonfig::Context.current
         assert_nil context.get('user.name')
         assert_equal context.get('user.key'), 'hij'
         assert_equal context.get('user.other'), 'different'
@@ -77,36 +77,36 @@ class TestContext < Minitest::Test
         assert_equal context.get('team.plan'), 'pro'
       end
 
-      context = Reforge::Context.current
+      context = Quonfig::Context.current
       assert_equal(stringify(EXAMPLE_PROPERTIES), context.to_h)
     end
   end
 
   def test_setting
-    context = Reforge::Context.new({})
+    context = Quonfig::Context.new({})
     context.set('user', { key: 'value' })
     context.set(:other, { key: 'different', something: 'other' })
     assert_equal(stringify({ user: { key: 'value' }, other: { key: 'different', something: 'other' } }), context.to_h)
   end
 
   def test_getting
-    context = Reforge::Context.new(EXAMPLE_PROPERTIES)
+    context = Quonfig::Context.new(EXAMPLE_PROPERTIES)
     assert_equal('some-user-key', context.get('user.key'))
     assert_equal('pro', context.get('team.plan'))
   end
 
   def test_dot_notation_getting
-    context = Reforge::Context.new({ 'user' => { 'key' => 'value' } })
+    context = Quonfig::Context.new({ 'user' => { 'key' => 'value' } })
     assert_equal('value', context.get('user.key'))
   end
 
   def test_dot_notation_getting_with_symbols
-    context = Reforge::Context.new({ user: { key: 'value' } })
+    context = Quonfig::Context.new({ user: { key: 'value' } })
     assert_equal('value', context.get('user.key'))
   end
 
   def test_clear
-    context = Reforge::Context.new(EXAMPLE_PROPERTIES)
+    context = Quonfig::Context.new(EXAMPLE_PROPERTIES)
     context.clear
 
     assert_empty context.to_h
@@ -115,7 +115,7 @@ class TestContext < Minitest::Test
   def test_to_proto
     namespace = "my.namespace"
 
-    contexts = Reforge::Context.new({
+    contexts = Quonfig::Context.new({
                                      user: {
                                        id: 1,
                                        email: 'user-email'
@@ -150,16 +150,16 @@ class TestContext < Minitest::Test
     global_context = { cpu: { count: 4, speed: '2.4GHz' }, clock: { timezone: 'UTC' }, magic: { key: "global-key" } }
     default_context = { 'prefab-api-key' => { 'user-id' => 123 } }
 
-    Reforge::Context.global_context = global_context
-    Reforge::Context.default_context = default_context
+    Quonfig::Context.global_context = global_context
+    Quonfig::Context.default_context = default_context
 
-    Reforge::Context.current = {
+    Quonfig::Context.current = {
       user: { id: 2, email: 'parent-email' },
       magic: { key: 'parent-key', rabbits: 3 },
       clock: { timezone: 'PST' }
     }
 
-    contexts = Reforge::Context.join(hash: {
+    contexts = Quonfig::Context.join(hash: {
                                       user: {
                                         id: 1,
                                         email: 'user-email'
@@ -168,7 +168,7 @@ class TestContext < Minitest::Test
                                         id: 2,
                                         name: 'team-name'
                                       }
-                                    }, id: :jit, parent: Reforge::Context.current)
+                                    }, id: :jit, parent: Quonfig::Context.current)
 
     expected = PrefabProto::ContextSet.new(
       contexts: [
@@ -232,11 +232,11 @@ class TestContext < Minitest::Test
     local_context = { clock: { timezone: 'PST' }, user: { name: 'Ted', email: 'ted@example.com' } }
     jit_context = { user: { name: 'Frank' } }
 
-    Reforge::Context.global_context = global_context
-    Reforge::Context.default_context = default_context
-    Reforge::Context.current = local_context
+    Quonfig::Context.global_context = global_context
+    Quonfig::Context.default_context = default_context
+    Quonfig::Context.current = local_context
 
-    context = Reforge::Context.join(parent: Reforge::Context.current, hash: jit_context, id: :jit)
+    context = Quonfig::Context.join(parent: Quonfig::Context.current, hash: jit_context, id: :jit)
 
     # This digs all the way to the global context
     assert_equal 4, context.get('cpu.count')

@@ -3,7 +3,7 @@
 require 'test_helper'
 
 class TestClient < Minitest::Test
-  LOCAL_ONLY = Reforge::Options::DATASOURCES::LOCAL_ONLY
+  LOCAL_ONLY = Quonfig::Options::DATASOURCES::LOCAL_ONLY
 
   PROJECT_ENV_ID = 1
   KEY = 'the-key'
@@ -29,7 +29,7 @@ class TestClient < Minitest::Test
   def test_get_with_missing_default
     client = new_client
     # it raises by default
-    err = assert_raises(Reforge::Errors::MissingDefaultError) do
+    err = assert_raises(Quonfig::Errors::MissingDefaultError) do
       assert_nil client.get('missing_value')
     end
 
@@ -37,7 +37,7 @@ class TestClient < Minitest::Test
     assert_match(/on_no_default/, err.message)
 
     # you can opt-in to return `nil` instead
-    client = new_client(on_no_default: Reforge::Options::ON_NO_DEFAULT::RETURN_NIL)
+    client = new_client(on_no_default: Quonfig::Options::ON_NO_DEFAULT::RETURN_NIL)
     assert_nil client.get('missing_value')
   end
 
@@ -51,9 +51,9 @@ class TestClient < Minitest::Test
       prefab_datasources: LOCAL_ONLY
     }
 
-    options = Reforge::Options.new(options_hash)
+    options = Quonfig::Options.new(options_hash)
 
-    client = Reforge::Client.new(options)
+    client = Quonfig::Client.new(options)
 
     assert_equal client.namespace, 'test-namespace'
   end
@@ -64,7 +64,7 @@ class TestClient < Minitest::Test
       prefab_datasources: LOCAL_ONLY
     }
 
-    client = Reforge::Client.new(options_hash)
+    client = Quonfig::Client.new(options_hash)
 
     assert_equal client.namespace, 'test-namespace'
   end
@@ -85,13 +85,13 @@ class TestClient < Minitest::Test
                                   collect_evaluation_summaries: false).evaluation_summary_aggregator
 
     # it is not nil when collect_max_evaluation_summaries is true and the datasource is not local_only
-    assert_equal Reforge::EvaluationSummaryAggregator,
+    assert_equal Quonfig::EvaluationSummaryAggregator,
                  new_client(sdk_key: fake_api_key,
                             prefab_datasources: :all,
                             collect_evaluation_summaries: true).evaluation_summary_aggregator.class
 
     assert_logged [
-      "Reforge::ConfigClient -- No success loading checkpoints"
+      "Quonfig::ConfigClient -- No success loading checkpoints"
     ]
   end
 
@@ -115,7 +115,7 @@ class TestClient < Minitest::Test
       }
     }
 
-    assert_example_contexts client, [Reforge::Context.new({ user: { 'key' => 99 } })]
+    assert_example_contexts client, [Quonfig::Context.new({ user: { 'key' => 99 } })]
   end
 
   def test_get_with_basic_value_with_context
@@ -140,7 +140,7 @@ class TestClient < Minitest::Test
       }
     }
 
-    assert_example_contexts client, [Reforge::Context.new({ user: { 'key' => 99 } })]
+    assert_example_contexts client, [Quonfig::Context.new({ user: { 'key' => 99 } })]
   end
 
   def test_get_with_weighted_values
@@ -209,9 +209,9 @@ class TestClient < Minitest::Test
     }
 
     assert_example_contexts client, [
-      Reforge::Context.new(user: { 'key' => '1' }),
-      Reforge::Context.new(user: { 'key' => '12' }),
-      Reforge::Context.new(user: { 'key' => '4', admin: true })
+      Quonfig::Context.new(user: { 'key' => '1' }),
+      Quonfig::Context.new(user: { 'key' => '12' }),
+      Quonfig::Context.new(user: { 'key' => '4', admin: true })
     ]
   end
 
@@ -286,8 +286,8 @@ class TestClient < Minitest::Test
     }
 
     assert_example_contexts client, [
-      Reforge::Context.new(user: { key: 'abc', email: 'example@prefab.cloud' }),
-      Reforge::Context.new(user: { key: 'def', email: 'example@hotmail.com' })
+      Quonfig::Context.new(user: { key: 'abc', email: 'example@prefab.cloud' }),
+      Quonfig::Context.new(user: { key: 'def', email: 'example@hotmail.com' })
     ]
   end
 

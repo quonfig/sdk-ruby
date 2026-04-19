@@ -2,7 +2,7 @@
 
 require 'test_helper'
 
-module Reforge
+module Quonfig
   class CachingHttpConnectionTest < Minitest::Test
     def setup
       @uri = 'https://api.example.com'

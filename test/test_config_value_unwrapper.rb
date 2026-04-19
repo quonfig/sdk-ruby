@@ -6,9 +6,9 @@ class TestConfigValueUnwrapper < Minitest::Test
   CONFIG = PrefabProto::Config.new(
     key: 'config_key'
   )
-  EMPTY_CONTEXT = Reforge::Context.new()
+  EMPTY_CONTEXT = Quonfig::Context.new()
   DECRYPTION_KEY_NAME = "decryption.key"
-  DECRYPTION_KEY_VALUE = Reforge::Encryption.generate_new_hex_key
+  DECRYPTION_KEY_VALUE = Quonfig::Encryption.generate_new_hex_key
 
   def setup
     super
@@ -150,38 +150,38 @@ class TestConfigValueUnwrapper < Minitest::Test
       )
       config_value = PrefabProto::ConfigValue.new(provided: value)
 
-      assert_raises Reforge::Errors::EnvVarParseError do
+      assert_raises Quonfig::Errors::EnvVarParseError do
         unwrap(config_value, config_of(PrefabProto::Config::ValueType::INT), EMPTY_CONTEXT)
       end
     end
   end
 
   def test_coerce
-    assert_equal "string", Reforge::ConfigValueUnwrapper.coerce_into_type("string", CONFIG, "ENV")
-    assert_equal 42, Reforge::ConfigValueUnwrapper.coerce_into_type("42", CONFIG, "ENV")
-    assert_equal false, Reforge::ConfigValueUnwrapper.coerce_into_type("false", CONFIG, "ENV")
-    assert_equal 42.42, Reforge::ConfigValueUnwrapper.coerce_into_type("42.42", CONFIG, "ENV")
-    assert_equal ["a","b"], Reforge::ConfigValueUnwrapper.coerce_into_type("['a','b']", CONFIG, "ENV")
+    assert_equal "string", Quonfig::ConfigValueUnwrapper.coerce_into_type("string", CONFIG, "ENV")
+    assert_equal 42, Quonfig::ConfigValueUnwrapper.coerce_into_type("42", CONFIG, "ENV")
+    assert_equal false, Quonfig::ConfigValueUnwrapper.coerce_into_type("false", CONFIG, "ENV")
+    assert_equal 42.42, Quonfig::ConfigValueUnwrapper.coerce_into_type("42.42", CONFIG, "ENV")
+    assert_equal ["a","b"], Quonfig::ConfigValueUnwrapper.coerce_into_type("['a','b']", CONFIG, "ENV")
 
-    assert_equal "string", Reforge::ConfigValueUnwrapper.coerce_into_type("string", config_of(PrefabProto::Config::ValueType::STRING),"ENV")
-    assert_equal "42", Reforge::ConfigValueUnwrapper.coerce_into_type("42", config_of(PrefabProto::Config::ValueType::STRING),"ENV")
-    assert_equal "42.42", Reforge::ConfigValueUnwrapper.coerce_into_type("42.42", config_of(PrefabProto::Config::ValueType::STRING),"ENV")
-    assert_equal 42, Reforge::ConfigValueUnwrapper.coerce_into_type("42", config_of(PrefabProto::Config::ValueType::INT),"ENV")
-    assert_equal false, Reforge::ConfigValueUnwrapper.coerce_into_type("false", config_of(PrefabProto::Config::ValueType::BOOL),"ENV")
-    assert_equal 42.42, Reforge::ConfigValueUnwrapper.coerce_into_type("42.42", config_of(PrefabProto::Config::ValueType::DOUBLE),"ENV")
-    assert_equal ["a","b"], Reforge::ConfigValueUnwrapper.coerce_into_type("['a','b']", config_of(PrefabProto::Config::ValueType::STRING_LIST),"ENV")
+    assert_equal "string", Quonfig::ConfigValueUnwrapper.coerce_into_type("string", config_of(PrefabProto::Config::ValueType::STRING),"ENV")
+    assert_equal "42", Quonfig::ConfigValueUnwrapper.coerce_into_type("42", config_of(PrefabProto::Config::ValueType::STRING),"ENV")
+    assert_equal "42.42", Quonfig::ConfigValueUnwrapper.coerce_into_type("42.42", config_of(PrefabProto::Config::ValueType::STRING),"ENV")
+    assert_equal 42, Quonfig::ConfigValueUnwrapper.coerce_into_type("42", config_of(PrefabProto::Config::ValueType::INT),"ENV")
+    assert_equal false, Quonfig::ConfigValueUnwrapper.coerce_into_type("false", config_of(PrefabProto::Config::ValueType::BOOL),"ENV")
+    assert_equal 42.42, Quonfig::ConfigValueUnwrapper.coerce_into_type("42.42", config_of(PrefabProto::Config::ValueType::DOUBLE),"ENV")
+    assert_equal ["a","b"], Quonfig::ConfigValueUnwrapper.coerce_into_type("['a','b']", config_of(PrefabProto::Config::ValueType::STRING_LIST),"ENV")
 
-    assert_raises Reforge::Errors::EnvVarParseError do
-      Reforge::ConfigValueUnwrapper.coerce_into_type("not an int", config_of(PrefabProto::Config::ValueType::INT), "ENV")
+    assert_raises Quonfig::Errors::EnvVarParseError do
+      Quonfig::ConfigValueUnwrapper.coerce_into_type("not an int", config_of(PrefabProto::Config::ValueType::INT), "ENV")
     end
-    assert_raises Reforge::Errors::EnvVarParseError do
-      Reforge::ConfigValueUnwrapper.coerce_into_type("not bool", config_of(PrefabProto::Config::ValueType::BOOL), "ENV")
+    assert_raises Quonfig::Errors::EnvVarParseError do
+      Quonfig::ConfigValueUnwrapper.coerce_into_type("not bool", config_of(PrefabProto::Config::ValueType::BOOL), "ENV")
     end
-    assert_raises Reforge::Errors::EnvVarParseError do
-      Reforge::ConfigValueUnwrapper.coerce_into_type("not a double", config_of(PrefabProto::Config::ValueType::DOUBLE), "ENV")
+    assert_raises Quonfig::Errors::EnvVarParseError do
+      Quonfig::ConfigValueUnwrapper.coerce_into_type("not a double", config_of(PrefabProto::Config::ValueType::DOUBLE), "ENV")
     end
-    assert_raises Reforge::Errors::EnvVarParseError do
-      Reforge::ConfigValueUnwrapper.coerce_into_type("not a list", config_of(PrefabProto::Config::ValueType::STRING_LIST), "ENV")
+    assert_raises Quonfig::Errors::EnvVarParseError do
+      Quonfig::ConfigValueUnwrapper.coerce_into_type("not a list", config_of(PrefabProto::Config::ValueType::STRING_LIST), "ENV")
     end
   end
 
@@ -191,22 +191,22 @@ class TestConfigValueUnwrapper < Minitest::Test
       lookup: "NON_EXISTENT_ENV_VAR_NAME"
     )
     config_value = PrefabProto::ConfigValue.new(provided: value)
-    assert_raises(Reforge::Errors::MissingEnvVarError) do
+    assert_raises(Quonfig::Errors::MissingEnvVarError) do
       unwrap(config_value, CONFIG, EMPTY_CONTEXT)
     end
   end
 
   def test_unwrapping_encrypted_values_decrypts
     clear_text = "very secret stuff"
-    encrypted = Reforge::Encryption.new(DECRYPTION_KEY_VALUE).encrypt(clear_text)
+    encrypted = Quonfig::Encryption.new(DECRYPTION_KEY_VALUE).encrypt(clear_text)
     config_value = PrefabProto::ConfigValue.new(string: encrypted, decrypt_with: "decryption.key")
     assert_equal clear_text, unwrap(config_value, CONFIG, EMPTY_CONTEXT)
-    assert reportable_value(config_value, CONFIG, EMPTY_CONTEXT).start_with? Reforge::ConfigValueUnwrapper::CONFIDENTIAL_PREFIX
+    assert reportable_value(config_value, CONFIG, EMPTY_CONTEXT).start_with? Quonfig::ConfigValueUnwrapper::CONFIDENTIAL_PREFIX
   end
 
   def test_confidential
     config_value = PrefabProto::ConfigValue.new(confidential: true, string: "something confidential")
-    assert reportable_value(config_value, CONFIG, EMPTY_CONTEXT).start_with? Reforge::ConfigValueUnwrapper::CONFIDENTIAL_PREFIX
+    assert reportable_value(config_value, CONFIG, EMPTY_CONTEXT).start_with? Quonfig::ConfigValueUnwrapper::CONFIDENTIAL_PREFIX
   end
 
   def test_unwrap_confiential_provided
@@ -217,7 +217,7 @@ class TestConfigValueUnwrapper < Minitest::Test
       )
       config_value = PrefabProto::ConfigValue.new(provided: value, confidential: true)
       assert_equal "the password", unwrap(config_value, CONFIG, EMPTY_CONTEXT)
-      assert reportable_value(config_value, CONFIG, EMPTY_CONTEXT).start_with? Reforge::ConfigValueUnwrapper::CONFIDENTIAL_PREFIX
+      assert reportable_value(config_value, CONFIG, EMPTY_CONTEXT).start_with? Quonfig::ConfigValueUnwrapper::CONFIDENTIAL_PREFIX
     end
   end
 
@@ -231,15 +231,15 @@ class TestConfigValueUnwrapper < Minitest::Test
   end
 
   def context_with_key(key)
-    Reforge::Context.new(user: { key: key })
+    Quonfig::Context.new(user: { key: key })
   end
 
   def unwrap(config_value, config_key, context)
-    Reforge::ConfigValueUnwrapper.deepest_value(config_value, config_key, context, @mock_resolver).unwrap
+    Quonfig::ConfigValueUnwrapper.deepest_value(config_value, config_key, context, @mock_resolver).unwrap
   end
 
   def reportable_value(config_value, config_key, context)
-    Reforge::ConfigValueUnwrapper.deepest_value(config_value, config_key, context, @mock_resolver).reportable_value
+    Quonfig::ConfigValueUnwrapper.deepest_value(config_value, config_key, context, @mock_resolver).reportable_value
   end
 
   class MockResolver
@@ -254,11 +254,11 @@ class TestConfigValueUnwrapper < Minitest::Test
 
     def get(key)
       if DECRYPTION_KEY_NAME == key
-        Reforge::Evaluation.new(config: PrefabProto::Config.new(key: key),
+        Quonfig::Evaluation.new(config: PrefabProto::Config.new(key: key),
                                value: PrefabProto::ConfigValue.new(string: DECRYPTION_KEY_VALUE),
                                 value_index: 0,
                                 config_row_index: 0,
-                                context: Reforge::Context.new,
+                                context: Quonfig::Context.new,
                                 resolver: self
         )
 

@@ -57,7 +57,7 @@ class IntegrationTest
   def parse_client_overrides(overrides)
     Hash[
       (overrides || {}).map do |(k, v)|
-        if k.to_s == "reforge_api_url"
+        if k.to_s == "quonfig_api_url"
           [:sources, [v]]
         else
           [k.to_sym, v]
@@ -88,7 +88,7 @@ class IntegrationTest
     if !input['default'].nil?
       [input['key'], input['default'], @local_context]
     elsif @local_context
-      [input['key'], Reforge::NO_DEFAULT_PROVIDED, @local_context]
+      [input['key'], Quonfig::NO_DEFAULT_PROVIDED, @local_context]
     else
       [input['key']]
     end
@@ -112,11 +112,11 @@ class IntegrationTest
 
   def parse_error_type(error_type)
     case error_type
-    when 'missing_default' then Reforge::Errors::MissingDefaultError
-    when 'initialization_timeout' then Reforge::Errors::InitializationTimeoutError
+    when 'missing_default' then Quonfig::Errors::MissingDefaultError
+    when 'initialization_timeout' then Quonfig::Errors::InitializationTimeoutError
     when 'unable_to_decrypt' then OpenSSL::Cipher::CipherError
-    when 'missing_env_var' then Reforge::Errors::MissingEnvVarError
-    when 'unable_to_coerce_env_var' then Reforge::Errors::EnvVarParseError
+    when 'missing_env_var' then Quonfig::Errors::MissingEnvVarError
+    when 'unable_to_coerce_env_var' then Quonfig::Errors::EnvVarParseError
     else
       unless error_type.nil?
         throw "Unknown error type: #{error_type}"
@@ -125,13 +125,13 @@ class IntegrationTest
   end
 
   def base_client
-    @_base_client ||= Reforge::Client.new(base_client_options)
+    @_base_client ||= Quonfig::Client.new(base_client_options)
   end
 
   def base_client_options
-    @_options ||= Reforge::Options.new(**{
-      prefab_datasources: Reforge::Options::DATASOURCES::ALL,
-      sdk_key: ENV['REFORGE_INTEGRATION_TEST_SDK_KEY'],
+    @_options ||= Quonfig::Options.new(**{
+      prefab_datasources: Quonfig::Options::DATASOURCES::ALL,
+      sdk_key: ENV['QUONFIG_INTEGRATION_TEST_SDK_KEY'],
       sources: [
         'https://primary.goatsofreforge.com',
         'https://secondary.goatsofreforge.com',

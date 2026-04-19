@@ -19,7 +19,7 @@ class TestEvaluationSummaryAggregator < Minitest::Test
   }.freeze
 
   def test_increments_counts
-    aggregator = Reforge::EvaluationSummaryAggregator.new(client: MockBaseClient.new, max_keys: 10,
+    aggregator = Quonfig::EvaluationSummaryAggregator.new(client: MockBaseClient.new, max_keys: 10,
                                                          sync_interval: EFFECTIVELY_NEVER)
 
     aggregator.record(config_key: 'foo', config_type: 'bar', counter: EXAMPLE_COUNTER)
@@ -37,7 +37,7 @@ class TestEvaluationSummaryAggregator < Minitest::Test
   end
 
   def test_prepare_data
-    aggregator = Reforge::EvaluationSummaryAggregator.new(client: MockBaseClient.new, max_keys: 10,
+    aggregator = Quonfig::EvaluationSummaryAggregator.new(client: MockBaseClient.new, max_keys: 10,
                                                          sync_interval: EFFECTIVELY_NEVER)
 
     expected = {
@@ -69,7 +69,7 @@ class TestEvaluationSummaryAggregator < Minitest::Test
 
       Timecop.freeze(awhile_ago) do
         # start the aggregator in the past
-        aggregator = Reforge::EvaluationSummaryAggregator.new(client: client, max_keys: 10,
+        aggregator = Quonfig::EvaluationSummaryAggregator.new(client: client, max_keys: 10,
                                                            sync_interval: EFFECTIVELY_NEVER)
       end
 

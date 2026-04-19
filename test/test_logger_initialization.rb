@@ -6,7 +6,7 @@ class TestLoggerInitialization < Minitest::Test
 
   def test_init_out_of_order
     # assert nothing blows up
-    Reforge.log_filter
+    Quonfig.log_filter
   end
 
 end

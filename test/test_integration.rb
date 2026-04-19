@@ -62,7 +62,7 @@ class TestIntegration < Minitest::Test
 
             if test_case["name"].match(/doesn't raise on init timeout/)
               assert_logged [
-                "Reforge::ConfigClient -- Couldn't Initialize In 0.01. Key any-key. Returning what we have"
+                "Quonfig::ConfigClient -- Couldn't Initialize In 0.01. Key any-key. Returning what we have"
               ]
             end
           ensure

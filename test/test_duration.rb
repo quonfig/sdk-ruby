@@ -31,7 +31,7 @@ class DurationTest < Minitest::Test
 
   def test_parsing
     TESTS.each do |test|
-      assert_equal test[1], Reforge::Duration.parse(test[0]), "Failed parsing #{test[0]}"
+      assert_equal test[1], Quonfig::Duration.parse(test[0]), "Failed parsing #{test[0]}"
     end
   end
 end

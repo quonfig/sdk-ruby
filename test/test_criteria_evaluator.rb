@@ -47,7 +47,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
 
     assert_equal DESIRED_VALUE, evaluator.evaluate(context({})).unwrapped_value
   end
@@ -75,7 +75,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                                       namespace: nil)
 
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -106,7 +106,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                                       namespace: nil)
 
     assert_equal DESIRED_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -137,7 +137,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                                       namespace: nil)
 
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -168,7 +168,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                                       namespace: nil)
 
     assert_equal DESIRED_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -199,7 +199,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                                       namespace: nil)
 
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -230,7 +230,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                                       namespace: nil)
 
     assert_equal DESIRED_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -261,7 +261,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
 
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -292,7 +292,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
 
     assert_equal DESIRED_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -324,7 +324,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
 
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -355,7 +355,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
 
     assert_equal DESIRED_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -410,7 +410,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID,
                                                       base_client: @base_client, namespace: nil,
                                                       resolver: resolver_fake({ segment_key => segment_config }))
 
@@ -465,7 +465,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID,
                                                       base_client: @base_client, namespace: nil,
                                                       resolver: resolver_fake({ segment_key => segment_config }))
 
@@ -532,7 +532,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID,
                                                       base_client: @base_client, namespace: nil,
                                                       resolver: resolver_fake({ segment_key => segment_config }))
 
@@ -609,7 +609,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID,
                                                       base_client: @base_client, namespace: nil,
                                                       resolver: resolver_fake({ segment_key => segment_config }))
 
@@ -648,7 +648,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil,
                                                       namespace: nil, base_client: @base_client)
 
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -688,7 +688,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil,
                                                       namespace: nil, base_client: @base_client)
 
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -729,7 +729,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil,
                                                       namespace: nil, base_client: @base_client)
 
     Timecop.freeze(now) do
@@ -770,7 +770,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
 
     assert_equal :DEBUG, evaluator.evaluate(context({})).unwrapped_value
   end
@@ -793,7 +793,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
 
     2.times do
       assert_equal 'abc', evaluator.evaluate(context('user' => { 'key' => '1' })).unwrapped_value
@@ -831,7 +831,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
 
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -862,7 +862,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
 
     assert_equal DESIRED_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -893,7 +893,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context(user: { testProperty: 'abc' })).unwrapped_value
@@ -925,7 +925,7 @@ class TestCriteriaEvaluator < Minitest::Test
       ]
     )
 
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
 
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
@@ -936,7 +936,7 @@ class TestCriteriaEvaluator < Minitest::Test
 
   def test_less_than_works
     config = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_LESS_THAN, property_name: 'user.age', value_to_match: 10)
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context(user: {age: 10})).unwrapped_value
@@ -950,7 +950,7 @@ class TestCriteriaEvaluator < Minitest::Test
 
   def test_less_or_equal_to_works
     config = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_LESS_THAN_OR_EQUAL, property_name: 'user.age', value_to_match: 10)
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
     assert_equal DESIRED_VALUE, evaluator.evaluate(context(user: {age: 10})).unwrapped_value
@@ -964,7 +964,7 @@ class TestCriteriaEvaluator < Minitest::Test
 
   def test_greater_than_works
     config = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_GREATER_THAN, property_name: 'user.age', value_to_match: 10)
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context(user: {age: 10})).unwrapped_value
@@ -978,7 +978,7 @@ class TestCriteriaEvaluator < Minitest::Test
 
   def test_greater_than_or_equal_to_works
     config = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_GREATER_THAN_OR_EQUAL, property_name: 'user.age', value_to_match: 10)
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
     assert_equal DESIRED_VALUE, evaluator.evaluate(context(user: {age: 10})).unwrapped_value
@@ -995,10 +995,10 @@ class TestCriteriaEvaluator < Minitest::Test
     date = "2024-12-01T00:00:00Z"
     millis = Time.iso8601(date).utc.to_i * 1000
     config_with_string = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_BEFORE, property_name: 'user.joinDate', value_to_match: date)
-    evaluator_with_string_config = Reforge::CriteriaEvaluator.new(config_with_string, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator_with_string_config = Quonfig::CriteriaEvaluator.new(config_with_string, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                               namespace: nil)
     config_with_millis = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_BEFORE, property_name: 'user.joinDate', value_to_match: millis)
-    evaluator_with_millis_config = Reforge::CriteriaEvaluator.new(config_with_millis, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator_with_millis_config = Quonfig::CriteriaEvaluator.new(config_with_millis, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                                                  namespace: nil)
     assert_equal DEFAULT_VALUE, evaluator_with_millis_config.evaluate(context({})).unwrapped_value
     assert_equal DESIRED_VALUE, evaluator_with_millis_config.evaluate(context(user: {joinDate: millis-10000})).unwrapped_value
@@ -1017,10 +1017,10 @@ class TestCriteriaEvaluator < Minitest::Test
     date = "2024-12-01T00:00:00Z"
     millis = Time.iso8601(date).utc.to_i * 1000
     config_with_string = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_AFTER, property_name: 'user.joinDate', value_to_match: date)
-    evaluator_with_string_config = Reforge::CriteriaEvaluator.new(config_with_string, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator_with_string_config = Quonfig::CriteriaEvaluator.new(config_with_string, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                                                  namespace: nil)
     config_with_millis = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_AFTER, property_name: 'user.joinDate', value_to_match: millis)
-    evaluator_with_millis_config = Reforge::CriteriaEvaluator.new(config_with_millis, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
+    evaluator_with_millis_config = Quonfig::CriteriaEvaluator.new(config_with_millis, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client,
                                                                  namespace: nil)
     assert_equal DEFAULT_VALUE, evaluator_with_millis_config.evaluate(context({})).unwrapped_value
     assert_equal DEFAULT_VALUE, evaluator_with_millis_config.evaluate(context(user: {joinDate: millis-10000})).unwrapped_value
@@ -1037,7 +1037,7 @@ class TestCriteriaEvaluator < Minitest::Test
 
   def test_semver_less_than
     config = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_SEMVER_LESS_THAN, property_name: 'user.version', value_to_match: "2.0.0")
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context(user:{version: "nonsense"})).unwrapped_value
 
@@ -1048,7 +1048,7 @@ class TestCriteriaEvaluator < Minitest::Test
 
   def test_semver_equal_to
     config = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_SEMVER_EQUAL, property_name: 'user.version', value_to_match: "2.0.0")
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context(user:{version: "nonsense"})).unwrapped_value
 
@@ -1059,7 +1059,7 @@ class TestCriteriaEvaluator < Minitest::Test
 
   def test_semver_greater_than
     config = create_prefab_config(operator: PrefabProto::Criterion::CriterionOperator::PROP_SEMVER_GREATER_THAN, property_name: 'user.version', value_to_match: "2.0.0")
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context({})).unwrapped_value
     assert_equal DEFAULT_VALUE, evaluator.evaluate(context(user:{version: "nonsense"})).unwrapped_value
 
@@ -1075,7 +1075,7 @@ class TestCriteriaEvaluator < Minitest::Test
       property_name: 'prefab.current-time',
       value_to_match: future_time.iso8601
     )
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
     assert_equal DESIRED_VALUE, evaluator.evaluate(context({})).unwrapped_value
   end
 
@@ -1086,7 +1086,7 @@ class TestCriteriaEvaluator < Minitest::Test
       property_name: 'prefab.current-time',
       value_to_match: past_time.iso8601
     )
-    evaluator = Reforge::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
+    evaluator = Quonfig::CriteriaEvaluator.new(config, project_env_id: PROJECT_ENV_ID, resolver: nil, base_client: @base_client, namespace: nil)
     assert_equal DESIRED_VALUE, evaluator.evaluate(context({})).unwrapped_value
   end
 
@@ -1108,7 +1108,7 @@ class TestCriteriaEvaluator < Minitest::Test
 
     def get(key, properties = {})
       # This only gets called for segments, so we don't need to pass in a resolver
-      Reforge::CriteriaEvaluator.new(@config[key], project_env_id: nil, resolver: nil,
+      Quonfig::CriteriaEvaluator.new(@config[key], project_env_id: nil, resolver: nil,
                                                   namespace: nil, base_client: @base_client).evaluate(properties)
     end
   end
@@ -1119,7 +1119,7 @@ class TestCriteriaEvaluator < Minitest::Test
 
   class FakeBaseClient
     def evaluation_summary_aggregator
-      @evaluation_summary_aggregator ||= Reforge::EvaluationSummaryAggregator.new(client: self, max_keys: 9999, sync_interval: 9999)
+      @evaluation_summary_aggregator ||= Quonfig::EvaluationSummaryAggregator.new(client: self, max_keys: 9999, sync_interval: 9999)
     end
 
     def instance_hash

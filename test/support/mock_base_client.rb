@@ -6,7 +6,7 @@ class MockBaseClient
   TEST_ENV_ID = 3
   attr_reader :namespace, :logger, :config_client, :options, :posts
 
-  def initialize(options = Reforge::Options.new)
+  def initialize(options = Quonfig::Options.new)
     @options = options
     @namespace = namespace
     @config_client = MockConfigClient.new

@@ -7,11 +7,11 @@ module CommonHelpers
     $oldstderr, $stderr = $stderr, StringIO.new
 
     $logs = StringIO.new
-    Reforge::Context.global_context.clear
-    Reforge::Context.default_context.clear
+    Quonfig::Context.global_context.clear
+    Quonfig::Context.default_context.clear
 
     if defined?(SemanticLogger)
-      SemanticLogger.add_appender(io: $logs, filter: Reforge.log_filter)
+      SemanticLogger.add_appender(io: $logs, filter: Quonfig.log_filter)
       SemanticLogger.sync!
     end
   end
@@ -19,7 +19,7 @@ module CommonHelpers
   def teardown
     if $logs && !$logs.string.empty?
       log_lines = $logs.string.split("\n").reject do |line|
-        line.match(/Reforge::ConfigClient -- No success loading checkpoints/)
+        line.match(/Quonfig::ConfigClient -- No success loading checkpoints/)
       end
 
       if log_lines.size > 0
@@ -64,7 +64,7 @@ module CommonHelpers
   EFFECTIVELY_NEVER = 99_999 # we sync manually
 
   DEFAULT_NEW_CLIENT_OPTIONS = {
-    prefab_datasources: Reforge::Options::DATASOURCES::LOCAL_ONLY,
+    prefab_datasources: Quonfig::Options::DATASOURCES::LOCAL_ONLY,
     collect_sync_interval: EFFECTIVELY_NEVER,
   }.freeze
 
@@ -72,7 +72,7 @@ module CommonHelpers
     config = overrides.delete(:config)
     project_env_id = overrides.delete(:project_env_id)
 
-    Reforge::Client.new(prefab_options(overrides)).tap do |client|
+    Quonfig::Client.new(prefab_options(overrides)).tap do |client|
       inject_config(client, config) if config
 
       client.resolver.project_env_id = project_env_id if project_env_id
@@ -80,7 +80,7 @@ module CommonHelpers
   end
 
   def prefab_options(overrides = {})
-    Reforge::Options.new(
+    Quonfig::Options.new(
       **DEFAULT_NEW_CLIENT_OPTIONS.merge(overrides)
     )
   end
@@ -178,7 +178,7 @@ module CommonHelpers
   end
 
   def context(properties)
-    Reforge::Context.new(properties)
+    Quonfig::Context.new(properties)
   end
 
   def assert_logged(expected)

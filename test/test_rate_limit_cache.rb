@@ -5,18 +5,18 @@ require 'timecop'
 
 class RateLimitCacheTest < Minitest::Test
   def test_set_and_fresh
-    cache = Reforge::RateLimitCache.new(5)
+    cache = Quonfig::RateLimitCache.new(5)
     cache.set('key')
     assert cache.fresh?('key')
   end
 
   def test_fresh_with_no_set
-    cache = Reforge::RateLimitCache.new(5)
+    cache = Quonfig::RateLimitCache.new(5)
     refute cache.fresh?('key')
   end
 
   def test_get_after_expiration
-    cache = Reforge::RateLimitCache.new(5)
+    cache = Quonfig::RateLimitCache.new(5)
 
     Timecop.freeze(Time.now - 6) do
       cache.set('key')
@@ -30,7 +30,7 @@ class RateLimitCacheTest < Minitest::Test
   end
 
   def test_prune
-    cache = Reforge::RateLimitCache.new(5)
+    cache = Quonfig::RateLimitCache.new(5)
 
     Timecop.freeze(Time.now - 6) do
       cache.set('key')

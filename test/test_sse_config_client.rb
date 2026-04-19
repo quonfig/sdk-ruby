@@ -10,11 +10,11 @@ class TestSSEConfigClient < Minitest::Test
       'https://primary.goatsofreforge.com'
     ]
 
-    options = Reforge::Options.new(sources: sources, sdk_key: ENV.fetch('REFORGE_INTEGRATION_TEST_SDK_KEY', nil))
+    options = Quonfig::Options.new(sources: sources, sdk_key: ENV.fetch('QUONFIG_INTEGRATION_TEST_SDK_KEY', nil))
 
     config_loader = OpenStruct.new(highwater_mark: 4)
 
-    client = Reforge::SSEConfigClient.new(options, config_loader)
+    client = Quonfig::SSEConfigClient.new(options, config_loader)
 
     assert_equal "https://stream.goatsofreforge.com", client.source
 
@@ -39,13 +39,13 @@ class TestSSEConfigClient < Minitest::Test
       'https://api.goatsofreforge.com/'
     ]
 
-    prefab_options = Reforge::Options.new(sources: sources, sdk_key: ENV.fetch('REFORGE_INTEGRATION_TEST_SDK_KEY', nil))
+    prefab_options = Quonfig::Options.new(sources: sources, sdk_key: ENV.fetch('QUONFIG_INTEGRATION_TEST_SDK_KEY', nil))
 
     config_loader = OpenStruct.new(highwater_mark: 4)
 
-    sse_options = Reforge::SSEConfigClient::Options.new(seconds_between_new_connection: 0.01, sleep_delay_for_new_connection_check: 0.01)
+    sse_options = Quonfig::SSEConfigClient::Options.new(seconds_between_new_connection: 0.01, sleep_delay_for_new_connection_check: 0.01)
 
-    client = Reforge::SSEConfigClient.new(prefab_options, config_loader, sse_options)
+    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader, sse_options)
 
     result = nil
 
@@ -81,10 +81,10 @@ class TestSSEConfigClient < Minitest::Test
         server.start
       end
 
-      sse_options = Reforge::SSEConfigClient::Options.new(
+      sse_options = Quonfig::SSEConfigClient::Options.new(
         sse_default_reconnect_time: 0.1
       )
-      client = Reforge::SSEConfigClient.new(prefab_options, config_loader, sse_options)
+      client = Quonfig::SSEConfigClient.new(prefab_options, config_loader, sse_options)
 
       client.start do |_configs, event, _source|
         last_event_id = event.id.to_i
@@ -117,13 +117,13 @@ class TestSSEConfigClient < Minitest::Test
         server.start
       end
 
-      sse_options = Reforge::SSEConfigClient::Options.new(
+      sse_options = Quonfig::SSEConfigClient::Options.new(
         sse_default_reconnect_time: 0.1,
         seconds_between_new_connection: 0.1,
         sleep_delay_for_new_connection_check: 0.1,
         errors_to_close_connection: [SSE::Errors::HTTPStatusError]
       )
-      client = Reforge::SSEConfigClient.new(prefab_options, config_loader, sse_options, logger)
+      client = Quonfig::SSEConfigClient.new(prefab_options, config_loader, sse_options, logger)
 
       client.start do |_configs, event, _source|
         last_event_id = event.id.to_i
@@ -249,7 +249,7 @@ class TestSSEConfigClient < Minitest::Test
     # Test with positive highwater_mark
     config_loader = OpenStruct.new(highwater_mark: 42)
     prefab_options = OpenStruct.new(sse_sources: ['http://localhost:4567'], sdk_key: 'test')
-    client = Reforge::SSEConfigClient.new(prefab_options, config_loader)
+    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
 
     # Mock SSE::Client.new to capture the last_event_id argument
     SSE::Client.stub :new, ->(*args, **kwargs, &block) {
@@ -261,7 +261,7 @@ class TestSSEConfigClient < Minitest::Test
 
     # Test with nil highwater_mark
     config_loader = OpenStruct.new(highwater_mark: nil)
-    client = Reforge::SSEConfigClient.new(prefab_options, config_loader)
+    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
 
     SSE::Client.stub :new, ->(*args, **kwargs, &block) {
       assert_nil kwargs[:last_event_id], 'Expected last_event_id to be nil when highwater_mark is nil'
@@ -272,7 +272,7 @@ class TestSSEConfigClient < Minitest::Test
 
     # Test with zero highwater_mark
     config_loader = OpenStruct.new(highwater_mark: 0)
-    client = Reforge::SSEConfigClient.new(prefab_options, config_loader)
+    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
 
     SSE::Client.stub :new, ->(*args, **kwargs, &block) {
       assert_nil kwargs[:last_event_id], 'Expected last_event_id to be nil when highwater_mark is 0'

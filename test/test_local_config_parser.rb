@@ -13,7 +13,7 @@ class TestLocalConfigParser < Minitest::Test
 
   def test_parse_int_config
     key = :sample_int
-    parsed = Reforge::LocalConfigParser.parse(key, 123, {}, FILE_NAME)[key]
+    parsed = Quonfig::LocalConfigParser.parse(key, 123, {}, FILE_NAME)[key]
     config = parsed[:config]
 
     assert_equal FILE_NAME, parsed[:source]
@@ -28,7 +28,7 @@ class TestLocalConfigParser < Minitest::Test
   def test_flag_with_a_value
     key = :flag_with_a_value
     value = stringify_keys({ feature_flag: true, value: 'all-features' })
-    parsed = Reforge::LocalConfigParser.parse(key, value, {}, FILE_NAME)[key]
+    parsed = Quonfig::LocalConfigParser.parse(key, value, {}, FILE_NAME)[key]
     config = parsed[:config]
 
     assert_equal FILE_NAME, parsed[:source]
@@ -39,14 +39,14 @@ class TestLocalConfigParser < Minitest::Test
     assert_equal 1, config.rows[0].values.size
 
     value_row = config.rows[0].values[0]
-    assert_equal 'all-features', Reforge::ConfigValueUnwrapper.deepest_value(value_row.value, key, {}, @mock_resolver).unwrap
+    assert_equal 'all-features', Quonfig::ConfigValueUnwrapper.deepest_value(value_row.value, key, {}, @mock_resolver).unwrap
   end
 
   def test_flag_in_user_key
     key = :flag_in_user_key
     value = stringify_keys({ 'feature_flag': 'true', value: true,
                              criterion: { operator: 'PROP_IS_ONE_OF', property: 'user.key', values: %w[abc123 xyz987] } })
-    parsed = Reforge::LocalConfigParser.parse(key, value, {}, FILE_NAME)[key]
+    parsed = Quonfig::LocalConfigParser.parse(key, value, {}, FILE_NAME)[key]
     config = parsed[:config]
 
     assert_equal FILE_NAME, parsed[:source]
@@ -58,7 +58,7 @@ class TestLocalConfigParser < Minitest::Test
     assert_equal 1, config.rows[0].values[0].criteria.size
 
     value_row = config.rows[0].values[0]
-    assert_equal true, Reforge::ConfigValueUnwrapper.deepest_value(value_row.value, key, {}, @mock_resolver).unwrap
+    assert_equal true, Quonfig::ConfigValueUnwrapper.deepest_value(value_row.value, key, {}, @mock_resolver).unwrap
 
     assert_equal 'user.key', value_row.criteria[0].property_name
     assert_equal :PROP_IS_ONE_OF, value_row.criteria[0].operator
@@ -69,7 +69,7 @@ class TestLocalConfigParser < Minitest::Test
     with_env('LOOKUP_ENV', 'from env') do 
       key = :test_provided
       value = stringify_keys({type: 'provided', source: 'ENV_VAR', lookup: 'LOOKUP_ENV'})
-      parsed = Reforge::LocalConfigParser.parse(key, value, {}, FILE_NAME)[key]
+      parsed = Quonfig::LocalConfigParser.parse(key, value, {}, FILE_NAME)[key]
       config = parsed[:config]
 
       assert_equal FILE_NAME, parsed[:source]
@@ -83,8 +83,8 @@ class TestLocalConfigParser < Minitest::Test
       provided = value_row.value.provided
       assert_equal :ENV_VAR, provided.source
       assert_equal 'LOOKUP_ENV', provided.lookup
-      assert_equal 'from env', Reforge::ConfigValueUnwrapper.deepest_value(value_row.value, config, {}, @mock_resolver).unwrap
-      reportable_value = Reforge::ConfigValueUnwrapper.deepest_value(value_row.value, config, {}, @mock_resolver).reportable_value
+      assert_equal 'from env', Quonfig::ConfigValueUnwrapper.deepest_value(value_row.value, config, {}, @mock_resolver).unwrap
+      reportable_value = Quonfig::ConfigValueUnwrapper.deepest_value(value_row.value, config, {}, @mock_resolver).reportable_value
       assert_equal 'from env', reportable_value
     end
   end
@@ -93,23 +93,23 @@ class TestLocalConfigParser < Minitest::Test
     with_env('LOOKUP_ENV', 'from env') do
       key = :test_provided
       value = stringify_keys({type: 'provided', source: 'ENV_VAR', lookup: 'LOOKUP_ENV', confidential: true})
-      parsed = Reforge::LocalConfigParser.parse(key, value, {}, FILE_NAME)[key]
+      parsed = Quonfig::LocalConfigParser.parse(key, value, {}, FILE_NAME)[key]
       config = parsed[:config]
 
       value_row = config.rows[0].values[0]
       provided = value_row.value.provided
       assert_equal :ENV_VAR, provided.source
       assert_equal 'LOOKUP_ENV', provided.lookup
-      assert_equal 'from env', Reforge::ConfigValueUnwrapper.deepest_value(value_row.value, config, {}, @mock_resolver).unwrap
-      reportable_value = Reforge::ConfigValueUnwrapper.deepest_value(value_row.value, config, {}, @mock_resolver).reportable_value
-      assert reportable_value.start_with? Reforge::ConfigValueUnwrapper::CONFIDENTIAL_PREFIX
+      assert_equal 'from env', Quonfig::ConfigValueUnwrapper.deepest_value(value_row.value, config, {}, @mock_resolver).unwrap
+      reportable_value = Quonfig::ConfigValueUnwrapper.deepest_value(value_row.value, config, {}, @mock_resolver).reportable_value
+      assert reportable_value.start_with? Quonfig::ConfigValueUnwrapper::CONFIDENTIAL_PREFIX
     end
   end
 
   def test_confidential_values
     key = :test_confidential
     value = stringify_keys({value: 'a confidential string', confidential: true})
-    parsed = Reforge::LocalConfigParser.parse(key, value, {}, FILE_NAME)[key]
+    parsed = Quonfig::LocalConfigParser.parse(key, value, {}, FILE_NAME)[key]
     config = parsed[:config]
 
     assert_equal FILE_NAME, parsed[:source]
@@ -120,9 +120,9 @@ class TestLocalConfigParser < Minitest::Test
 
     value_row = config.rows[0].values[0]
     config_value = value_row.value
-    assert_equal 'a confidential string', Reforge::ConfigValueUnwrapper.deepest_value(config_value, key, {}, @mock_resolver).unwrap
-    reportable_value = Reforge::ConfigValueUnwrapper.deepest_value(config_value, key, {}, @mock_resolver).reportable_value
-    assert reportable_value.start_with? Reforge::ConfigValueUnwrapper::CONFIDENTIAL_PREFIX
+    assert_equal 'a confidential string', Quonfig::ConfigValueUnwrapper.deepest_value(config_value, key, {}, @mock_resolver).unwrap
+    reportable_value = Quonfig::ConfigValueUnwrapper.deepest_value(config_value, key, {}, @mock_resolver).reportable_value
+    assert reportable_value.start_with? Quonfig::ConfigValueUnwrapper::CONFIDENTIAL_PREFIX
   end
 
   private

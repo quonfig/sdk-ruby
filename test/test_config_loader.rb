@@ -5,9 +5,9 @@ require 'test_helper'
 class TestConfigLoader < Minitest::Test
   def setup
     super
-    options = Reforge::Options.new(
+    options = Quonfig::Options.new(
     )
-    @loader = Reforge::ConfigLoader.new(MockBaseClient.new(options))
+    @loader = Quonfig::ConfigLoader.new(MockBaseClient.new(options))
   end
 
 

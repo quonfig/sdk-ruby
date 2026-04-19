@@ -12,7 +12,7 @@ spec.require_paths.each do |path|
 end
 
 spec.require_paths.each do |path|
-  require "./lib/sdk-reforge"
+  require "./lib/quonfig"
 end
 
 SemanticLogger.add_appender(io: $stdout)

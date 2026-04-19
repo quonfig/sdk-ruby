@@ -23,7 +23,7 @@ module IntegrationTestHelpers
     when "context_shape"
       aggregator = it.test_client.context_shape_aggregator
 
-      context = Reforge::Context.new(it.data)
+      context = Quonfig::Context.new(it.data)
 
       aggregator.push(context)
 
@@ -79,7 +79,7 @@ module IntegrationTestHelpers
       aggregator = it.test_client.example_contexts_aggregator
 
       it.data.each do |key, values|
-        aggregator.record(Reforge::Context.new({ key => values }))
+        aggregator.record(Quonfig::Context.new({ key => values }))
       end
 
       expected_data = []
@@ -91,7 +91,7 @@ module IntegrationTestHelpers
               PrefabProto::Context.new(
                 type: k,
                 values: vs.each_pair.map do |key, value|
-                  [key, Reforge::ConfigValueWrapper.wrap(value)]
+                  [key, Quonfig::ConfigValueWrapper.wrap(value)]
                 end.to_h
               )
             ]
@@ -106,7 +106,7 @@ module IntegrationTestHelpers
 
   def self.with_block_context_maybe(context, &block)
     if context
-      Reforge::Context.with_context(context, &block)
+      Quonfig::Context.with_context(context, &block)
     else
       yield
     end
