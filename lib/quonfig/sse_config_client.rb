@@ -1,8 +1,9 @@
 # frozen_string_literal: true
 require 'base64'
+require 'json'
 
 module Quonfig
-  class SSEConfigClient    
+  class SSEConfigClient
     class Options
       attr_reader :sse_read_timeout, :seconds_between_new_connection,
                   :sse_default_reconnect_time, :sleep_delay_for_new_connection_check,
@@ -21,7 +22,6 @@ module Quonfig
       end
     end
 
-    AUTH_USER = 'authuser'
     LOG = Quonfig::InternalLogger.new(self)
 
     def initialize(prefab_options, config_loader, options = nil, logger = nil)
@@ -65,7 +65,7 @@ module Quonfig
     end
 
     def connect(&load_configs)
-      url = "#{source}/api/v2/sse/config"
+      url = "#{source}/api/v2/sse"
       @logger.debug "SSE Streaming Connect to #{url} start_at #{@config_loader.highwater_mark}"
 
       SSE::Client.new(url,
@@ -81,15 +81,19 @@ module Quonfig
             return
           end
 
-          decoded_data = Base64.decode64(event.data)
-          if decoded_data.nil? || decoded_data.empty?
-            @logger.error "SSE Streaming Error: Decoded data is empty for url #{url}"
+          begin
+            parsed = JSON.parse(event.data)
+          rescue JSON::ParserError => e
+            @logger.error "SSE Streaming Error: Failed to parse JSON for url #{url}: #{e.message}"
             client.close
             return
           end
 
-          configs = PrefabProto::Configs.decode(decoded_data)
-          load_configs.call(configs, event, :sse)
+          envelope = Quonfig::ConfigEnvelope.new(
+            configs: parsed['configs'] || [],
+            meta: parsed['meta'] || {}
+          )
+          load_configs.call(envelope, event, :sse)
         end
 
         client.on_error do |error|
@@ -109,7 +113,7 @@ module Quonfig
     end
 
     def headers
-      auth = "#{AUTH_USER}:#{@prefab_options.sdk_key}"
+      auth = "1:#{@prefab_options.sdk_key}"
       auth_string = Base64.strict_encode64(auth)
       return {
         'Authorization' => "Basic #{auth_string}",

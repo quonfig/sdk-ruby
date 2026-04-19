@@ -3,8 +3,81 @@
 require 'test_helper'
 require 'webrick'
 require 'ostruct'
+require 'json'
 
 class TestSSEConfigClient < Minitest::Test
+  def test_connect_url_is_api_v2_sse
+    prefab_options = OpenStruct.new(sse_sources: ['https://stream.example.com'], sdk_key: 'test')
+    config_loader = OpenStruct.new(highwater_mark: 0)
+    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
+
+    captured_url = nil
+    fake = OpenStruct.new(closed?: false)
+    fake.define_singleton_method(:on_event) { |&_b| }
+    fake.define_singleton_method(:on_error) { |&_b| }
+    fake.define_singleton_method(:close) { }
+
+    SSE::Client.stub :new, ->(url, *_args, **_kwargs, &block) {
+      captured_url = url
+      block.call(fake) if block
+      fake
+    } do
+      client.connect { |_e, _ev, _s| }
+    end
+
+    assert_equal 'https://stream.example.com/api/v2/sse', captured_url
+  end
+
+  def test_on_event_parses_json_into_config_envelope
+    prefab_options = OpenStruct.new(sse_sources: ['https://stream.example.com'], sdk_key: 'test')
+    config_loader = OpenStruct.new(highwater_mark: 0)
+    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
+
+    captured = {}
+    event_handler = nil
+    fake = Object.new
+    fake.define_singleton_method(:on_event) { |&block| event_handler = block }
+    fake.define_singleton_method(:on_error) { |&_b| }
+    fake.define_singleton_method(:close) { }
+    fake.define_singleton_method(:closed?) { false }
+
+    SSE::Client.stub :new, ->(*_args, **_kwargs, &block) {
+      block.call(fake) if block
+      fake
+    } do
+      client.connect do |envelope, event, source|
+        captured[:envelope] = envelope
+        captured[:event] = event
+        captured[:source] = source
+      end
+    end
+
+    json_data = JSON.generate({
+      configs: [{ key: 'my.key', valueType: 'string', default: { rules: [] } }],
+      meta: { version: 'abc123', environment: 'prod' }
+    })
+
+    event_handler.call(OpenStruct.new(data: json_data))
+
+    assert_instance_of Quonfig::ConfigEnvelope, captured[:envelope]
+    assert_equal 1, captured[:envelope].configs.length
+    assert_equal 'my.key', captured[:envelope].configs[0]['key']
+    assert_equal 'abc123', captured[:envelope].meta['version']
+    assert_equal :sse, captured[:source]
+  end
+
+  def test_headers_basic_auth_uses_1_prefix
+    prefab_options = OpenStruct.new(sse_sources: ['https://stream.example.com'], sdk_key: 'mykey')
+    config_loader = OpenStruct.new(highwater_mark: 0)
+    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
+
+    h = client.headers
+
+    assert_equal "Basic #{Base64.strict_encode64('1:mykey')}", h['Authorization']
+    assert_match(/\Asdk-ruby-/, h['X-Quonfig-SDK-Version'])
+    refute h.key?('X-Reforge-SDK-Version')
+  end
+
   def test_client
     sources = [
       'https://primary.goatsofreforge.com'
@@ -151,7 +224,7 @@ class TestSSEConfigClient < Minitest::Test
     log_string = StringIO.new
     logger = WEBrick::Log.new(log_string)
     server = WEBrick::HTTPServer.new(Port: port, Logger: logger, AccessLog: [])
-    server.mount '/api/v2/sse/config', endpoint_class
+    server.mount '/api/v2/sse', endpoint_class
 
     [server, log_string]
   end
@@ -172,6 +245,8 @@ class TestSSEConfigClient < Minitest::Test
     end
   end
 
+  SAMPLE_JSON_PAYLOAD = '{"configs":[],"meta":{"version":"1","environment":"test"}}'
+
   class DisconnectingEndpoint < WEBrick::HTTPServlet::AbstractServlet
     include SharedEndpointLogic
 
@@ -182,7 +257,7 @@ class TestSSEConfigClient < Minitest::Test
 
       output << "id: #{event_id}\n"
       output << "event: message\n"
-      output << "data: CmYIu8fh4YaO0x4QZBo0bG9nLWxldmVsLmNsb3VkLnByZWZhYi5zZXJ2ZXIubG9nZ2luZy5FdmVudFByb2Nlc3NvciIfCAESG2phbWVzLmtlYmluZ2VyQHByZWZhYi5jbG91ZDgGSAkSDQhkELvH4eGGjtMeGGU=\n\n"
+      output << "data: #{SAMPLE_JSON_PAYLOAD}\n\n"
     end
   end
 
@@ -202,7 +277,7 @@ class TestSSEConfigClient < Minitest::Test
       end
 
       output << "event: message\n"
-      output << "data: CmYIu8fh4YaO0x4QZBo0bG9nLWxldmVsLmNsb3VkLnByZWZhYi5zZXJ2ZXIubG9nZ2luZy5FdmVudFByb2Nlc3NvciIfCAESG2phbWVzLmtlYmluZ2VyQHByZWZhYi5jbG91ZDgGSAkSDQhkELvH4eGGjtMeGGU=\n\n"
+      output << "data: #{SAMPLE_JSON_PAYLOAD}\n\n"
     end
   end
 
