@@ -60,7 +60,7 @@ module IntegrationTestHelpers
   end
 
   def self.build_resolver(store)
-    evaluator = Quonfig::Evaluator.new(store)
+    evaluator = Quonfig::Evaluator.new(store, env_id: ENV_ID)
     Quonfig::Resolver.new(store, evaluator)
   end
 

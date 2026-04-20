@@ -19,34 +19,27 @@ class TestResolverTrio < Minitest::Test
   CONFIG_KEY = 'my.flag'
   DEFAULT_VALUE = 'default_value'
 
-  FakeConfigValue = Struct.new(:string, :type, :confidential, :decrypt_with) do
-    def initialize(string: nil, type: :string, confidential: false, decrypt_with: nil)
-      super(string, type, confidential, decrypt_with)
-    end
-    def has_decrypt_with?; !decrypt_with.nil?; end
-  end
-
-  FakeConditionalValue = Struct.new(:criteria, :value, keyword_init: true)
-  FakeRow = Struct.new(:project_env_id, :values, keyword_init: true)
-  FakeConfig = Struct.new(:key, :rows, :id, :config_type, keyword_init: true)
-
+  # qfg-dk6.10 — configs are now plain ConfigResponse-shaped hashes (symbol
+  # top-level keys + string keys inside rules/criteria). Matches what
+  # Quonfig::Datadir.to_config_response and
+  # IntegrationTestHelpers.to_config_response emit.
   def make_default_config(key: CONFIG_KEY, value: DEFAULT_VALUE)
-    FakeConfig.new(
+    {
+      id: '1',
       key: key,
-      id: 1,
-      config_type: :CONFIG,
-      rows: [
-        FakeRow.new(
-          project_env_id: 0,
-          values: [
-            FakeConditionalValue.new(
-              criteria: [],
-              value: FakeConfigValue.new(string: value, type: :string)
-            )
-          ]
-        )
-      ]
-    )
+      type: 'config',
+      value_type: 'string',
+      send_to_client_sdk: false,
+      default: {
+        'rules' => [
+          {
+            'criteria' => [{ 'operator' => 'ALWAYS_TRUE' }],
+            'value' => { 'type' => 'string', 'value' => value }
+          }
+        ]
+      },
+      environment: nil
+    }
   end
 
   def base_client
@@ -134,11 +127,11 @@ class TestResolverTrio < Minitest::Test
     result = resolver.get(CONFIG_KEY, Quonfig::Context.new({}))
 
     refute_nil result
-    assert_kind_of Quonfig::Evaluation, result
-    # The raw value goes through Evaluation; the config value we stuffed in
-    # is a Struct with .string set, so we can fish it back out here without
-    # exercising the full ConfigValueUnwrapper chain.
-    assert_equal DEFAULT_VALUE, result.value.string
+    assert_kind_of Quonfig::EvalResult, result
+    # The EvalResult exposes both the raw JSON value hash (#value) and the
+    # coerced Ruby value (#unwrapped_value). Prefer unwrapped_value for
+    # assertions — it mirrors what the real Client returns.
+    assert_equal DEFAULT_VALUE, result.unwrapped_value
   end
 
   def test_resolver_get_returns_nil_for_missing_key
