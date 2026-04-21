@@ -2,350 +2,254 @@
 
 require 'test_helper'
 
+# Quonfig::Client wires the JSON stack: ConfigStore + Evaluator + Resolver
+# (introduced in qfg-dk6.4-9). These tests drive Client through an injected
+# ConfigStore so they never touch the network or the filesystem. The legacy
+# protobuf ConfigClient/ConfigResolver path was removed in qfg-dk6.32.
 class TestClient < Minitest::Test
-  LOCAL_ONLY = Quonfig::Options::DATASOURCES::LOCAL_ONLY
+  CONFIG_KEY = 'my.flag'
 
-  PROJECT_ENV_ID = 1
-  KEY = 'the-key'
-  DEFAULT_VALUE = 'default_value'
-  DESIRED_VALUE = 'desired_value'
+  # ---- Test fixtures -----------------------------------------------------
 
-  IRRELEVANT = 'this should never show up'
-
-  DEFAULT_VALUE_CONFIG = PrefabProto::ConfigValue.new(string: DEFAULT_VALUE)
-  DESIRED_VALUE_CONFIG = PrefabProto::ConfigValue.new(string: DESIRED_VALUE)
-
-  TRUE_CONFIG = PrefabProto::ConfigValue.new(bool: true)
-  FALSE_CONFIG = PrefabProto::ConfigValue.new(bool: false)
-
-  DEFAULT_ROW = PrefabProto::ConfigRow.new(
-    values: [
-      PrefabProto::ConditionalValue.new(value: DEFAULT_VALUE_CONFIG)
-    ]
-  )
-
-
-
-  def test_get_with_missing_default
-    client = new_client
-    # it raises by default
-    err = assert_raises(Quonfig::Errors::MissingDefaultError) do
-      assert_nil client.get('missing_value')
-    end
-
-    assert_match(/No value found for key/, err.message)
-    assert_match(/on_no_default/, err.message)
-
-    # you can opt-in to return `nil` instead
-    client = new_client(on_no_default: Quonfig::Options::ON_NO_DEFAULT::RETURN_NIL)
-    assert_nil client.get('missing_value')
-  end
-
-
-
-
-
-  def test_initialization_with_an_options_object
-    options_hash = {
-      namespace: 'test-namespace',
-      prefab_datasources: LOCAL_ONLY
-    }
-
-    options = Quonfig::Options.new(options_hash)
-
-    client = Quonfig::Client.new(options)
-
-    assert_equal client.namespace, 'test-namespace'
-  end
-
-  def test_initialization_with_a_hash
-    options_hash = {
-      namespace: 'test-namespace',
-      prefab_datasources: LOCAL_ONLY
-    }
-
-    client = Quonfig::Client.new(options_hash)
-
-    assert_equal client.namespace, 'test-namespace'
-  end
-
-  def test_evaluation_summary_aggregator
-    fake_api_key = '123-development-yourapikey-SDK'
-
-    # it is nil by default
-    assert_nil new_client(sdk_key: fake_api_key).evaluation_summary_aggregator
-
-    # it is nil when local_only even if collect_max_evaluation_summaries is true
-    assert_nil new_client(prefab_datasources: LOCAL_ONLY,
-                                  collect_evaluation_summaries: true, ).evaluation_summary_aggregator
-
-    # it is nil when collect_max_evaluation_summaries is false
-    assert_nil new_client(sdk_key: fake_api_key,
-                                  prefab_datasources: :all,
-                                  collect_evaluation_summaries: false).evaluation_summary_aggregator
-
-    # it is not nil when collect_max_evaluation_summaries is true and the datasource is not local_only
-    assert_equal Quonfig::EvaluationSummaryAggregator,
-                 new_client(sdk_key: fake_api_key,
-                            prefab_datasources: :all,
-                            collect_evaluation_summaries: true).evaluation_summary_aggregator.class
-
-    assert_logged [
-      "Quonfig::ConfigClient -- No success loading checkpoints"
-    ]
-  end
-
-  def test_get_with_basic_value
-    config = basic_value_config
-    client = new_client(config: config, project_env_id: PROJECT_ENV_ID, collect_evaluation_summaries: true,
-                        context_upload_mode: :periodic_example, allow_telemetry_in_local_mode: true)
-
-    assert_equal DESIRED_VALUE, client.get(config.key, IRRELEVANT, 'user' => { 'key' => 99 })
-
-    assert_summary client, {
-      [KEY, :CONFIG] => {
-        {
-          config_id: config.id,
-          config_row_index: 0,
-          selected_value: DESIRED_VALUE_CONFIG,
-          conditional_value_index: 0,
-          weighted_value_index: nil,
-          selected_index: nil
-        } => 1
-      }
-    }
-
-    assert_example_contexts client, [Quonfig::Context.new({ user: { 'key' => 99 } })]
-  end
-
-  def test_get_with_basic_value_with_context
-    config = basic_value_config
-    client = new_client(config: config, project_env_id: PROJECT_ENV_ID, collect_evaluation_summaries: true,
-                        context_upload_mode: :periodic_example, allow_telemetry_in_local_mode: true)
-
-    client.with_context('user' => { 'key' => 99 }) do
-      assert_equal DESIRED_VALUE, client.get(config.key)
-    end
-
-    assert_summary client, {
-      [KEY, :CONFIG] => {
-        {
-          config_id: config.id,
-          config_row_index: 0,
-          selected_value: DESIRED_VALUE_CONFIG,
-          conditional_value_index: 0,
-          weighted_value_index: nil,
-          selected_index: nil
-        } => 1
-      }
-    }
-
-    assert_example_contexts client, [Quonfig::Context.new({ user: { 'key' => 99 } })]
-  end
-
-  def test_get_with_weighted_values
-    config = PrefabProto::Config.new(
-      id: 123,
-      key: KEY,
-      config_type: PrefabProto::ConfigType::CONFIG,
-      rows: [
-        DEFAULT_ROW,
-        PrefabProto::ConfigRow.new(
-          project_env_id: PROJECT_ENV_ID,
-          values: [
-            PrefabProto::ConditionalValue.new(
-              criteria: [PrefabProto::Criterion.new(operator: PrefabProto::Criterion::CriterionOperator::ALWAYS_TRUE)],
-              value: PrefabProto::ConfigValue.new(weighted_values: weighted_values([['abc', 98], ['def', 1],
-                                                                                    ['ghi', 1]]))
-            )
-          ]
-        )
-      ]
-    )
-
-    client = new_client(config: config, project_env_id: PROJECT_ENV_ID, collect_evaluation_summaries: true,
-                       context_upload_mode: :periodic_example, allow_telemetry_in_local_mode: true)
-
-    2.times do
-      assert_equal 'abc', client.get(config.key, IRRELEVANT, 'user' => { 'key' => '1' })
-    end
-
-    3.times do
-      assert_equal 'def', client.get(config.key, IRRELEVANT, 'user' => { 'key' => '12' })
-    end
-
-    assert_equal 'ghi',
-                 client.get(config.key, IRRELEVANT, 'user' => { 'key' => '4', admin: true })
-
-    assert_summary client, {
-      [KEY, :CONFIG] => {
-        {
-          config_id: config.id,
-          config_row_index: 0,
-          selected_value: PrefabProto::ConfigValue.new(string: 'abc'),
-          conditional_value_index: 0,
-          weighted_value_index: 0,
-          selected_index: nil
-        } => 2,
-
-        {
-          config_id: config.id,
-          config_row_index: 0,
-          selected_value: PrefabProto::ConfigValue.new(string: 'def'),
-          conditional_value_index: 0,
-          weighted_value_index: 1,
-          selected_index: nil
-        } => 3,
-
-        {
-          config_id: config.id,
-          config_row_index: 0,
-          selected_value: PrefabProto::ConfigValue.new(string: 'ghi'),
-          conditional_value_index: 0,
-          weighted_value_index: 2,
-          selected_index: nil
-        } => 1
-      }
-    }
-
-    assert_example_contexts client, [
-      Quonfig::Context.new(user: { 'key' => '1' }),
-      Quonfig::Context.new(user: { 'key' => '12' }),
-      Quonfig::Context.new(user: { 'key' => '4', admin: true })
-    ]
-  end
-
-  def test_in_seg
-    segment_key = 'segment_key'
-
-    segment_config = PrefabProto::Config.new(
-      config_type: PrefabProto::ConfigType::SEGMENT,
-      key: segment_key,
-      rows: [
-        PrefabProto::ConfigRow.new(
-          values: [
-            PrefabProto::ConditionalValue.new(
-              value: TRUE_CONFIG,
-              criteria: [
-                PrefabProto::Criterion.new(
-                  operator: PrefabProto::Criterion::CriterionOperator::PROP_ENDS_WITH_ONE_OF,
-                  value_to_match: string_list(['hotmail.com', 'gmail.com']),
-                  property_name: 'user.email'
-                )
-              ]
-            ),
-            PrefabProto::ConditionalValue.new(value: FALSE_CONFIG)
-          ]
-        )
-      ]
-    )
-
-    config = PrefabProto::Config.new(
-      key: KEY,
-      rows: [
-        DEFAULT_ROW,
-
-        PrefabProto::ConfigRow.new(
-          project_env_id: PROJECT_ENV_ID,
-          values: [
-            PrefabProto::ConditionalValue.new(
-              criteria: [
-                PrefabProto::Criterion.new(
-                  operator: PrefabProto::Criterion::CriterionOperator::IN_SEG,
-                  value_to_match: PrefabProto::ConfigValue.new(string: segment_key)
-                )
-              ],
-              value: DESIRED_VALUE_CONFIG
-            )
-          ]
-        )
-      ]
-    )
-
-    client = new_client(config: [config, segment_config], project_env_id: PROJECT_ENV_ID,
-                        collect_evaluation_summaries: true, context_upload_mode: :periodic_example, allow_telemetry_in_local_mode: true)
-
-    assert_equal DEFAULT_VALUE, client.get(config.key)
-    assert_equal DEFAULT_VALUE,
-                 client.get(config.key, IRRELEVANT, user: { key: 'abc', email: 'example@prefab.cloud' })
-    assert_equal DESIRED_VALUE, client.get(config.key, IRRELEVANT, user: { key: 'def', email: 'example@hotmail.com' })
-
-    assert_summary client, {
-      [segment_key, :SEGMENT] => {
-        { config_id: 0, config_row_index: 0, conditional_value_index: 1, selected_value: FALSE_CONFIG,
-          weighted_value_index: nil, selected_index: nil } => 2,
-        { config_id: 0, config_row_index: 0, conditional_value_index: 0, selected_value: TRUE_CONFIG,
-          weighted_value_index: nil, selected_index: nil } => 1
+  # Plain ConfigResponse-shaped hash (mirrors what
+  # Quonfig::Datadir.to_config_response and IntegrationTestHelpers emit).
+  def make_config(key:, value:, type: 'string', criteria: nil)
+    {
+      'id' => '1',
+      'key' => key,
+      'type' => 'config',
+      'valueType' => type,
+      'sendToClientSdk' => false,
+      'default' => {
+        'rules' => [
+          {
+            'criteria' => criteria || [{ 'operator' => 'ALWAYS_TRUE' }],
+            'value' => { 'type' => type, 'value' => value }
+          }
+        ]
       },
-      [KEY, :NOT_SET_CONFIG_TYPE] => {
-        { config_id: 0, config_row_index: 1, conditional_value_index: 0, selected_value: DEFAULT_VALUE_CONFIG,
-          weighted_value_index: nil, selected_index: nil } => 2,
-        { config_id: 0, config_row_index: 0, conditional_value_index: 0, selected_value: DESIRED_VALUE_CONFIG,
-          weighted_value_index: nil, selected_index: nil } => 1
-      }
+      'environment' => nil
     }
-
-    assert_example_contexts client, [
-      Quonfig::Context.new(user: { key: 'abc', email: 'example@prefab.cloud' }),
-      Quonfig::Context.new(user: { key: 'def', email: 'example@hotmail.com' })
-    ]
   end
 
-  def test_get_log_level
-    config = PrefabProto::Config.new(
-      id: 999,
-      key: 'log-level',
-      config_type: PrefabProto::ConfigType::LOG_LEVEL,
-      rows: [
-        PrefabProto::ConfigRow.new(
-          values: [
-            PrefabProto::ConditionalValue.new(
-              criteria: [PrefabProto::Criterion.new(operator: PrefabProto::Criterion::CriterionOperator::ALWAYS_TRUE)],
-              value: PrefabProto::ConfigValue.new(log_level: PrefabProto::LogLevel::INFO)
-            )
-          ]
-        )
-      ]
+  def store_with(*configs)
+    store = Quonfig::ConfigStore.new
+    configs.each { |c| store.set(c['key'], c) }
+    store
+  end
+
+  def client_with(store, **options)
+    Quonfig::Client.new(Quonfig::Options.new(**options), store: store)
+  end
+
+  # ---- Construction ------------------------------------------------------
+
+  def test_constructor_accepts_options_object
+    client = client_with(Quonfig::ConfigStore.new)
+    assert_kind_of Quonfig::Options, client.options
+  end
+
+  def test_constructor_wires_resolver_and_evaluator
+    store = Quonfig::ConfigStore.new
+    client = Quonfig::Client.new(Quonfig::Options.new, store: store)
+
+    assert_kind_of Quonfig::Resolver, client.resolver
+    assert_kind_of Quonfig::Evaluator, client.evaluator
+    assert_same store, client.store,
+                'Client must use the injected ConfigStore instance'
+  end
+
+  def test_instance_hash_is_unique_per_client
+    a = client_with(Quonfig::ConfigStore.new)
+    b = client_with(Quonfig::ConfigStore.new)
+    refute_equal a.instance_hash, b.instance_hash
+  end
+
+  # ---- get returns coerced JSON values, not PrefabProto ------------------
+
+  def test_get_returns_string_value
+    store = store_with(make_config(key: CONFIG_KEY, value: 'hello'))
+    assert_equal 'hello', client_with(store).get(CONFIG_KEY)
+  end
+
+  def test_get_returns_int_value
+    store = store_with(make_config(key: CONFIG_KEY, value: 42, type: 'int'))
+    assert_equal 42, client_with(store).get(CONFIG_KEY)
+  end
+
+  def test_get_returns_bool_value
+    store = store_with(make_config(key: CONFIG_KEY, value: true, type: 'bool'))
+    assert_equal true, client_with(store).get(CONFIG_KEY)
+  end
+
+  def test_get_returned_value_is_not_a_prefab_proto
+    store = store_with(make_config(key: CONFIG_KEY, value: 'hello'))
+    value = client_with(store).get(CONFIG_KEY)
+
+    refute value.respond_to?(:string_list),
+           'Client#get must return a plain Ruby value, not a PrefabProto::ConfigValue'
+    refute value.is_a?(Hash),
+           'Client#get must unwrap to the coerced Ruby value, not the JSON Value hash'
+  end
+
+  # ---- Missing key handling ---------------------------------------------
+
+  def test_get_returns_explicit_default_when_key_missing
+    store = Quonfig::ConfigStore.new
+    assert_equal 'fallback', client_with(store).get('nope', 'fallback')
+  end
+
+  def test_get_raises_missing_default_error_by_default
+    store = Quonfig::ConfigStore.new
+    assert_raises(Quonfig::Errors::MissingDefaultError) do
+      client_with(store).get('nope')
+    end
+  end
+
+  def test_get_returns_nil_when_on_no_default_is_return_nil
+    store = Quonfig::ConfigStore.new
+    client = client_with(store, on_no_default: Quonfig::Options::ON_NO_DEFAULT::RETURN_NIL)
+    assert_nil client.get('nope')
+  end
+
+  # ---- enabled? --------------------------------------------------------
+
+  def test_enabled_returns_true_when_value_is_true
+    store = store_with(make_config(key: CONFIG_KEY, value: true, type: 'bool'))
+    assert client_with(store).enabled?(CONFIG_KEY)
+  end
+
+  def test_enabled_returns_false_when_value_is_false
+    store = store_with(make_config(key: CONFIG_KEY, value: false, type: 'bool'))
+    refute client_with(store).enabled?(CONFIG_KEY)
+  end
+
+  def test_enabled_returns_false_for_missing_key
+    store = Quonfig::ConfigStore.new
+    refute client_with(store).enabled?('nope')
+  end
+
+  # ---- defined? + keys --------------------------------------------------
+
+  def test_defined_returns_true_for_known_key
+    store = store_with(make_config(key: CONFIG_KEY, value: 'x'))
+    assert client_with(store).defined?(CONFIG_KEY)
+  end
+
+  def test_defined_returns_false_for_unknown_key
+    store = store_with(make_config(key: CONFIG_KEY, value: 'x'))
+    refute client_with(store).defined?('absent')
+  end
+
+  def test_keys_returns_store_keys
+    store = store_with(
+      make_config(key: 'a', value: '1'),
+      make_config(key: 'b', value: '2')
+    )
+    assert_equal %w[a b].sort, client_with(store).keys.sort
+  end
+
+  # ---- Context: jit context is plain Hash, not PrefabProto::Context ----
+
+  def test_get_accepts_jit_context_as_plain_hash
+    cfg = make_config(
+      key: CONFIG_KEY,
+      value: 'matched',
+      criteria: [{
+        'operator' => 'PROP_IS_ONE_OF',
+        'propertyName' => 'user.role',
+        'valueToMatch' => { 'type' => 'string_list', 'value' => ['admin'] }
+      }]
+    )
+    store = store_with(cfg)
+
+    result = client_with(store).get(CONFIG_KEY, 'fallback', user: { 'role' => 'admin' })
+
+    assert_equal 'matched', result
+  end
+
+  def test_with_context_returns_bound_client
+    bound = client_with(Quonfig::ConfigStore.new).with_context(user: { 'key' => '1' })
+    assert_kind_of Quonfig::BoundClient, bound
+    assert_equal({ user: { 'key' => '1' } }, bound.context)
+  end
+
+  def test_in_context_yields_bound_client_when_block_given
+    yielded = nil
+    client_with(Quonfig::ConfigStore.new).in_context(user: { 'key' => '1' }) do |bound|
+      yielded = bound
+    end
+
+    assert_kind_of Quonfig::BoundClient, yielded
+    assert_equal({ user: { 'key' => '1' } }, yielded.context)
+  end
+
+  def test_global_context_is_merged_into_jit_context
+    cfg = make_config(
+      key: CONFIG_KEY,
+      value: 'admin-value',
+      criteria: [{
+        'operator' => 'PROP_IS_ONE_OF',
+        'propertyName' => 'user.role',
+        'valueToMatch' => { 'type' => 'string_list', 'value' => ['admin'] }
+      }]
+    )
+    store = store_with(cfg)
+    client = Quonfig::Client.new(
+      Quonfig::Options.new(global_context: { user: { 'role' => 'admin' } }),
+      store: store
     )
 
-    client = new_client(config: config, project_env_id: PROJECT_ENV_ID,
-                        collect_evaluation_summaries: true, allow_telemetry_in_local_mode: true)
-
-    assert_equal :INFO, client.get(config.key, IRRELEVANT)
-
-    # nothing is summarized for log levels
-    assert_summary client, {}
+    assert_equal 'admin-value', client.get(CONFIG_KEY, 'fallback')
   end
 
-
-
-  def test_with_datafile
-    datafile = "#{Dir.pwd}/test/fixtures/datafile.json"
-    client = new_client(datafile: datafile, prefab_datasources: :all)
-
-    assert client.get('flag.list.environments')
-    assert_equal "hello world", client.get('my.test.string')
-  end
-
-  private
-
-  def basic_value_config
-    PrefabProto::Config.new(
-      id: 123,
-      key: KEY,
-      config_type: PrefabProto::ConfigType::CONFIG,
-      rows: [
-        DEFAULT_ROW,
-        PrefabProto::ConfigRow.new(
-          project_env_id: PROJECT_ENV_ID,
-          values: [
-            PrefabProto::ConditionalValue.new(
-              criteria: [PrefabProto::Criterion.new(operator: PrefabProto::Criterion::CriterionOperator::ALWAYS_TRUE)],
-              value: DESIRED_VALUE_CONFIG
-            )
-          ]
-        )
-      ]
+  def test_jit_context_overrides_global_context_at_the_property_level
+    cfg = make_config(
+      key: CONFIG_KEY,
+      value: 'jit-value',
+      criteria: [{
+        'operator' => 'PROP_IS_ONE_OF',
+        'propertyName' => 'user.role',
+        'valueToMatch' => { 'type' => 'string_list', 'value' => ['user'] }
+      }]
     )
+    store = store_with(cfg)
+    client = Quonfig::Client.new(
+      Quonfig::Options.new(global_context: { user: { 'role' => 'admin' } }),
+      store: store
+    )
+
+    # jit overrides global for this single property; keys unique to global preserved
+    assert_equal 'jit-value', client.get(CONFIG_KEY, 'fallback', user: { 'role' => 'user' })
+  end
+
+  def test_normalize_context_rejects_non_hash_jit_context
+    store = Quonfig::ConfigStore.new
+    assert_raises(ArgumentError) do
+      client_with(store).get('nope', 'fallback', 'not-a-hash')
+    end
+  end
+
+  # ---- Misc -------------------------------------------------------------
+
+  def test_stop_is_a_noop
+    client_with(Quonfig::ConfigStore.new).stop
+    pass
+  end
+
+  def test_inspect_includes_environment
+    client = client_with(Quonfig::ConfigStore.new, environment: 'Production')
+    assert_match(/environment="Production"/, client.inspect)
+  end
+
+  def test_no_prefab_proto_in_lib_quonfig_source
+    # qfg-dk6.32: scrub PrefabProto from the runtime lib path.
+    lib_dir = File.expand_path('../lib/quonfig', __dir__)
+    offenders = Dir.glob(File.join(lib_dir, '**/*.rb')).select do |path|
+      File.read(path).match?(/PrefabProto/)
+    end
+
+    assert_empty offenders,
+                 "lib/quonfig still references PrefabProto:\n#{offenders.join("\n")}"
   end
 end

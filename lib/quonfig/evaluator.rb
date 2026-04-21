@@ -17,8 +17,7 @@ module Quonfig
   #   and IntegrationTestHelpers.to_config_response — symbol or string keys at
   #   the top level (id, key, type, value_type/valueType, default, environment)
   #   with JSON rules/criteria inside as plain hashes with string keys.
-  # - The legacy PrefabProto-shaped Config object is intentionally no longer
-  #   handled here — use Quonfig::CriteriaEvaluator for that path.
+  # The legacy protobuf-shaped Config object is no longer supported.
   #
   # evaluate_config returns an EvalResult that exposes the matched value via
   # #unwrapped_value (coerced into a native Ruby type per value.type) and

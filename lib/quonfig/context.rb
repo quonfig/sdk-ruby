@@ -1,6 +1,10 @@
 # frozen_string_literal: true
 
 module Quonfig
+  # Quonfig context: a two-level Hash (named-context → property → value) wrapped
+  # for evaluator consumption. The Evaluator accepts either a plain Hash or a
+  # Quonfig::Context — this class exists mostly to flatten lookups (`get`)
+  # into the dotted "context-name.property" form criterion rules use.
   class Context
     BLANK_CONTEXT_NAME = ''
 
@@ -20,107 +24,36 @@ module Quonfig
         "#{@name}:#{@hash['key']}"
       end
 
-      def to_proto
-        PrefabProto::Context.new(
-          type: name,
-          values: @hash.transform_values do |value|
-            ConfigValueWrapper.wrap(value)
-          end
-        )
+      def merge!(other)
+        other.each { |k, v| @hash[k.to_s] = v }
+        self
       end
     end
 
-    THREAD_KEY = :prefab_context
-    attr_reader :contexts, :seen_at, :id, :parent
-
-    class << self
-      def global_context=(context)
-        @global_context = join(hash: context, parent: nil, id: :global_context)
-      end
-
-      def global_context
-        @global_context ||= join(parent: nil, id: :global_context)
-      end
-
-      def default_context=(context)
-        @default_context = join(hash: context, parent: global_context, id: :default_context)
-
-        self.current.update_parent(@default_context)
-      end
-
-      def default_context
-        @default_context ||= join(parent: global_context, id: :default_context)
-      end
-
-      def current=(context)
-        Thread.current[THREAD_KEY] = join(hash: context || {}, parent: default_context, id: :block)
-      end
-
-      def current
-        Thread.current[THREAD_KEY] ||= join(parent: default_context, id: :block)
-      end
-
-      def with_context(context)
-        old_context = Thread.current[THREAD_KEY]
-        Thread.current[THREAD_KEY] = join(parent: default_context, hash: context, id: :block)
-        yield
-      ensure
-        Thread.current[THREAD_KEY] = old_context
-      end
-
-      def with_merged_context(context)
-        old_context = Thread.current[THREAD_KEY]
-        Thread.current[THREAD_KEY] = join(parent: current, hash: context, id: :merged)
-        yield
-      ensure
-        Thread.current[THREAD_KEY] = old_context
-      end
-
-      def clear_current
-        Thread.current[THREAD_KEY] = nil
-      end
-
-      def merge_with_current(new_context_properties = {})
-        new(current.to_h.merge(new_context_properties.to_h))
-      end
-    end
-
-    def self.join(hash: {}, parent: nil, id: :not_provided)
-      context = new(hash)
-      context.update_parent(parent)
-      context.instance_variable_set(:@id, id)
-      context
-    end
+    attr_reader :contexts
 
     def initialize(hash = {})
       @contexts = {}
       @flattened = {}
-      @seen_at = Time.now.utc.to_i
 
-      if hash.is_a?(Hash)
-        hash.map do |name, values|
-          unless values.is_a?(Hash)
-            warn "[DEPRECATION] Prefab contexts should be a hash with a key of the context name and a value of a hash."
-            values = { name => values }
-            name = BLANK_CONTEXT_NAME
-          end
+      raise ArgumentError, 'must be a Hash' unless hash.is_a?(Hash)
 
-          @contexts[name.to_s] = NamedContext.new(name, values)
-          values.each do |key, value|
-            @flattened[name.to_s + '.' + key.to_s] = value
-          end
+      hash.each do |name, values|
+        unless values.is_a?(Hash)
+          # Legacy shorthand — pre-named-contexts callers passed a flat Hash.
+          values = { name => values }
+          name = BLANK_CONTEXT_NAME
         end
-      else
-        raise ArgumentError, 'must be a Hash'
+
+        @contexts[name.to_s] = NamedContext.new(name, values)
+        values.each do |key, value|
+          @flattened[name.to_s + '.' + key.to_s] = value
+        end
       end
     end
 
-    def update_parent(parent)
-      @parent = parent
-    end
-
     def blank?
-      contexts.empty?
+      @contexts.empty?
     end
 
     def set(name, hash)
@@ -131,43 +64,16 @@ module Quonfig
     end
 
     def get(property_key, scope: nil)
-      if !property_key.include?(".")
-        property_key = BLANK_CONTEXT_NAME + '.' + property_key
-      end
-
-      if @flattened.key?(property_key)
-        @flattened[property_key]
-      else
-        scope ||= property_key.split('.').first
-
-        if @contexts[scope]
-          # If the key is in the present scope, parent values should not be used.
-          # We can consider the parent value clobbered by the present scope.
-          nil
-        else
-          @parent&.get(property_key, scope: scope)
-        end
-      end
+      property_key = BLANK_CONTEXT_NAME + '.' + property_key unless property_key.include?('.')
+      @flattened[property_key]
     end
 
     def to_h
-      contexts.transform_values(&:to_h)
+      @contexts.transform_values(&:to_h)
     end
 
     def to_s
-      "#<Quonfig::Context:#{object_id} id=#{@id} #{to_h}>"
-    end
-
-    # Visualize a tree of the context up through its parents
-    #
-    # example:
-    #
-    # | jit:                            {"user"=>{"name"=>"Frank"}}
-    # |-- block:                        {"clock"=>{"timezone"=>"PST"}}
-    # |---- default_context:            {"prefab-api-key"=>{"user-id"=>123}}
-    # |------ global_context:           {"cpu"=>{"count"=>4, "speed"=>"2.4GHz"}, "clock"=>{"timezone"=>"UTC"}}
-    def tree(depth = 0)
-      "|" + ("-" * depth) + " #{id}: #{(" " * (30 - id.to_s.length - depth ))}#{to_h}\n" + (@parent&.tree(depth + 2) || '')
+      "#<Quonfig::Context:#{object_id} #{to_h}>"
     end
 
     def clear
@@ -176,57 +82,11 @@ module Quonfig
     end
 
     def context(name)
-      contexts[name.to_s] || NamedContext.new(name, {})
-    end
-
-    def merge_default(defaults)
-      defaults.keys.each do |name|
-        set(name, context(name).merge!(defaults[name]))
-      end
-
-      self
-    end
-
-    def reportable_tree
-      ctx = self
-      reportables = []
-
-      while ctx
-        reportables.unshift(ctx)
-        ctx = ctx.parent
-      end
-
-      reportables
-    end
-
-    def to_proto(namespace)
-      reportable_contexts = {}
-
-      reportable_tree.each do |ctx|
-        ctx.contexts.each do |name, context|
-          reportable_contexts[name] = context
-        end
-      end
-
-      PrefabProto::ContextSet.new(
-        contexts: reportable_contexts.map do |name, context|
-          context.to_proto
-        end
-      )
-    end
-
-    def slim_proto
-      PrefabProto::ContextSet.new(
-        contexts: contexts.map do |_, context|
-          context.to_proto
-        end
-      )
+      @contexts[name.to_s] || NamedContext.new(name, {})
     end
 
     def grouped_key
-      contexts.map do |_, context|
-        context.key
-      end.sort.join('|')
+      @contexts.map { |_, ctx| ctx.key }.sort.join('|')
     end
 
     include Comparable

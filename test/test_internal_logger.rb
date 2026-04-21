@@ -4,6 +4,15 @@ require 'test_helper'
 
 class TestInternalLogger < Minitest::Test
 
+  def teardown
+    # using_quonfig_log_filter! mutates the shared @@instances list — restore
+    # the default :warn level so it doesn't bleed into other tests' $logs.
+    Quonfig::InternalLogger.class_variable_get(:@@instances).each do |logger|
+      logger.level = :warn
+    end
+    super
+  end
+
   def test_levels
     logger_a = Quonfig::InternalLogger.new(A)
     logger_b = Quonfig::InternalLogger.new(B)

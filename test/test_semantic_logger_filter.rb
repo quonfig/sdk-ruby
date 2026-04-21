@@ -3,170 +3,121 @@
 require 'test_helper'
 require 'semantic_logger'
 
+# Verifies the corrected design: ONE Quonfig config gates many loggers.
+# The filter passes `quonfig.logger-name` as a context property so customer
+# rules can target `PROP_STARTS_WITH_ONE_OF my_app.db` etc.
 class TestSemanticLoggerFilter < Minitest::Test
-  def setup
-    super
-    @client = new_client
-  end
+  CONFIG_KEY = 'log-levels.my-app'
 
-  # Build a LOG_LEVEL_V2 config that resolves to `level` for everyone.
-  def log_level_config(key, level)
-    PrefabProto::Config.new(
-      key: key,
-      id: key.hash.abs,
-      config_type: PrefabProto::ConfigType::LOG_LEVEL_V2,
-      value_type: PrefabProto::Config::ValueType::LOG_LEVEL,
-      rows: [
-        PrefabProto::ConfigRow.new(
-          values: [
-            PrefabProto::ConditionalValue.new(
-              value: PrefabProto::ConfigValue.new(log_level: level)
-            )
-          ]
-        )
-      ]
-    )
+  # FakeClient lets us assert the exact key + context the filter passes to
+  # the SDK without standing up a full datadir. The single-key contract is
+  # the *specific mechanism* this bead is verifying — if the filter ever
+  # regresses to a per-logger key, this captured request goes wrong.
+  class FakeClient
+    attr_reader :calls
+
+    def initialize(level)
+      @level = level
+      @calls = []
+    end
+
+    def get(key, default = nil, context = nil)
+      @calls << { key: key, default: default, context: context }
+      @level.nil? ? default : @level
+    end
   end
 
   def make_log(name, level)
-    SemanticLogger::Log.new(name, level).tap do |log|
-      log.level = level
-    end
+    SemanticLogger::Log.new(name, level).tap { |log| log.level = level }
   end
 
-  def test_exact_match_passes_configured_level_through
-    inject_config(@client, log_level_config('log-levels.my_app.foo.bar', PrefabProto::LogLevel::INFO))
-    filter = @client.semantic_logger_filter
-
-    assert_equal true, filter.call(make_log('MyApp::Foo::Bar', :info))
-    assert_equal true, filter.call(make_log('MyApp::Foo::Bar', :warn))
-    assert_equal true, filter.call(make_log('MyApp::Foo::Bar', :error))
-    assert_equal true, filter.call(make_log('MyApp::Foo::Bar', :fatal))
+  def filter_for(level)
+    client = FakeClient.new(level)
+    [Quonfig::SemanticLoggerFilter.new(client, config_key: CONFIG_KEY), client]
   end
 
-  def test_exact_match_suppresses_below_configured_level
-    inject_config(@client, log_level_config('log-levels.my_app.foo.bar', PrefabProto::LogLevel::WARN))
-    filter = @client.semantic_logger_filter
+  def test_calls_single_config_key_with_logger_name_in_context
+    filter, client = filter_for(:info)
+    filter.call(make_log('MyApp::Foo::Bar', :warn))
 
-    assert_equal false, filter.call(make_log('MyApp::Foo::Bar', :trace))
-    assert_equal false, filter.call(make_log('MyApp::Foo::Bar', :debug))
-    assert_equal false, filter.call(make_log('MyApp::Foo::Bar', :info))
-    assert_equal true,  filter.call(make_log('MyApp::Foo::Bar', :warn))
+    assert_equal 1, client.calls.size
+    assert_equal CONFIG_KEY, client.calls.first[:key]
+    ctx = client.calls.first[:context]
+    assert_equal({ 'quonfig' => { 'logger-name' => 'my_app.foo.bar' } }, ctx)
+  end
+
+  def test_passes_through_when_level_meets_configured_minimum
+    filter, _ = filter_for(:info)
+
+    assert_equal true, filter.call(make_log('Anything', :info))
+    assert_equal true, filter.call(make_log('Anything', :warn))
+    assert_equal true, filter.call(make_log('Anything', :error))
+    assert_equal true, filter.call(make_log('Anything', :fatal))
+  end
+
+  def test_suppresses_below_configured_minimum
+    filter, _ = filter_for(:warn)
+
+    assert_equal false, filter.call(make_log('Anything', :trace))
+    assert_equal false, filter.call(make_log('Anything', :debug))
+    assert_equal false, filter.call(make_log('Anything', :info))
+    assert_equal true,  filter.call(make_log('Anything', :warn))
   end
 
   def test_missing_key_falls_through_to_semantic_logger_default
-    filter = @client.semantic_logger_filter
+    filter, _ = filter_for(nil) # FakeClient returns the default (nil) when configured level is nil
 
-    # No config set — filter should allow the log through (return true)
-    # so SemanticLogger's static level decides.
-    assert_equal true, filter.call(make_log('MyApp::Foo::Bar', :trace))
-    assert_equal true, filter.call(make_log('MyApp::Foo::Bar', :debug))
-    assert_equal true, filter.call(make_log('MyApp::Foo::Bar', :info))
-  end
-
-  def test_no_hierarchy_walk
-    # Parent is set to WARN but the child (log-levels.my_app.foo.bar) is NOT set.
-    # Old Reforge logic would walk up and apply WARN; new logic must NOT.
-    inject_config(@client, log_level_config('log-levels.my_app', PrefabProto::LogLevel::WARN))
-    filter = @client.semantic_logger_filter
-
-    # A :debug log on the child — would be suppressed by WARN if hierarchy
-    # walking were in place. Exact-match behavior returns true (fall-through).
-    assert_equal true, filter.call(make_log('MyApp::Foo::Bar', :debug))
+    assert_equal true, filter.call(make_log('Anything', :trace))
+    assert_equal true, filter.call(make_log('Anything', :debug))
   end
 
   def test_logger_name_normalization
-    # MyApp::Foo::Bar → my_app.foo.bar
-    inject_config(@client, log_level_config('log-levels.my_app.foo.bar', PrefabProto::LogLevel::ERROR))
-    filter = @client.semantic_logger_filter
+    filter, client = filter_for(:debug)
 
-    # :info is below :error → must be suppressed, proving the key matched.
-    assert_equal false, filter.call(make_log('MyApp::Foo::Bar', :info))
-
-    # Also prove CamelCase→snake_case: HTMLParser → html_parser
-    inject_config(@client, log_level_config('log-levels.html_parser', PrefabProto::LogLevel::FATAL))
-    assert_equal false, filter.call(make_log('HTMLParser', :error))
-  end
-
-  def test_custom_key_prefix
-    inject_config(@client, log_level_config('custom.my_app.foo.bar', PrefabProto::LogLevel::ERROR))
-    filter = @client.semantic_logger_filter(key_prefix: 'custom.')
-
-    assert_equal false, filter.call(make_log('MyApp::Foo::Bar', :info))
-    assert_equal true,  filter.call(make_log('MyApp::Foo::Bar', :error))
-  end
-
-  def test_context_passes_through
-    # Build a config whose level depends on user.role = 'admin'.
-    key = 'log-levels.my_app.foo.bar'
-    config = PrefabProto::Config.new(
-      key: key,
-      id: 99,
-      config_type: PrefabProto::ConfigType::LOG_LEVEL_V2,
-      value_type: PrefabProto::Config::ValueType::LOG_LEVEL,
-      rows: [
-        PrefabProto::ConfigRow.new(
-          values: [
-            PrefabProto::ConditionalValue.new(
-              criteria: [
-                PrefabProto::Criterion.new(
-                  operator: PrefabProto::Criterion::CriterionOperator::PROP_IS_ONE_OF,
-                  property_name: 'user.role',
-                  value_to_match: string_list(['admin'])
-                )
-              ],
-              value: PrefabProto::ConfigValue.new(log_level: PrefabProto::LogLevel::TRACE)
-            ),
-            PrefabProto::ConditionalValue.new(
-              value: PrefabProto::ConfigValue.new(log_level: PrefabProto::LogLevel::ERROR)
-            )
-          ]
-        )
-      ]
-    )
-    inject_config(@client, config)
-    filter = @client.semantic_logger_filter
-
-    # No context → ERROR level → :info suppressed
-    assert_equal false, filter.call(make_log('MyApp::Foo::Bar', :info))
-
-    # With admin context → TRACE level → :info passes
-    @client.with_context(user: { role: 'admin' }) do
-      assert_equal true, filter.call(make_log('MyApp::Foo::Bar', :info))
+    {
+      'MyApp::Foo::Bar' => 'my_app.foo.bar',
+      'HTMLParser'      => 'html_parser',
+      'foo'             => 'foo',
+      'A::B::CDPath'    => 'a.b.cd_path'
+    }.each do |raw, expected|
+      client.calls.clear
+      filter.call(make_log(raw, :info))
+      assert_equal expected, client.calls.first[:context]['quonfig']['logger-name'],
+                   "normalize(#{raw.inspect}) should be #{expected.inspect}"
     end
+  end
+
+  def test_no_dotted_path_traversal_or_get_log_level
+    # Verifies the legacy hierarchical walk is gone — the filter must NOT
+    # synthesize keys like "log-levels.my_app" or call any `get_log_level`.
+    refute Quonfig::SemanticLoggerFilter.instance_methods.include?(:get_log_level)
+
+    filter, client = filter_for(:info)
+    filter.call(make_log('MyApp::Foo::Bar', :info))
+
+    keys = client.calls.map { |c| c[:key] }
+    assert_equal [CONFIG_KEY], keys.uniq,
+                 'Filter should call exactly the configured key, never derived per-logger keys'
+  end
+
+  def test_all_six_levels_mapped_correctly
+    expected = { trace: 0, debug: 1, info: 2, warn: 3, error: 4, fatal: 5 }
+    assert_equal expected, Quonfig::SemanticLoggerFilter::LEVELS
+  end
+
+  def test_string_level_from_config
+    filter, _ = filter_for('warn')
+
+    assert_equal false, filter.call(make_log('Anything', :info))
+    assert_equal true,  filter.call(make_log('Anything', :warn))
   end
 
   def test_raises_loaderror_when_semantic_logger_missing
-    skip unless defined?(Quonfig::SemanticLoggerFilter)
-
     Quonfig::SemanticLoggerFilter.stub(:semantic_logger_loaded?, false) do
-      err = assert_raises(LoadError) { @client.semantic_logger_filter }
+      err = assert_raises(LoadError) do
+        Quonfig::SemanticLoggerFilter.new(FakeClient.new(:info), config_key: CONFIG_KEY)
+      end
       assert_match(/semantic_logger/i, err.message)
     end
-  end
-
-  def test_all_six_levels_mapped
-    levels = {
-      trace: 0,
-      debug: 1,
-      info:  2,
-      warn:  3,
-      error: 4,
-      fatal: 5
-    }
-
-    levels.each do |name, expected|
-      assert_equal expected, Quonfig::SemanticLoggerFilter::LEVELS[name],
-                   "Level :#{name} should map to #{expected}"
-    end
-  end
-
-  def test_module_helper_returns_a_filter
-    # Quonfig.semantic_logger_filter should return a filter on the global singleton.
-    Quonfig.instance_variable_set(:@singleton, @client)
-    filter = Quonfig.semantic_logger_filter
-    assert_respond_to filter, :call
-  ensure
-    Quonfig.instance_variable_set(:@singleton, nil)
   end
 end

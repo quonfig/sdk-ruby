@@ -1,16 +1,18 @@
 # frozen_string_literal: true
 
+# Minimal stand-in for Quonfig::Client used by Evaluator/ConfigLoader tests.
+# We deliberately keep this tiny so the tests don't depend on the live
+# ConfigStore/Resolver/Evaluator wiring — they exercise their target in
+# isolation.
 class MockBaseClient
   STAGING_ENV_ID = 1
   PRODUCTION_ENV_ID = 2
   TEST_ENV_ID = 3
-  attr_reader :namespace, :logger, :config_client, :options, :posts
+
+  attr_reader :options
 
   def initialize(options = Quonfig::Options.new)
     @options = options
-    @namespace = namespace
-    @config_client = MockConfigClient.new
-    @posts = []
   end
 
   def instance_hash
@@ -21,21 +23,5 @@ class MockBaseClient
     1
   end
 
-  def post(_, _)
-    raise 'Use wait_for_post_requests'
-  end
-
-  def log
-    @logger
-  end
-
-  def context_shape_aggregator; end
-
-  def evaluation_summary_aggregator; end
-
-  def example_contexts_aggregator; end
-
-  def config_value(key)
-    @config_values[key]
-  end
+  def log; end
 end
