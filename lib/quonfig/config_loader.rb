@@ -24,8 +24,8 @@ module Quonfig
     #   :not_modified  — 304 response; cache still valid
     #   :failed        — every configured source failed
     def fetch!
-      Array(@options.config_sources).each do |source|
-        result = fetch_from(source)
+      Array(@options.config_api_urls).each do |api_url|
+        result = fetch_from(api_url)
         return result if result != :failed
       end
       :failed

@@ -9,7 +9,7 @@ class TestConfigLoader < Minitest::Test
     super
     options = Quonfig::Options.new(
       sdk_key: '1-test-sdk-key',
-      sources: ['https://primary.example.test']
+      api_urls: ['https://primary.example.test']
     )
     @loader = Quonfig::ConfigLoader.new(MockBaseClient.new(options))
   end

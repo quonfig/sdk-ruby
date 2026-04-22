@@ -59,11 +59,10 @@ module Quonfig
     end
   end
 
-  class OptionsDefaultSourcesTest < Minitest::Test
-    def test_default_sources_use_quonfig_domain
-      assert_includes Options::DEFAULT_SOURCES, 'https://primary.quonfig.com'
-      assert_includes Options::DEFAULT_SOURCES, 'https://secondary.quonfig.com'
-      refute(Options::DEFAULT_SOURCES.any? { |s| s.include?('reforge.com') })
+  class OptionsDefaultApiUrlsTest < Minitest::Test
+    def test_default_api_urls_use_quonfig_domain
+      assert_includes Options::DEFAULT_API_URLS, 'https://primary.quonfig.com'
+      refute(Options::DEFAULT_API_URLS.any? { |s| s.include?('reforge.com') })
     end
 
     def test_telemetry_destination_honors_quonfig_telemetry_url_env

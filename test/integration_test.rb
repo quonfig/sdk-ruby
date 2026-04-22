@@ -58,7 +58,7 @@ class IntegrationTest
     Hash[
       (overrides || {}).map do |(k, v)|
         if k.to_s == "quonfig_api_url"
-          [:sources, [v]]
+          [:api_urls, [v]]
         else
           [k.to_sym, v]
         end
@@ -132,7 +132,7 @@ class IntegrationTest
     @_options ||= Quonfig::Options.new(**{
       prefab_datasources: Quonfig::Options::DATASOURCES::ALL,
       sdk_key: ENV['QUONFIG_INTEGRATION_TEST_SDK_KEY'],
-      sources: [
+      api_urls: [
         'https://primary.goatsofreforge.com',
         'https://secondary.goatsofreforge.com',
       ],

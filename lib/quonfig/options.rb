@@ -1,14 +1,16 @@
 # frozen_string_literal: true
 
+require 'uri'
+
 module Quonfig
   # Options passed to Quonfig::Client at construction time.
   class Options
     attr_reader :sdk_key
     attr_reader :environment
-    attr_reader :sources
-    attr_reader :sse_sources
+    attr_reader :api_urls
+    attr_reader :sse_api_urls
     attr_reader :telemetry_destination
-    attr_reader :config_sources
+    attr_reader :config_api_urls
     attr_reader :on_no_default
     attr_reader :initialization_timeout_sec
     attr_reader :on_init_failure
@@ -34,13 +36,25 @@ module Quonfig
     DEFAULT_MAX_EXAMPLE_CONTEXTS = 100_000
     DEFAULT_MAX_EVAL_SUMMARIES = 100_000
 
-    DEFAULT_SOURCES = [
+    DEFAULT_API_URLS = [
       'https://primary.quonfig.com',
-      'https://secondary.quonfig.com',
     ].freeze
 
+    # Derive the SSE stream URL for a given API URL by prepending `stream.` to
+    # the hostname. Preserves scheme, port, and path.
+    #
+    #   derive_stream_url('https://primary.quonfig.com')
+    #     # => 'https://stream.primary.quonfig.com'
+    #   derive_stream_url('http://localhost:6550')
+    #     # => 'http://stream.localhost:6550'
+    def self.derive_stream_url(api_url)
+      uri = URI.parse(api_url)
+      uri.host = "stream.#{uri.host}" if uri.host
+      uri.to_s
+    end
+
     private def init(
-      sources: nil,
+      api_urls: nil,
       sdk_key: ENV['QUONFIG_BACKEND_SDK_KEY'],
       environment: ENV['QUONFIG_ENVIRONMENT'],
       datadir: ENV['QUONFIG_DIR'],
@@ -81,16 +95,16 @@ module Quonfig
       @collect_example_contexts = false
       @collect_max_example_contexts = 0
 
-      if ENV['QUONFIG_SOURCES'] && ENV['QUONFIG_SOURCES'].length > 0
-        sources = ENV['QUONFIG_SOURCES']
+      if ENV['QUONFIG_API_URLS'] && ENV['QUONFIG_API_URLS'].length > 0
+        api_urls = ENV['QUONFIG_API_URLS']
       end
 
-      @sources = Array(sources || DEFAULT_SOURCES).map { |source| remove_trailing_slash(source) }
+      @api_urls = Array(api_urls || DEFAULT_API_URLS).map { |url| remove_trailing_slash(url) }
 
-      @sse_sources = @sources
-      @config_sources = @sources
+      @sse_api_urls = @api_urls.map { |url| Quonfig::Options.derive_stream_url(url) }
+      @config_api_urls = @api_urls
 
-      @telemetry_destination = ENV['QUONFIG_TELEMETRY_URL'] || derive_telemetry_destination(@sources)
+      @telemetry_destination = ENV['QUONFIG_TELEMETRY_URL'] || derive_telemetry_destination(@api_urls)
 
       case context_upload_mode
       when :none
@@ -166,12 +180,12 @@ module Quonfig
       url.end_with?('/') ? url[0..-2] : url
     end
 
-    # Derive a telemetry URL from the configured sources by swapping the
+    # Derive a telemetry URL from the configured api_urls by swapping the
     # primary/secondary host prefix for `telemetry` on a *.quonfig.com host.
-    # Falls back to https://telemetry.quonfig.com if no source matches.
-    def derive_telemetry_destination(sources)
-      sources.each do |source|
-        match = source.match(%r{\Ahttps?://(?:primary|secondary)\.([^/]*quonfig\.com)}i)
+    # Falls back to https://telemetry.quonfig.com if no URL matches.
+    def derive_telemetry_destination(api_urls)
+      api_urls.each do |api_url|
+        match = api_url.match(%r{\Ahttps?://(?:primary|secondary)\.([^/]*quonfig\.com)}i)
         return "https://telemetry.#{match[1]}" if match
       end
       'https://telemetry.quonfig.com'

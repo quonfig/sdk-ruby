@@ -7,7 +7,7 @@ require 'json'
 
 class TestSSEConfigClient < Minitest::Test
   def test_connect_url_is_api_v2_sse
-    prefab_options = OpenStruct.new(sse_sources: ['https://stream.example.com'], sdk_key: 'test')
+    prefab_options = OpenStruct.new(sse_api_urls: ['https://stream.example.com'], sdk_key: 'test')
     config_loader = OpenStruct.new(highwater_mark: 0)
     client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
 
@@ -29,7 +29,7 @@ class TestSSEConfigClient < Minitest::Test
   end
 
   def test_on_event_parses_json_into_config_envelope
-    prefab_options = OpenStruct.new(sse_sources: ['https://stream.example.com'], sdk_key: 'test')
+    prefab_options = OpenStruct.new(sse_api_urls: ['https://stream.example.com'], sdk_key: 'test')
     config_loader = OpenStruct.new(highwater_mark: 0)
     client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
 
@@ -67,7 +67,7 @@ class TestSSEConfigClient < Minitest::Test
   end
 
   def test_headers_basic_auth_uses_1_prefix
-    prefab_options = OpenStruct.new(sse_sources: ['https://stream.example.com'], sdk_key: 'mykey')
+    prefab_options = OpenStruct.new(sse_api_urls: ['https://stream.example.com'], sdk_key: 'mykey')
     config_loader = OpenStruct.new(highwater_mark: 0)
     client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
 
@@ -79,17 +79,17 @@ class TestSSEConfigClient < Minitest::Test
   end
 
   def test_client
-    sources = [
+    api_urls = [
       'https://primary.goatsofreforge.com'
     ]
 
-    options = Quonfig::Options.new(sources: sources, sdk_key: ENV.fetch('QUONFIG_INTEGRATION_TEST_SDK_KEY', nil))
+    options = Quonfig::Options.new(api_urls: api_urls, sdk_key: ENV.fetch('QUONFIG_INTEGRATION_TEST_SDK_KEY', nil))
 
     config_loader = OpenStruct.new(highwater_mark: 4)
 
     client = Quonfig::SSEConfigClient.new(options, config_loader)
 
-    assert_equal "https://stream.goatsofreforge.com", client.source
+    assert_equal "https://stream.primary.goatsofreforge.com", client.source
 
     result = nil
 
@@ -107,12 +107,12 @@ class TestSSEConfigClient < Minitest::Test
   end
 
   def test_failing_over
-    sources = [
+    api_urls = [
       'https://does.not.exist.staging-prefab.cloud/',
       'https://api.goatsofreforge.com/'
     ]
 
-    prefab_options = Quonfig::Options.new(sources: sources, sdk_key: ENV.fetch('QUONFIG_INTEGRATION_TEST_SDK_KEY', nil))
+    prefab_options = Quonfig::Options.new(api_urls: api_urls, sdk_key: ENV.fetch('QUONFIG_INTEGRATION_TEST_SDK_KEY', nil))
 
     config_loader = OpenStruct.new(highwater_mark: 4)
 
@@ -135,7 +135,7 @@ class TestSSEConfigClient < Minitest::Test
     client.close
 
     assert_logged [
-      %r{failed to connect: .*https://does.not.exist},
+      %r{failed to connect: .*https://stream\.does\.not\.exist},
       /HTTP::ConnectionError/
     ]
   end
@@ -145,7 +145,7 @@ class TestSSEConfigClient < Minitest::Test
 
     config_loader = OpenStruct.new(highwater_mark: 4)
 
-    prefab_options = OpenStruct.new(sse_sources: ['http://localhost:4567'], sdk_key: 'test')
+    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4567'], sdk_key: 'test')
     last_event_id = nil
     client = nil
 
@@ -181,7 +181,7 @@ class TestSSEConfigClient < Minitest::Test
 
     config_loader = OpenStruct.new(highwater_mark: 4)
 
-    prefab_options = OpenStruct.new(sse_sources: ['http://localhost:4568'], sdk_key: 'test')
+    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4568'], sdk_key: 'test')
     last_event_id = nil
     client = nil
 
@@ -323,7 +323,7 @@ class TestSSEConfigClient < Minitest::Test
   def test_last_event_id_initialization
     # Test with positive highwater_mark
     config_loader = OpenStruct.new(highwater_mark: 42)
-    prefab_options = OpenStruct.new(sse_sources: ['http://localhost:4567'], sdk_key: 'test')
+    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4567'], sdk_key: 'test')
     client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
 
     # Mock SSE::Client.new to capture the last_event_id argument

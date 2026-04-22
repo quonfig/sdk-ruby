@@ -5,36 +5,55 @@ require 'test_helper'
 class TestOptions < Minitest::Test
   API_KEY = 'abcdefg'
 
-  def test_api_override_env_var
-    assert_equal Quonfig::Options::DEFAULT_SOURCES, Quonfig::Options.new.sources
+  def test_api_urls_override_env_var
+    assert_equal Quonfig::Options::DEFAULT_API_URLS, Quonfig::Options.new.api_urls
 
     # blank doesn't take effect
-    with_env('QUONFIG_SOURCES', '') do
-      assert_equal Quonfig::Options::DEFAULT_SOURCES, Quonfig::Options.new.sources
+    with_env('QUONFIG_API_URLS', '') do
+      assert_equal Quonfig::Options::DEFAULT_API_URLS, Quonfig::Options.new.api_urls
     end
 
     # non-blank does take effect
-    with_env('QUONFIG_SOURCES', 'https://override.example.com') do
-      assert_equal ["https://override.example.com"], Quonfig::Options.new.sources
+    with_env('QUONFIG_API_URLS', 'https://override.example.com') do
+      assert_equal ["https://override.example.com"], Quonfig::Options.new.api_urls
     end
   end
 
-  def test_default_sources_point_to_quonfig
+  def test_default_api_urls_point_to_quonfig
     assert_equal [
       'https://primary.quonfig.com',
-      'https://secondary.quonfig.com',
-    ], Quonfig::Options::DEFAULT_SOURCES
+    ], Quonfig::Options::DEFAULT_API_URLS
   end
 
-  def test_overriding_sources
-    assert_equal Quonfig::Options::DEFAULT_SOURCES, Quonfig::Options.new.sources
+  def test_overriding_api_urls
+    assert_equal Quonfig::Options::DEFAULT_API_URLS, Quonfig::Options.new.api_urls
 
     # a plain string ends up wrapped in an array
-    source = 'https://example.com'
-    assert_equal [source], Quonfig::Options.new(sources: source).sources
+    api_url = 'https://example.com'
+    assert_equal [api_url], Quonfig::Options.new(api_urls: api_url).api_urls
 
-    sources = ['https://example.com', 'https://example2.com']
-    assert_equal sources, Quonfig::Options.new(sources: sources).sources
+    api_urls = ['https://example.com', 'https://example2.com']
+    assert_equal api_urls, Quonfig::Options.new(api_urls: api_urls).api_urls
+  end
+
+  def test_derive_stream_url_prepends_stream_to_hostname
+    assert_equal 'https://stream.primary.quonfig.com',
+                 Quonfig::Options.derive_stream_url('https://primary.quonfig.com')
+  end
+
+  def test_derive_stream_url_preserves_port
+    assert_equal 'http://stream.localhost:6550',
+                 Quonfig::Options.derive_stream_url('http://localhost:6550')
+  end
+
+  def test_derive_stream_url_preserves_scheme_and_path
+    assert_equal 'http://stream.api.example.com/base',
+                 Quonfig::Options.derive_stream_url('http://api.example.com/base')
+  end
+
+  def test_derive_stream_url_with_eu_subdomain
+    assert_equal 'https://stream.primary.eu.quonfig.com',
+                 Quonfig::Options.derive_stream_url('https://primary.eu.quonfig.com')
   end
 
   def test_works_with_named_arguments
@@ -141,8 +160,8 @@ class TestOptions < Minitest::Test
     assert_equal 'https://telemetry.quonfig.com', Quonfig::Options.new.telemetry_destination
   end
 
-  def test_telemetry_destination_derives_from_custom_quonfig_sources
-    options = Quonfig::Options.new(sources: ['https://primary.eu.quonfig.com'])
+  def test_telemetry_destination_derives_from_custom_quonfig_api_urls
+    options = Quonfig::Options.new(api_urls: ['https://primary.eu.quonfig.com'])
     assert_equal 'https://telemetry.eu.quonfig.com', options.telemetry_destination
   end
 end

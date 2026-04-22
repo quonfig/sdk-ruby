@@ -38,8 +38,8 @@ module Quonfig
     end
 
     def start(&load_configs)
-      if @prefab_options.sse_sources.empty?
-        @logger.debug 'No SSE sources configured'
+      if @prefab_options.sse_api_urls.empty?
+        @logger.debug 'No SSE api_urls configured'
         return
       end
 
@@ -125,11 +125,11 @@ module Quonfig
     def source
       @source_index = @source_index.nil? ? 0 : @source_index + 1
 
-      if @source_index >= @prefab_options.sse_sources.size
+      if @source_index >= @prefab_options.sse_api_urls.size
         @source_index = 0
       end
 
-      return @prefab_options.sse_sources[@source_index].sub(/(primary|secondary)\./, 'stream.').sub(/(belt|suspenders)\./, 'stream.')
+      @prefab_options.sse_api_urls[@source_index]
     end
   end
 end
