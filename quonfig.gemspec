@@ -27,7 +27,7 @@ Gem::Specification.new do |s|
     ".envrc.sample",
     ".github/CODEOWNERS",
     ".github/pull_request_template.md",
-    ".github/workflows/push_gem.yml",
+    ".github/workflows/release.yml",
     ".github/workflows/ruby.yml",
     ".github/workflows/test.yaml",
     ".rubocop.yml",
