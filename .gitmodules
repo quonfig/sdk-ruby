@@ -1,3 +1,0 @@
-[submodule "test/shared-integration-test-data"]
-	path = test/shared-integration-test-data
-	url = git@github.com:ReforgeHQ/integration-test-data.git
