@@ -6,7 +6,7 @@ require 'ostruct'
 require 'json'
 
 class TestSSEConfigClient < Minitest::Test
-  def test_connect_url_is_api_v2_sse
+  def test_connect_url_is_api_v2_sse_config
     prefab_options = OpenStruct.new(sse_api_urls: ['https://stream.example.com'], sdk_key: 'test')
     config_loader = OpenStruct.new(highwater_mark: 0)
     client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
@@ -25,7 +25,7 @@ class TestSSEConfigClient < Minitest::Test
       client.connect { |_e, _ev, _s| }
     end
 
-    assert_equal 'https://stream.example.com/api/v2/sse', captured_url
+    assert_equal 'https://stream.example.com/api/v2/sse/config', captured_url
   end
 
   def test_on_event_parses_json_into_config_envelope

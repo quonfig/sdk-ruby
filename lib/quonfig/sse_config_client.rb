@@ -65,7 +65,7 @@ module Quonfig
     end
 
     def connect(&load_configs)
-      url = "#{source}/api/v2/sse"
+      url = "#{source}/api/v2/sse/config"
       @logger.debug "SSE Streaming Connect to #{url} start_at #{@config_loader.highwater_mark}"
 
       SSE::Client.new(url,

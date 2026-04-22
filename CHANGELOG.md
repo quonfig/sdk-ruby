@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.2 - 2026-04-22
+
+- **Fix:** SSE client now connects to `/api/v2/sse/config` to match the server route and other Quonfig SDKs (was `/api/v2/sse`, which would have failed at runtime against api-delivery). (qfg-uq8)
+- **Test cleanup:** removed two unused Prefab-era integration tests in `test_sse_config_client.rb` that targeted `goatsofreforge.com` and the dead `test/integration_test.rb` helper class. (qfg-9u6)
+
 ## 0.0.1 - 2026-04-21
 
 - **Rename:** gem renamed from `sdk-reforge` to `quonfig`; top-level module `Reforge` → `Quonfig`. First release of the Quonfig Ruby SDK; version reset to `0.0.1` under the new gem name.
