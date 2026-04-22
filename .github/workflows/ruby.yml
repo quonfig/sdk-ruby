@@ -56,7 +56,5 @@ jobs:
       working-directory: sdk-ruby
       run: bundle exec rake --trace
       env:
-        REFORGE_INTEGRATION_TEST_SDK_KEY: ${{ secrets.REFORGE_INTEGRATION_TEST_SDK_KEY }}
-        REFORGE_INTEGRATION_TEST_ENCRYPTION_KEY: c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221
         NOT_A_NUMBER: "abcd"
         IS_A_NUMBER: "1234"

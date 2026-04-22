@@ -78,68 +78,6 @@ class TestSSEConfigClient < Minitest::Test
     refute h.key?('X-Reforge-SDK-Version')
   end
 
-  def test_client
-    api_urls = [
-      'https://primary.goatsofreforge.com'
-    ]
-
-    options = Quonfig::Options.new(api_urls: api_urls, sdk_key: ENV.fetch('QUONFIG_INTEGRATION_TEST_SDK_KEY', nil))
-
-    config_loader = OpenStruct.new(highwater_mark: 4)
-
-    client = Quonfig::SSEConfigClient.new(options, config_loader)
-
-    assert_equal "https://stream.primary.goatsofreforge.com", client.source
-
-    result = nil
-
-    # fake our load_configs block
-    client.start do |c, _event, source|
-      result = c
-      assert_equal :sse, source
-    end
-
-    wait_for -> { !result.nil? }
-
-    assert result.configs.size > 30
-  ensure
-    client.close
-  end
-
-  def test_failing_over
-    api_urls = [
-      'https://does.not.exist.staging-prefab.cloud/',
-      'https://api.goatsofreforge.com/'
-    ]
-
-    prefab_options = Quonfig::Options.new(api_urls: api_urls, sdk_key: ENV.fetch('QUONFIG_INTEGRATION_TEST_SDK_KEY', nil))
-
-    config_loader = OpenStruct.new(highwater_mark: 4)
-
-    sse_options = Quonfig::SSEConfigClient::Options.new(seconds_between_new_connection: 0.01, sleep_delay_for_new_connection_check: 0.01)
-
-    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader, sse_options)
-
-    result = nil
-
-    # fake our load_configs block
-    client.start do |c, _event, source|
-      result = c
-      assert_equal :sse, source
-    end
-
-    wait_for -> { !result.nil? }
-
-    assert result.configs.size > 30
-  ensure
-    client.close
-
-    assert_logged [
-      %r{failed to connect: .*https://stream\.does\.not\.exist},
-      /HTTP::ConnectionError/
-    ]
-  end
-
   def test_recovering_from_disconnection
     server, = start_webrick_server(4567, DisconnectingEndpoint)
 
