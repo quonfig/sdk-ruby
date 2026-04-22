@@ -1,20 +1,27 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'timeout'
 
 module Quonfig
   # Public Quonfig SDK client.
   #
-  # Wires the new JSON stack: Quonfig::ConfigStore + Quonfig::Evaluator +
-  # Quonfig::Resolver. The legacy protobuf-driven ConfigClient/ConfigResolver
-  # path was removed in qfg-dk6.32. Network-mode (HTTP fetch + SSE updates) is
-  # not yet wired through Client; today the supported entry points are
-  # +datadir:+ (offline workspace) and +store:+ (caller-supplied
-  # Quonfig::ConfigStore, used by tests).
+  # Wires the JSON stack: Quonfig::ConfigStore + Quonfig::Evaluator +
+  # Quonfig::Resolver. Three modes are supported:
+  #
+  # 1. +datadir:+ (offline) -- load a workspace from the local filesystem.
+  # 2. +store:+ (test harness) -- caller-supplied ConfigStore, no I/O.
+  # 3. network mode (default) -- HTTP fetch from +api_urls+ populates the
+  #    ConfigStore, then (if enabled) an SSE subscription keeps it live.
+  #
+  # Network mode is the happy path for production SDK usage. The protobuf
+  # stack was retired in qfg-dk6.32; HTTP + SSE were wired back through Client
+  # in qfg-s7h.
   class Client
     LOG = Quonfig::InternalLogger.new(self)
 
-    attr_reader :options, :resolver, :store, :evaluator, :instance_hash
+    attr_reader :options, :resolver, :store, :evaluator, :instance_hash,
+                :config_loader
 
     def initialize(options = nil, store: nil, **option_kwargs)
       @options =
@@ -27,10 +34,22 @@ module Quonfig
         end
       @global_context = normalize_context(@options.global_context)
       @instance_hash = SecureRandom.uuid
-      @store = store || build_store
+      @store = store || Quonfig::ConfigStore.new
       @evaluator = Quonfig::Evaluator.new(@store, env_id: @options.environment)
       @resolver = Quonfig::Resolver.new(@store, @evaluator)
       @semantic_logger_filters = {}
+      @sse_client = nil
+      @poll_thread = nil
+      @stopped = false
+
+      # If the caller injected a store, we're in test/bootstrap mode; skip I/O.
+      return if store
+
+      if @options.datadir
+        load_datadir_into_store
+      else
+        initialize_network_mode
+      end
     end
 
     # ---- Lookup --------------------------------------------------------
@@ -111,8 +130,17 @@ module Quonfig
     end
 
     def stop
-      # No background threads in datadir mode; placeholder for the future
-      # SSE/poll path so callers can use this method symmetrically.
+      @stopped = true
+      begin
+        @sse_client&.close
+      rescue StandardError => e
+        LOG.debug "Error closing SSE client: #{e.message}"
+      end
+      @sse_client = nil
+
+      thread = @poll_thread
+      @poll_thread = nil
+      thread&.kill
     end
 
     def fork
@@ -125,11 +153,97 @@ module Quonfig
 
     private
 
-    def build_store
-      if @options.datadir
-        Quonfig::Datadir.load_store(@options.datadir, @options.environment)
-      else
-        Quonfig::ConfigStore.new
+    def load_datadir_into_store
+      envelope = Quonfig::Datadir.load_envelope(@options.datadir, @options.environment)
+      envelope.configs.each { |cfg| @store.set(cfg['key'], cfg) }
+    end
+
+    # Initialize network mode: sync HTTP fetch (bounded by
+    # initialization_timeout_sec) then start SSE + polling as requested.
+    def initialize_network_mode
+      if @options.sdk_key.nil? || @options.sdk_key.to_s.strip.empty?
+        raise Quonfig::Errors::InvalidSdkKeyError, @options.sdk_key
+      end
+
+      @config_loader = Quonfig::ConfigLoader.new(@store, @options)
+
+      perform_initial_fetch
+
+      sse_started = @options.enable_sse && start_sse
+
+      # Polling is a fallback: if SSE is off or failed to start, poll. This
+      # avoids double-work when SSE is healthy but still refreshes the store
+      # in environments that block SSE (corporate proxies, Lambda, etc.).
+      start_polling if @options.enable_polling && !sse_started
+    end
+
+    def perform_initial_fetch
+      timeout = @options.initialization_timeout_sec || 10
+      result = :failed
+
+      begin
+        Timeout.timeout(timeout) do
+          result = @config_loader.fetch!
+        end
+      rescue Timeout::Error
+        handle_init_failure(
+          Quonfig::Errors::InitializationTimeoutError.new(timeout, nil)
+        )
+        return
+      end
+
+      handle_init_failure(RuntimeError.new('Config fetch failed against all api_urls')) if result == :failed
+    end
+
+    def handle_init_failure(err)
+      if @options.on_init_failure == Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN
+        LOG.warn "[quonfig] Initialization did not complete cleanly; continuing with empty store: #{err.message}"
+        return
+      end
+
+      raise err
+    end
+
+    # Returns true if SSE started successfully, false otherwise. A false here
+    # signals the caller to fall back to polling.
+    def start_sse
+      return false if @options.sse_api_urls.nil? || @options.sse_api_urls.empty?
+
+      @sse_client = Quonfig::SSEConfigClient.new(@options, @config_loader)
+      @sse_client.start do |envelope, _event, _source|
+        next if @stopped
+        begin
+          @config_loader.apply_envelope(envelope)
+          @on_update&.call
+        rescue StandardError => e
+          LOG.warn "[quonfig] Error applying SSE envelope: #{e.message}"
+        end
+      end
+      true
+    rescue StandardError => e
+      LOG.warn "[quonfig] SSE start failed: #{e.message}"
+      @sse_client = nil
+      false
+    end
+
+    def start_polling
+      poll_interval = @options.respond_to?(:poll_interval) && @options.poll_interval ? @options.poll_interval : 60
+      return if poll_interval <= 0
+
+      @poll_thread = Thread.new do
+        Thread.current.name = 'quonfig-poller'
+        loop do
+          break if @stopped
+          sleep poll_interval
+          break if @stopped
+
+          begin
+            @config_loader.fetch!
+            @on_update&.call
+          rescue StandardError => e
+            LOG.warn "[quonfig] Polling error: #{e.message}"
+          end
+        end
       end
     end
 

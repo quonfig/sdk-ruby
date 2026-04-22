@@ -18,6 +18,7 @@ module Quonfig
     attr_reader :datadir
     attr_reader :enable_sse
     attr_reader :enable_polling
+    attr_reader :poll_interval
     attr_reader :global_context
     attr_accessor :is_fork
 
@@ -60,6 +61,7 @@ module Quonfig
       datadir: ENV['QUONFIG_DIR'],
       enable_sse: true,
       enable_polling: true,
+      poll_interval: 60,
       on_no_default: ON_NO_DEFAULT::RAISE,
       initialization_timeout_sec: 10,
       on_init_failure: ON_INITIALIZATION_FAILURE::RAISE,
@@ -77,6 +79,7 @@ module Quonfig
       @datadir = datadir
       @enable_sse = enable_sse
       @enable_polling = enable_polling
+      @poll_interval = poll_interval
       @on_no_default = on_no_default
       @initialization_timeout_sec = initialization_timeout_sec
       @on_init_failure = on_init_failure

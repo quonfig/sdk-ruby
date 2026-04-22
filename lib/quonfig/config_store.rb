@@ -23,6 +23,10 @@ module Quonfig
       @lock.with_write_lock { @configs[key] = config }
     end
 
+    def delete(key)
+      @lock.with_write_lock { @configs.delete(key) }
+    end
+
     def clear
       @lock.with_write_lock do
         @configs.keys.each { |k| @configs.delete(k) }

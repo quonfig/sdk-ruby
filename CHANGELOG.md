@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.0.4 - 2026-04-22
+
+- **Fix (P0 from test-ruby friction log):** Network mode is now wired through
+  `Client`. Previously, `Quonfig.init` with just `QUONFIG_BACKEND_SDK_KEY`
+  succeeded silently against an empty store; `get` and `enabled?` returned
+  the default for every key because no HTTP fetch ever happened. Now:
+  - On `Client#initialize` (when neither `datadir:` nor `store:` is passed)
+    we do a synchronous HTTP GET against the first `api_urls[0]` (failing
+    over to secondaries), bounded by `initialization_timeout_sec` (default
+    10s). `on_init_failure` decides raise vs continue with empty store.
+  - `enable_sse` (default `true`) subscribes to `{stream.*}/api/v2/sse/config`
+    and applies incremental envelopes to the live `ConfigStore`.
+  - `enable_polling` (default `true`) starts a background poller IFF SSE did
+    not start successfully. This avoids double-fetching when SSE is healthy
+    while still refreshing in proxied / SSE-blocked environments. Interval
+    comes from `Options#poll_interval` (default 60s).
+  - `Client#stop` now closes the SSE connection and kills the poll thread.
+- Adds `Options#poll_interval` (default 60s); previously missing from the
+  Options surface despite being documented.
+- `ConfigLoader` now populates the `ConfigStore` directly on each successful
+  fetch, so the Evaluator/Resolver see the new configs immediately (wire
+  path matches sdk-node/sdk-go — `ConfigResponse` envelope JSON). (qfg-s7h)
+
 ## 0.0.3 - 2026-04-22
 
 - **Release plumbing only** — no functional changes. Renames the release

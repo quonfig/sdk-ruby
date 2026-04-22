@@ -66,13 +66,14 @@ module Quonfig
 
     def connect(&load_configs)
       url = "#{source}/api/v2/sse/config"
-      @logger.debug "SSE Streaming Connect to #{url} start_at #{@config_loader.highwater_mark}"
+      cursor = current_cursor
+      @logger.debug "SSE Streaming Connect to #{url} start_at #{cursor.inspect}"
 
       SSE::Client.new(url,
                       headers: headers,
                       read_timeout: @options.sse_read_timeout,
                       reconnect_time: @options.sse_default_reconnect_time,
-                      last_event_id: (@config_loader.highwater_mark&.positive? ? @config_loader.highwater_mark.to_s : nil),
+                      last_event_id: cursor,
                       logger: Quonfig::InternalLogger.new(SSE::Client)) do |client|
         client.on_event do |event|
           if event.data.nil? || event.data.empty?
@@ -130,6 +131,26 @@ module Quonfig
       end
 
       @prefab_options.sse_api_urls[@source_index]
+    end
+
+    # Compute a Last-Event-ID to resume the stream from. Three sources, in
+    # priority order:
+    #   1. config_loader.version  -- string ETag from last HTTP fetch (new path)
+    #   2. config_loader.highwater_mark -- legacy numeric cursor
+    #   3. nil -- no prior state; stream from HEAD
+    def current_cursor
+      if @config_loader.respond_to?(:version)
+        v = @config_loader.version
+        return v if v.is_a?(String) && !v.empty?
+      end
+
+      if @config_loader.respond_to?(:highwater_mark)
+        hw = @config_loader.highwater_mark
+        return hw.to_s if hw.is_a?(Numeric) && hw.positive?
+        return hw if hw.is_a?(String) && !hw.empty?
+      end
+
+      nil
     end
   end
 end

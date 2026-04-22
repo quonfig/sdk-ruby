@@ -104,6 +104,7 @@ Gem::Specification.new do |s|
     "test/test_bound_client.rb",
     "test/test_caching_http_connection.rb",
     "test/test_client.rb",
+    "test/test_client_network_mode.rb",
     "test/test_config_loader.rb",
     "test/test_context.rb",
     "test/test_datadir.rb",
