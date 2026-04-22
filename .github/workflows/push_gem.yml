@@ -33,7 +33,7 @@ jobs:
         id: version-check
         run: |
           VERSION=$(cat VERSION)
-          if gem list -r sdk-reforge | grep -q "sdk-reforge ($VERSION)"; then
+          if gem list -r quonfig | grep -q "quonfig ($VERSION)"; then
             echo "version-exists=true" >> $GITHUB_OUTPUT
             echo "Version $VERSION already exists on RubyGems, skipping publish"
           else
