@@ -26,8 +26,11 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          bundler-cache: true
-          ruby-version: ruby
+          bundler-cache: false
+          ruby-version: '3.3'
+
+      - name: Install runtime dependencies
+        run: bundle install --without development --jobs 4 --retry 3
 
       - name: Check if version already exists
         id: version-check
