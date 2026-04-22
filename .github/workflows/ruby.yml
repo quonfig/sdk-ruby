@@ -26,9 +26,19 @@ jobs:
         ruby-version: ['3.2','3.3','3.4']
 
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout sdk-ruby
+      uses: actions/checkout@v4
       with:
         submodules: recursive
+        path: sdk-ruby
+
+    - name: Checkout integration-test-data
+      uses: actions/checkout@v4
+      with:
+        repository: quonfig/integration-test-data
+        path: integration-test-data
+        ref: main
+
     - name: Set up Ruby
     # To automatically get bug fixes and new Ruby versions for ruby/setup-ruby,
     # change this to (see https://github.com/ruby/setup-ruby#versioning):
@@ -38,9 +48,12 @@ jobs:
       with:
         ruby-version: ${{ matrix.ruby-version }}
         bundler-cache: false # runs 'bundle install' and caches installed gems automatically
+        working-directory: sdk-ruby
     - name: Install dependencies
+      working-directory: sdk-ruby
       run: bundle install --without development --jobs 4 --retry 3
     - name: Run tests
+      working-directory: sdk-ruby
       run: bundle exec rake --trace
       env:
         REFORGE_INTEGRATION_TEST_SDK_KEY: ${{ secrets.REFORGE_INTEGRATION_TEST_SDK_KEY }}
