@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.0.1 - 2026-04-21
 
-- **Rename:** gem renamed from `sdk-reforge` to `quonfig`; top-level module `Reforge` → `Quonfig`.
+- **Rename:** gem renamed from `sdk-reforge` to `quonfig`; top-level module `Reforge` → `Quonfig`. First release of the Quonfig Ruby SDK; version reset to `0.0.1` under the new gem name.
 - **Env vars:** canonical names are now `QUONFIG_BACKEND_SDK_KEY`, `QUONFIG_DIR`, `QUONFIG_DATASOURCES`, `QUONFIG_API_URLS`. Legacy `REFORGE_*` / `PREFAB_*` env vars are no longer read.
 - **BREAKING:** option `sources:` renamed to `api_urls:` (matches other Quonfig SDKs). No alias/deprecation — 0.0.x strategy. Env var `QUONFIG_SOURCES` renamed to `QUONFIG_API_URLS`.
 - **BREAKING:** `DEFAULT_API_URLS` is now `['https://primary.quonfig.com']` (was `[primary, secondary]`). SSE stream URLs are derived by prepending `stream.` to each api_url hostname (see `Quonfig::Options.derive_stream_url`).
