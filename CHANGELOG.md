@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.0.3 - 2026-04-22
+
+- **Release plumbing only** — no functional changes. Renames the release
+  workflow from `push_gem.yml` to `release.yml` to match the Trusted
+  Publisher record on rubygems.org, and restores the dynamic
+  `s.version = File.read("VERSION")` pattern in the gemspec so future
+  version bumps are a one-line VERSION edit (Juwelier's regen had
+  hardcoded it). First publish via the automated trusted-publishing flow.
+
 ## 0.0.2 - 2026-04-22
 
 - **Fix:** SSE client now connects to `/api/v2/sse/config` to match the server route and other Quonfig SDKs (was `/api/v2/sse`, which would have failed at runtime against api-delivery). (qfg-uq8)
