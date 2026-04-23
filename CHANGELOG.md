@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.0.5 - 2026-04-22
+
+- **BREAKING — SemanticLoggerFilter context key renamed.** The filter
+  previously exposed the logger name under
+  `{ 'quonfig' => { 'logger-name' => '<normalized>' } }`. It now uses
+  `{ 'quonfig-sdk-logging' => { 'key' => '<verbatim name>' } }` so that
+  all SDKs (node, go, ruby, python) share one top-level context name.
+  Any customer rules that match on the old `quonfig.logger-name` property
+  must be rewritten to match `quonfig-sdk-logging.key`.
+- **BREAKING — logger name normalization removed.** The filter no longer
+  converts `MyApp::Services::Auth` → `my_app.services.auth`. Native Ruby
+  class names are passed through verbatim. Rules should target the exact
+  class name (e.g. `PROP_STARTS_WITH_ONE_OF "MyApp::Services::"`).
+- **New: `logger_key` client option** (snake_case) — pass to
+  `Quonfig::Options.new(logger_key: 'log-level.my-app')` or via
+  `Quonfig.init`. Declares the Quonfig config key the higher-level
+  `should_log?` helper evaluates for every log call.
+- **New: `client.should_log?(logger_path:, desired_level:, contexts:)`** —
+  Reforge-style convenience on top of `get`. Evaluates `logger_key` with
+  `{ 'quonfig-sdk-logging' => { 'key' => logger_path } }` merged into the
+  caller's contexts, then compares the returned level to `desired_level`.
+  Raises `Quonfig::Error` if `logger_key` was not set at init. Parallels
+  sdk-node's `shouldLog({loggerPath})` and sdk-go's `ShouldLogPath`.
+- Stage 1 of the per-SDK logger-path rollout (after sdk-node 0.0.14 and
+  sdk-go 0.0.10 shipped the same shape).
+
 ## 0.0.4 - 2026-04-22
 
 - **Fix (P0 from test-ruby friction log):** Network mode is now wired through

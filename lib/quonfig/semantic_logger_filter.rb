@@ -2,18 +2,27 @@
 
 module Quonfig
   # SemanticLogger filter that gates log output by a single Quonfig config
-  # whose rules target the logger via the +quonfig.logger-name+ context
-  # property.
+  # whose rules target the logger via the
+  # +quonfig-sdk-logging.key+ context property.
   #
   # Usage:
-  #   filter = client.semantic_logger_filter(config_key: 'log-levels.my-app')
+  #   filter = client.semantic_logger_filter(config_key: 'log-level.my-app')
   #   SemanticLogger.add_appender(io: $stdout, filter: filter)
   #
-  # The filter normalizes the SemanticLogger logger name to dotted snake_case
-  # (e.g. +MyApp::Foo::Bar+ → +my_app.foo.bar+) and exposes it to the
-  # evaluator under +quonfig.logger-name+ so the customer's Quonfig config can
-  # discriminate per-logger via PROP_STARTS_WITH_ONE_OF / PROP_IS_ONE_OF
-  # rules. Lookup is O(1): one +client.get+ call per log line.
+  # The filter exposes the SemanticLogger logger name (which is typically the
+  # native Ruby class name, e.g. +"MyApp::Services::Auth"+) under the
+  # +quonfig-sdk-logging+ named context with property +key+ so customer rules
+  # can discriminate per-logger via PROP_STARTS_WITH_ONE_OF /
+  # PROP_IS_ONE_OF etc. Lookup is O(1): one +client.get+ call per log line.
+  #
+  # Logger names are passed through verbatim — there is no snake_case
+  # normalization. Matching rules should target the exact class name
+  # (e.g. +MyApp::+, +MyApp::Services::Auth+).
+  #
+  # The constants +LOGGER_CONTEXT_NAME+ and +LOGGER_CONTEXT_KEY_PROP+ are
+  # load-bearing: they match +QUONFIG_SDK_LOGGING_CONTEXT_NAME+ in sdk-node
+  # and sdk-go, and are consumed by api-telemetry's example-context
+  # auto-capture. Do not rename in isolation.
   class SemanticLoggerFilter
     LEVELS = {
       trace: 0,
@@ -24,7 +33,8 @@ module Quonfig
       fatal: 5
     }.freeze
 
-    LOGGER_NAME_CONTEXT_KEY = 'quonfig.logger-name'
+    LOGGER_CONTEXT_NAME     = 'quonfig-sdk-logging'
+    LOGGER_CONTEXT_KEY_PROP = 'key'
 
     def self.semantic_logger_loaded?
       defined?(SemanticLogger)
@@ -50,22 +60,10 @@ module Quonfig
       log_severity >= min_severity
     end
 
-    # Normalize a SemanticLogger logger name to the dotted snake_case form
-    # the customer writes targeting rules against.
-    #   MyApp::Foo::Bar → my_app.foo.bar
-    #   HTMLParser      → html_parser
-    def normalize(name)
-      name.to_s
-          .gsub('::', '.')
-          .gsub(/([A-Z]+)([A-Z][a-z])/, '\1_\2')
-          .gsub(/([a-z\d])([A-Z])/, '\1_\2')
-          .downcase
-    end
-
     private
 
     def context_for(log)
-      { 'quonfig' => { 'logger-name' => normalize(log.name) } }
+      { LOGGER_CONTEXT_NAME => { LOGGER_CONTEXT_KEY_PROP => log.name.to_s } }
     end
 
     def normalize_level(level)

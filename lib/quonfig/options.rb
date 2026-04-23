@@ -20,6 +20,7 @@ module Quonfig
     attr_reader :enable_polling
     attr_reader :poll_interval
     attr_reader :global_context
+    attr_reader :logger_key
     attr_accessor :is_fork
 
     module ON_INITIALIZATION_FAILURE
@@ -72,7 +73,8 @@ module Quonfig
       collect_evaluation_summaries: true,
       collect_max_evaluation_summaries: DEFAULT_MAX_EVAL_SUMMARIES,
       allow_telemetry_in_local_mode: false,
-      global_context: {}
+      global_context: {},
+      logger_key: nil
     )
       @sdk_key = sdk_key
       @environment = environment
@@ -91,6 +93,7 @@ module Quonfig
       @allow_telemetry_in_local_mode = allow_telemetry_in_local_mode
       @is_fork = false
       @global_context = global_context
+      @logger_key = logger_key
 
       # defaults that may be overridden by context_upload_mode
       @collect_shapes = false

@@ -3,16 +3,20 @@
 require 'test_helper'
 require 'semantic_logger'
 
-# Verifies the corrected design: ONE Quonfig config gates many loggers.
-# The filter passes `quonfig.logger-name` as a context property so customer
-# rules can target `PROP_STARTS_WITH_ONE_OF my_app.db` etc.
+# Verifies the SemanticLoggerFilter: ONE Quonfig config gates many loggers.
+# The filter injects the native SemanticLogger logger name under the
+# `quonfig-sdk-logging` context (keyed at `.key`) so customer rules can target
+# `PROP_STARTS_WITH_ONE_OF MyApp::` etc.
+#
+# Breaking change in 0.0.5: context key was renamed from `quonfig.logger-name`
+# (dotted snake_case, flat) to `quonfig-sdk-logging.key` (nested, verbatim
+# class name). Normalization was removed — logger names are passed through
+# as-is.
 class TestSemanticLoggerFilter < Minitest::Test
   CONFIG_KEY = 'log-levels.my-app'
 
   # FakeClient lets us assert the exact key + context the filter passes to
-  # the SDK without standing up a full datadir. The single-key contract is
-  # the *specific mechanism* this bead is verifying — if the filter ever
-  # regresses to a per-logger key, this captured request goes wrong.
+  # the SDK without standing up a full datadir.
   class FakeClient
     attr_reader :calls
 
@@ -43,7 +47,7 @@ class TestSemanticLoggerFilter < Minitest::Test
     assert_equal 1, client.calls.size
     assert_equal CONFIG_KEY, client.calls.first[:key]
     ctx = client.calls.first[:context]
-    assert_equal({ 'quonfig' => { 'logger-name' => 'my_app.foo.bar' } }, ctx)
+    assert_equal({ 'quonfig-sdk-logging' => { 'key' => 'MyApp::Foo::Bar' } }, ctx)
   end
 
   def test_passes_through_when_level_meets_configured_minimum
@@ -71,19 +75,22 @@ class TestSemanticLoggerFilter < Minitest::Test
     assert_equal true, filter.call(make_log('Anything', :debug))
   end
 
-  def test_logger_name_normalization
+  def test_logger_name_passed_through_verbatim
+    # Normalization is gone. Native Ruby class names are preserved as-is,
+    # which matches how sdk-node and sdk-go pass the logger path.
     filter, client = filter_for(:debug)
 
-    {
-      'MyApp::Foo::Bar' => 'my_app.foo.bar',
-      'HTMLParser'      => 'html_parser',
-      'foo'             => 'foo',
-      'A::B::CDPath'    => 'a.b.cd_path'
-    }.each do |raw, expected|
+    [
+      'MyApp::Foo::Bar',
+      'HTMLParser',
+      'foo',
+      'A::B::CDPath',
+      'MyApp::Services::Auth'
+    ].each do |raw|
       client.calls.clear
       filter.call(make_log(raw, :info))
-      assert_equal expected, client.calls.first[:context]['quonfig']['logger-name'],
-                   "normalize(#{raw.inspect}) should be #{expected.inspect}"
+      assert_equal raw, client.calls.first[:context]['quonfig-sdk-logging']['key'],
+                   "logger name should be passed through verbatim: #{raw.inspect}"
     end
   end
 
@@ -98,6 +105,20 @@ class TestSemanticLoggerFilter < Minitest::Test
     keys = client.calls.map { |c| c[:key] }
     assert_equal [CONFIG_KEY], keys.uniq,
                  'Filter should call exactly the configured key, never derived per-logger keys'
+  end
+
+  def test_normalize_method_is_gone
+    # The old normalize() method converted "MyApp::Foo" → "my_app.foo".
+    # It is intentionally removed so callers see native Ruby class names in
+    # context telemetry and rule matching.
+    refute Quonfig::SemanticLoggerFilter.instance_methods.include?(:normalize),
+           'normalize() should be removed — logger names are passed through as-is'
+  end
+
+  def test_context_key_constant_is_new_shape
+    # Sanity check that the context key constant exposes the new shape.
+    assert_equal 'quonfig-sdk-logging', Quonfig::SemanticLoggerFilter::LOGGER_CONTEXT_NAME
+    assert_equal 'key',                 Quonfig::SemanticLoggerFilter::LOGGER_CONTEXT_KEY_PROP
   end
 
   def test_all_six_levels_mapped_correctly

@@ -125,6 +125,65 @@ module Quonfig
         Quonfig::SemanticLoggerFilter.new(self, config_key: config_key)
     end
 
+    # The configured +logger_key+ from Options — the Quonfig config key the
+    # higher-level +should_log?+ helper evaluates per-logger. +nil+ if the
+    # client was not configured for dynamic log levels.
+    def logger_key
+      @options.logger_key
+    end
+
+    # Higher-level log-level check — a convenience on top of the primitive
+    # +get+. Evaluates the client's +logger_key+ config and returns whether
+    # a message at +desired_level+ should be emitted for +logger_path+.
+    #
+    # The SDK injects +logger_path+ under the +quonfig-sdk-logging+ named
+    # context with property +key+ so a single log-level config can drive
+    # per-logger overrides via the normal rule engine (e.g.
+    # PROP_STARTS_WITH_ONE_OF "MyApp::Services::").
+    #
+    # +logger_path+ is passed through verbatim — the SDK does not normalize
+    # it. Callers may pass any identifier shape their host language prefers
+    # (dotted, colon, slash, etc.) and author matching rules in the config
+    # against that exact shape.
+    #
+    # Parallels sdk-node's +shouldLog({loggerPath})+ and sdk-go's
+    # +ShouldLogPath+.
+    #
+    # Raises +Quonfig::Error+ if +logger_key+ was not set on the client —
+    # use +semantic_logger_filter(config_key:)+ directly if you want to
+    # evaluate a specific key without declaring it at init time.
+    #
+    # @param logger_path [String] native logger name (typically a class name).
+    # @param desired_level [Symbol, String] the level the caller wants to
+    #   emit at (:trace, :debug, :info, :warn, :error, :fatal).
+    # @param contexts [Hash] optional extra context to merge with the
+    #   injected logger context.
+    # @return [Boolean] true if the message should be emitted.
+    def should_log?(logger_path:, desired_level:, contexts: {})
+      unless logger_key
+        raise Quonfig::Error,
+              'logger_key must be set at init to use should_log?(logger_path:, ...). ' \
+              'Pass `logger_key:` to Quonfig::Options.new, or call ' \
+              'semantic_logger_filter(config_key:) / get(config_key) directly.'
+      end
+
+      logger_context = {
+        Quonfig::SemanticLoggerFilter::LOGGER_CONTEXT_NAME => {
+          Quonfig::SemanticLoggerFilter::LOGGER_CONTEXT_KEY_PROP => logger_path
+        }
+      }
+      merged = merge_contexts(normalize_context(contexts), logger_context)
+
+      configured = get(logger_key, nil, merged)
+      return true if configured.nil?
+
+      desired_severity = Quonfig::SemanticLoggerFilter::LEVELS[normalize_log_level(desired_level)] ||
+                         Quonfig::SemanticLoggerFilter::LEVELS[:debug]
+      min_severity     = Quonfig::SemanticLoggerFilter::LEVELS[normalize_log_level(configured)] ||
+                         Quonfig::SemanticLoggerFilter::LEVELS[:debug]
+      desired_severity >= min_severity
+    end
+
     def on_update(&block)
       @on_update = block
     end
@@ -276,6 +335,14 @@ module Quonfig
         end
       end
       merged
+    end
+
+    def normalize_log_level(level)
+      case level
+      when Symbol then level.downcase
+      when String then level.downcase.to_sym
+      else level
+      end
     end
 
     def handle_missing(key, default)
