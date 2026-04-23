@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.0.6 - 2026-04-22
+
+- **New: `Quonfig::StdlibFormatter` + `client.stdlib_formatter(logger_name:)`** —
+  Ruby's built-in `::Logger` now gets drop-in dynamic log-level gating,
+  on par with the existing SemanticLogger integration. The client helper
+  returns a Proc matching the stdlib `logger.formatter =` contract
+  (`(severity, datetime, progname, msg) -> String`). For each log call
+  the proc evaluates `should_log?(logger_path: logger_name || progname,
+  desired_level: severity)` and either formats the record or returns an
+  empty string (which `::Logger` writes as zero bytes, suppressing the
+  line). `logger_name` flows into `quonfig-sdk-logging.key` verbatim —
+  no normalization — so customer rules target exact class names.
+  Raises `Quonfig::Error` if `logger_key` was not set at init. Parallels
+  sdk-node's Winston formatter, sdk-python's `logging.Filter`, and
+  sdk-go's `slog.Handler`. Closes Stage 2 of the per-SDK logger-path
+  rollout.
+
 ## 0.0.5 - 2026-04-22
 
 - **BREAKING — SemanticLoggerFilter context key renamed.** The filter

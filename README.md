@@ -203,6 +203,42 @@ Pass `key_prefix:` to use a prefix other than `log-levels.`:
 client.semantic_logger_filter(key_prefix: 'debug.')
 ```
 
+## Dynamic log levels with stdlib Logger
+
+If you use Ruby's built-in `::Logger` instead of SemanticLogger, wire the
+formatter returned by `client.stdlib_formatter` into your logger:
+
+```ruby
+require 'quonfig'
+require 'logger'
+
+client = Quonfig::Client.new(
+  sdk_key:    ENV['QUONFIG_BACKEND_SDK_KEY'],
+  logger_key: 'log-level.my-app'
+)
+
+logger = ::Logger.new($stdout)
+logger.level = ::Logger::DEBUG
+logger.formatter = client.stdlib_formatter(logger_name: 'MyApp::Services::Auth')
+```
+
+The formatter asks the client `should_log?(logger_path:, desired_level:)`
+for every call; lines below the configured level return an empty string
+(which `::Logger` writes as zero bytes, suppressing the line). `logger_name`
+is passed to Quonfig verbatim under `quonfig-sdk-logging.key` so a single
+`log-level.my-app` config can drive per-class overrides via rules like
+`PROP_STARTS_WITH_ONE_OF "MyApp::Services::"`.
+
+Omit `logger_name:` to have the formatter fall through to the Logger's
+`progname` at call time:
+
+```ruby
+logger.formatter = client.stdlib_formatter
+logger.progname  = 'MyApp::Services::Auth'
+```
+
+If both are supplied, the explicit `logger_name:` wins.
+
 ## Documentation
 
 Full documentation, including SPEC, SDK reference, and operational guides, is

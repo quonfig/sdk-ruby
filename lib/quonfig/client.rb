@@ -125,6 +125,29 @@ module Quonfig
         Quonfig::SemanticLoggerFilter.new(self, config_key: config_key)
     end
 
+    # Build a formatter Proc for Ruby's built-in +::Logger+. The returned
+    # proc honors dynamic log levels from the client's +logger_key+ config:
+    # for each log call, it evaluates +should_log?+ and either formats the
+    # record or returns an empty string (suppressing output).
+    #
+    # Matches ReforgeHQ's +stdlib_formatter+ API name (snake_case).
+    #
+    # Usage:
+    #   logger = ::Logger.new($stdout)
+    #   logger.formatter = client.stdlib_formatter                       # uses progname
+    #   logger.formatter = client.stdlib_formatter(logger_name: 'MyApp') # fixed name
+    #
+    # Raises +Quonfig::Error+ if +logger_key+ was not set at init — parallels
+    # +should_log?+'s behavior.
+    #
+    # @param logger_name [String, nil] fallback logger identifier used when
+    #   +progname+ isn't supplied by the Logger call site. If both are
+    #   present, +logger_name+ wins.
+    # @return [Proc] a +(severity, datetime, progname, msg) -> String+ proc.
+    def stdlib_formatter(logger_name: nil)
+      Quonfig::StdlibFormatter.build(self, logger_name: logger_name)
+    end
+
     # The configured +logger_key+ from Options — the Quonfig config key the
     # higher-level +should_log?+ helper evaluates per-logger. +nil+ if the
     # client was not configured for dynamic log levels.
