@@ -129,4 +129,81 @@ class TestTelemetryReporter < Minitest::Test
     refute_nil shape_agg.drain_event
     refute_nil example_agg.drain_event
   end
+
+  def test_sync_posts_evaluation_summaries_event
+    fake = FakeHttpConnection.new
+    summaries_agg = Quonfig::Telemetry::EvaluationSummariesAggregator.new(max_keys: 100)
+
+    reporter = Quonfig::Telemetry::TelemetryReporter.new(
+      options: make_options,
+      instance_hash: 'h',
+      evaluation_summaries_aggregator: summaries_agg,
+      http_connection: fake
+    )
+
+    summaries_agg.record(
+      config_id: 'cid',
+      config_key: 'my-key',
+      config_type: 'config',
+      conditional_value_index: 0,
+      selected_value: 'v',
+      reason: 1
+    )
+
+    reporter.sync
+
+    assert_equal 1, fake.posts.size
+    _path, body = fake.posts.first
+
+    summaries_event = body['events'].find { |e| e.key?('summaries') }
+    refute_nil summaries_event, 'expected a summaries event in the payload'
+
+    inner = summaries_event['summaries']
+    assert_kind_of Array, inner['summaries']
+    counter = inner['summaries'][0]['counters'][0]
+    assert_equal 1, counter['count']
+    assert_equal 1, counter['reason']
+  end
+
+  def test_at_exit_final_drain_posts_pending_batch
+    fake = FakeHttpConnection.new
+    shape_agg = Quonfig::Telemetry::ContextShapeAggregator.new(max_shapes: 100)
+
+    reporter = Quonfig::Telemetry::TelemetryReporter.new(
+      options: make_options,
+      instance_hash: 'h',
+      context_shape_aggregator: shape_agg,
+      http_connection: fake
+    )
+
+    # Simulate evaluations accumulating between sync cycles.
+    shape_agg.push(Quonfig::Context.new('user' => { 'key' => 'x' }))
+
+    # Simulate a Rails SIGTERM: process exits without Client#stop being
+    # called. The reporter's at_exit handler must flush the pending batch.
+    reporter.send(:final_drain_on_exit)
+
+    assert_equal 1, fake.posts.size
+    _path, body = fake.posts.first
+    refute_nil body['events'].find { |e| e.key?('contextShapes') }
+  end
+
+  def test_at_exit_handler_registered_on_start
+    # Guards against regressing the Kernel.at_exit hookup that catches
+    # Rails / Passenger worker SIGTERMs where Client#stop isn't called.
+    fake = FakeHttpConnection.new
+    reporter = Quonfig::Telemetry::TelemetryReporter.new(
+      options: make_options,
+      instance_hash: 'h',
+      context_shape_aggregator: Quonfig::Telemetry::ContextShapeAggregator.new(max_shapes: 10),
+      http_connection: fake,
+      sync_interval: 999 # avoid the background thread firing during the test
+    )
+
+    refute reporter.at_exit_registered?, 'not registered before start'
+    reporter.start
+    assert reporter.at_exit_registered?, 'registered after start'
+  ensure
+    reporter&.stop
+  end
 end

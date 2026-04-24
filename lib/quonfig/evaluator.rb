@@ -409,6 +409,13 @@ module Quonfig
   # raw JSON Value hash (#value) and a coerced Ruby value (#unwrapped_value).
   # The test suite and integration helpers consume both shapes.
   class EvalResult
+    # Integer reason codes for the api-telemetry EvalSummaries wire
+    # format. Match sdk-node/src/reason.ts.
+    REASON_UNKNOWN          = 0
+    REASON_STATIC           = 1
+    REASON_TARGETING_MATCH  = 2
+    REASON_SPLIT            = 3
+
     attr_reader :value, :rule_index, :config
 
     def initialize(value:, rule_index:, config:)
@@ -416,6 +423,36 @@ module Quonfig
       @rule_index = rule_index
       @config = config
     end
+
+    # Integer reason code for telemetry. Mirrors sdk-node's computeReason:
+    # SPLIT when a weighted variant is picked, STATIC when the first rule
+    # of a config with no targeting rules matched, otherwise TARGETING_MATCH.
+    def wire_reason
+      return REASON_STATIC if @rule_index == 0 && !EvalResult.send(:targeting_rules?, @config)
+
+      REASON_TARGETING_MATCH
+    end
+
+    # True if any rule on the config (default or environment) has a
+    # non-ALWAYS_TRUE criterion. Used to decide STATIC vs TARGETING_MATCH.
+    def self.targeting_rules?(config)
+      return false if config.nil?
+
+      rules = []
+      %i[default environment].each do |section_key|
+        section = config[section_key.to_s] || config[section_key]
+        next if section.nil?
+
+        section_rules = section['rules'] || section[:rules] || []
+        rules.concat(section_rules)
+      end
+
+      rules.any? do |rule|
+        criteria = rule['criteria'] || rule[:criteria] || []
+        criteria.any? { |c| (c['operator'] || c[:operator]) != 'ALWAYS_TRUE' }
+      end
+    end
+    private_class_method :targeting_rules?
 
     # Raw underlying value without type coercion.
     def raw_value

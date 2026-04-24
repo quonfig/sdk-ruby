@@ -11,6 +11,7 @@ module Quonfig
     #   {
     #     "instanceHash": "...",
     #     "events": [
+    #       { "summaries":       { "start": ..., "end": ..., "summaries": [...] } },
     #       { "contextShapes":   { "shapes":   [...] } },
     #       { "exampleContexts": { "examples": [...] } }
     #     ]
@@ -28,6 +29,7 @@ module Quonfig
       def initialize(options:, instance_hash:,
                      context_shape_aggregator: nil,
                      example_contexts_aggregator: nil,
+                     evaluation_summaries_aggregator: nil,
                      sync_interval: nil,
                      http_connection: nil)
         @options = options
@@ -36,20 +38,26 @@ module Quonfig
         @telemetry_destination = options.telemetry_destination
         @context_shape_aggregator = context_shape_aggregator
         @example_contexts_aggregator = example_contexts_aggregator
+        @evaluation_summaries_aggregator = evaluation_summaries_aggregator
         @http_connection = http_connection
         @sync_interval = calculate_sync_interval(sync_interval)
         @stopped = Concurrent::AtomicBoolean.new(false)
         @thread = nil
+        @at_exit_registered = false
       end
 
       def enabled?
         return false if @sdk_key.nil? || @sdk_key.to_s.empty?
         return false if @telemetry_destination.nil? || @telemetry_destination.to_s.empty?
 
-        !@context_shape_aggregator.nil? || !@example_contexts_aggregator.nil?
+        !@context_shape_aggregator.nil? ||
+          !@example_contexts_aggregator.nil? ||
+          !@evaluation_summaries_aggregator.nil?
       end
 
-      # Record a context across all active aggregators.
+      # Record a context across the context-driven aggregators. Evaluation
+      # summaries are recorded separately via
+      # +record_evaluation(...)+ since they require the evaluation result.
       def record(context)
         return if context.nil?
 
@@ -57,11 +65,16 @@ module Quonfig
         @example_contexts_aggregator&.record(context)
       end
 
+      def record_evaluation(**kwargs)
+        @evaluation_summaries_aggregator&.record(**kwargs)
+      end
+
       def start
         return if @thread&.alive?
         return unless enabled?
 
         @stopped.make_false
+        register_at_exit_handler
         @thread = Thread.new do
           Thread.current.name = 'quonfig-telemetry-reporter'
           LOG.debug "Telemetry reporter started instance_hash=#{@instance_hash} destination=#{@telemetry_destination}"
@@ -103,6 +116,9 @@ module Quonfig
       # trigger a sync without waiting for the background loop.
       def sync
         events = []
+        if (summaries_event = @evaluation_summaries_aggregator&.drain_event)
+          events << summaries_event
+        end
         if (shape_event = @context_shape_aggregator&.drain_event)
           events << shape_event
         end
@@ -120,7 +136,32 @@ module Quonfig
         post(payload)
       end
 
+      # Visible for tests.
+      def at_exit_registered?
+        @at_exit_registered
+      end
+
       private
+
+      # Rails / Passenger / Puma workers often terminate via SIGTERM without
+      # a chance to call Client#stop. Register a Kernel.at_exit hook on
+      # first start so the in-flight batch still gets flushed.
+      def register_at_exit_handler
+        return if @at_exit_registered
+
+        Kernel.at_exit { final_drain_on_exit }
+        @at_exit_registered = true
+      end
+
+      # Idempotent final drain. Safe to call after #stop has already
+      # drained: aggregators return nil when empty and #sync becomes a
+      # no-op.
+      def final_drain_on_exit
+        @stopped.make_true
+        sync
+      rescue StandardError => e
+        LOG.debug "[quonfig] at_exit telemetry drain failed: #{e.class}: #{e.message}"
+      end
 
       def post(payload)
         conn = http_connection

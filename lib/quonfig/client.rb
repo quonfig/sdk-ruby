@@ -63,6 +63,7 @@ module Quonfig
       result = @resolver.get(key, ctx)
       return handle_missing(key, default) if result.nil?
 
+      record_evaluation_for_telemetry(result)
       result.unwrapped_value
     end
 
@@ -252,6 +253,7 @@ module Quonfig
     def initialize_telemetry
       shape_aggregator = nil
       example_aggregator = nil
+      summaries_aggregator = nil
 
       if @options.collect_max_shapes.to_i > 0
         shape_aggregator = Quonfig::Telemetry::ContextShapeAggregator.new(
@@ -265,13 +267,20 @@ module Quonfig
         )
       end
 
-      return if shape_aggregator.nil? && example_aggregator.nil?
+      if @options.collect_max_evaluation_summaries.to_i > 0
+        summaries_aggregator = Quonfig::Telemetry::EvaluationSummariesAggregator.new(
+          max_keys: @options.collect_max_evaluation_summaries
+        )
+      end
+
+      return if shape_aggregator.nil? && example_aggregator.nil? && summaries_aggregator.nil?
 
       @telemetry_reporter = Quonfig::Telemetry::TelemetryReporter.new(
         options: @options,
         instance_hash: @instance_hash,
         context_shape_aggregator: shape_aggregator,
         example_contexts_aggregator: example_aggregator,
+        evaluation_summaries_aggregator: summaries_aggregator,
         sync_interval: @options.collect_sync_interval
       )
 
@@ -281,6 +290,34 @@ module Quonfig
     rescue StandardError => e
       LOG.warn "[quonfig] Telemetry init failed: #{e.class}: #{e.message}"
       @telemetry_reporter = nil
+    end
+
+    # Feed a matched EvalResult into the evaluation_summaries aggregator.
+    # A no-op when telemetry is disabled or eval-summaries collection is off.
+    def record_evaluation_for_telemetry(result)
+      return if @telemetry_reporter.nil?
+      return if result.nil?
+
+      config = result.config
+      return if config.nil?
+
+      @telemetry_reporter.record_evaluation(
+        config_id: config_field(config, :id),
+        config_key: config_field(config, :key),
+        config_type: config_field(config, :type),
+        conditional_value_index: result.rule_index,
+        weighted_value_index: nil,
+        selected_value: result.unwrapped_value,
+        reason: result.wire_reason
+      )
+    rescue StandardError => e
+      LOG.debug "[quonfig] Telemetry record_evaluation error: #{e.class}: #{e.message}"
+    end
+
+    def config_field(config, key)
+      return nil if config.nil?
+
+      config[key.to_s] || config[key.to_sym]
     end
 
     # Feed every evaluated context into the telemetry aggregators. A no-op
