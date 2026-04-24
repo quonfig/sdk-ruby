@@ -21,7 +21,7 @@ module Quonfig
     LOG = Quonfig::InternalLogger.new(self)
 
     attr_reader :options, :resolver, :store, :evaluator, :instance_hash,
-                :config_loader
+                :config_loader, :telemetry_reporter
 
     def initialize(options = nil, store: nil, **option_kwargs)
       @options =
@@ -41,6 +41,7 @@ module Quonfig
       @sse_client = nil
       @poll_thread = nil
       @stopped = false
+      @telemetry_reporter = nil
 
       # If the caller injected a store, we're in test/bootstrap mode; skip I/O.
       return if store
@@ -50,12 +51,15 @@ module Quonfig
       else
         initialize_network_mode
       end
+
+      initialize_telemetry
     end
 
     # ---- Lookup --------------------------------------------------------
 
     def get(key, default = NO_DEFAULT_PROVIDED, jit_context = NO_DEFAULT_PROVIDED)
       ctx = build_context(jit_context)
+      record_context_for_telemetry(ctx)
       result = @resolver.get(key, ctx)
       return handle_missing(key, default) if result.nil?
 
@@ -223,6 +227,13 @@ module Quonfig
       thread = @poll_thread
       @poll_thread = nil
       thread&.kill
+
+      begin
+        @telemetry_reporter&.stop
+      rescue StandardError => e
+        LOG.debug "Error stopping telemetry reporter: #{e.message}"
+      end
+      @telemetry_reporter = nil
     end
 
     def fork
@@ -234,6 +245,57 @@ module Quonfig
     end
 
     private
+
+    # Construct and start the telemetry reporter if the options permit it.
+    # The reporter runs on a background thread and periodically POSTs
+    # context-shape and example-context batches to +telemetry_destination+.
+    def initialize_telemetry
+      shape_aggregator = nil
+      example_aggregator = nil
+
+      if @options.collect_max_shapes.to_i > 0
+        shape_aggregator = Quonfig::Telemetry::ContextShapeAggregator.new(
+          max_shapes: @options.collect_max_shapes
+        )
+      end
+
+      if @options.collect_max_example_contexts.to_i > 0
+        example_aggregator = Quonfig::Telemetry::ExampleContextsAggregator.new(
+          max_contexts: @options.collect_max_example_contexts
+        )
+      end
+
+      return if shape_aggregator.nil? && example_aggregator.nil?
+
+      @telemetry_reporter = Quonfig::Telemetry::TelemetryReporter.new(
+        options: @options,
+        instance_hash: @instance_hash,
+        context_shape_aggregator: shape_aggregator,
+        example_contexts_aggregator: example_aggregator,
+        sync_interval: @options.collect_sync_interval
+      )
+
+      return unless @telemetry_reporter.enabled?
+
+      @telemetry_reporter.start
+    rescue StandardError => e
+      LOG.warn "[quonfig] Telemetry init failed: #{e.class}: #{e.message}"
+      @telemetry_reporter = nil
+    end
+
+    # Feed every evaluated context into the telemetry aggregators. A no-op
+    # when telemetry is disabled or no aggregators are active.
+    def record_context_for_telemetry(context)
+      return if @telemetry_reporter.nil?
+      return if context.nil?
+
+      context_obj = context.is_a?(Quonfig::Context) ? context : Quonfig::Context.new(context)
+      return if context_obj.blank?
+
+      @telemetry_reporter.record(context_obj)
+    rescue StandardError => e
+      LOG.debug "[quonfig] Telemetry record error: #{e.class}: #{e.message}"
+    end
 
     def load_datadir_into_store
       envelope = Quonfig::Datadir.load_envelope(@options.datadir, @options.environment)

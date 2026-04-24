@@ -5,7 +5,7 @@ require 'json'
 
 module Quonfig
   class HttpConnection
-    SDK_VERSION = 'ruby-0.1.0'
+    SDK_VERSION = "ruby-#{Quonfig::VERSION}".freeze
 
     JSON_HEADERS = {
       'Content-Type' => 'application/json',

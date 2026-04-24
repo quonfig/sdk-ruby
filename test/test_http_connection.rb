@@ -23,7 +23,7 @@ module Quonfig
 
     def test_x_quonfig_sdk_version_header
       conn = HttpConnection.new(URI, SDK_KEY).connection
-      assert_equal 'ruby-0.1.0', conn.headers['X-Quonfig-SDK-Version']
+      assert_equal "ruby-#{Quonfig::VERSION}", conn.headers['X-Quonfig-SDK-Version']
     end
 
     def test_no_protobuf_content_type
