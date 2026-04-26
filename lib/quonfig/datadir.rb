@@ -59,8 +59,7 @@ module Quonfig
       environment ||= ENV['QUONFIG_ENVIRONMENT']
 
       if environment.nil? || environment.empty?
-        raise ArgumentError,
-              '[quonfig] Environment required for datadir mode; set the `environment` option or QUONFIG_ENVIRONMENT env var'
+        raise Quonfig::Errors::MissingEnvironmentError
       end
 
       unless File.exist?(quonfig_path)
@@ -70,8 +69,7 @@ module Quonfig
       environments = JSON.parse(File.read(quonfig_path)).fetch('environments', [])
 
       if !environments.empty? && !environments.include?(environment)
-        raise ArgumentError,
-              "[quonfig] Environment \"#{environment}\" not found in workspace; available environments: #{environments.join(', ')}"
+        raise Quonfig::Errors::InvalidEnvironmentError.new(environment, environments)
       end
 
       environment

@@ -147,7 +147,9 @@ class TestDatadir < Minitest::Test
   end
 
   def test_raises_when_no_environment
-    err = assert_raises(ArgumentError) { Quonfig::Datadir.load_envelope(@tmpdir, nil) }
+    err = assert_raises(Quonfig::Errors::MissingEnvironmentError) do
+      Quonfig::Datadir.load_envelope(@tmpdir, nil)
+    end
     assert_match(/Environment required for datadir mode/, err.message)
   end
 
@@ -159,7 +161,9 @@ class TestDatadir < Minitest::Test
   end
 
   def test_raises_when_environment_not_in_workspace
-    err = assert_raises(ArgumentError) { Quonfig::Datadir.load_envelope(@tmpdir, 'NotAnEnv') }
+    err = assert_raises(Quonfig::Errors::InvalidEnvironmentError) do
+      Quonfig::Datadir.load_envelope(@tmpdir, 'NotAnEnv')
+    end
     assert_match(/Environment "NotAnEnv" not found/, err.message)
     assert_match(/Production/, err.message)
   end
