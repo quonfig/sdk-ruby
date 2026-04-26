@@ -417,17 +417,20 @@ module Quonfig
     REASON_SPLIT            = 3
 
     attr_reader :value, :rule_index, :config
+    attr_accessor :weighted_value_index
 
-    def initialize(value:, rule_index:, config:)
+    def initialize(value:, rule_index:, config:, weighted_value_index: nil)
       @value = value
       @rule_index = rule_index
       @config = config
+      @weighted_value_index = weighted_value_index
     end
 
     # Integer reason code for telemetry. Mirrors sdk-node's computeReason:
     # SPLIT when a weighted variant is picked, STATIC when the first rule
     # of a config with no targeting rules matched, otherwise TARGETING_MATCH.
     def wire_reason
+      return REASON_SPLIT unless @weighted_value_index.nil?
       return REASON_STATIC if @rule_index == 0 && !EvalResult.send(:targeting_rules?, @config)
 
       REASON_TARGETING_MATCH
@@ -483,7 +486,7 @@ module Quonfig
       when 'string'      then raw.to_s
       when 'string_list' then raw.is_a?(Array) ? raw.map(&:to_s) : []
       when 'log_level'   then raw.is_a?(Numeric) ? raw : raw.to_s
-      when 'duration'    then raw.to_s
+      when 'duration'    then duration_to_millis(raw)
       when 'json'
         # JSON values must be native JS/Ruby types on the wire.
         raw
@@ -496,6 +499,28 @@ module Quonfig
     # the {type, value} shape sdk-node emits.
     def value_type
       type
+    end
+
+    private
+
+    # Coerce an ISO 8601 duration value (e.g. "PT0.2S", "P1DT6H2M1.5S")
+    # to integer milliseconds. The wire format may either be a bare ISO
+    # string in `value` or the structured `{ seconds, nanos }` proto-style
+    # shape. Mirrors sdk-node Resolver#unwrapValue duration branch.
+    def duration_to_millis(raw)
+      case raw
+      when Numeric
+        raw.to_i
+      when String
+        seconds = Quonfig::Duration.parse(raw)
+        (seconds * 1000).round
+      when Hash
+        secs = (raw['seconds'] || raw[:seconds] || 0).to_f
+        nanos = (raw['nanos']   || raw[:nanos]   || 0).to_f
+        (secs * 1000 + nanos / 1_000_000.0).round
+      else
+        raw
+      end
     end
   end
 end

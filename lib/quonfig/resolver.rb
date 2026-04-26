@@ -28,15 +28,30 @@ module Quonfig
       @store.get(key)
     end
 
+    # Look up +key+ and evaluate against +context+. Mirrors Quonfig.get_or_raise
+    # semantics: if the key is unknown to the store, raise
+    # Quonfig::Errors::MissingDefaultError so callers can distinguish "no
+    # such config" from "config matched a nil/false value". Tests that want
+    # the legacy "return nil if absent" shape can rescue and recover (see
+    # IntegrationTestHelpers.assert_resolved, which folds a missing-key
+    # raise into the test's expected default).
     def get(key, context = nil)
       config = raw(key)
-      return nil unless config
+      raise Quonfig::Errors::MissingDefaultError.new(key) if config.nil?
 
       eval_result = @evaluator.evaluate_config(config, context, resolver: self)
       return nil if eval_result.nil?
 
-      resolved_value = resolve_value(eval_result.value, config, context)
-      EvalResult.new(value: resolved_value, rule_index: eval_result.rule_index, config: config)
+      weighted_index = nil
+      resolved_value = resolve_value(eval_result.value, config, context) do |idx|
+        weighted_index = idx
+      end
+      EvalResult.new(
+        value: resolved_value,
+        rule_index: eval_result.rule_index,
+        config: config,
+        weighted_value_index: weighted_index
+      )
     end
 
     # Post-evaluation value resolution. Mirrors sdk-node Resolver#resolveValue
@@ -44,13 +59,17 @@ module Quonfig
     # - "provided" + ENV_VAR  → read ENV[lookup], coerce to config's valueType
     # - confidential + decryptWith → look up the key config, decrypt
     # - everything else passes through unchanged
-    def resolve_value(value, config, context = nil)
+    def resolve_value(value, config, context = nil, &on_weighted_index)
       return nil if value.nil?
 
       type = vget(value, :type, 'type')
 
       if type == 'provided'
         return resolve_provided(value, config)
+      end
+
+      if type == 'weighted_values'
+        return resolve_weighted(value, config, context, &on_weighted_index)
       end
 
       confidential = vget(value, :confidential, 'confidential')
@@ -111,6 +130,38 @@ module Quonfig
       }
     end
 
+    # Pick a weighted variant. Mirrors sdk-node Resolver#resolveWeightedValues
+    # and sdk-go resolveWeightedValues: hash the configured context property
+    # (or fall back to a per-call random) into [0,1), then walk the variant
+    # weights until cumulative weight >= bucket. Recurses through
+    # resolve_value so nested provided/encrypted variants work too.
+    def resolve_weighted(value, config, context, &on_weighted_index)
+      payload = vget(value, :value, 'value') || {}
+      weighted = vget(payload, :weightedValues, 'weightedValues', :weighted_values, 'weighted_values')
+      return value unless weighted.is_a?(Array) && !weighted.empty?
+
+      hash_property = vget(payload, :hashByPropertyName, 'hashByPropertyName',
+                           :hash_by_property_name, 'hash_by_property_name')
+      hash_value = nil
+      if hash_property && context
+        ctx_value =
+          if context.respond_to?(:get)
+            context.get(hash_property.to_s)
+          elsif context.is_a?(Hash)
+            ctx_obj = Quonfig::Context.new(context)
+            ctx_obj.get(hash_property.to_s)
+          end
+        hash_value = ctx_value.to_s unless ctx_value.nil?
+      end
+
+      cfg_key = config_key(config)
+      picker = Quonfig::WeightedValueResolver.new(weighted, cfg_key, hash_value)
+      variant, index = picker.resolve
+      on_weighted_index&.call(index)
+      variant_value = vget(variant, :value, 'value')
+      resolve_value(variant_value, config, context, &on_weighted_index)
+    end
+
     # Recursively resolve the decryption-key config (it may itself be a
     # provided ENV_VAR), then AES-GCM decrypt the value with that key.
     def resolve_decryption(value, config, context, decrypt_with)
@@ -128,7 +179,7 @@ module Quonfig
       begin
         plaintext = Quonfig::Encryption.new(secret_key).decrypt(ciphertext)
       rescue StandardError => e
-        raise Quonfig::Error, %(Decryption failed for config "#{config_key(config)}": #{e.message})
+        raise Quonfig::Errors::DecryptionError.new(config_key(config), e.message)
       end
 
       {

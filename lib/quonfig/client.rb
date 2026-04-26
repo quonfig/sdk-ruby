@@ -60,7 +60,15 @@ module Quonfig
     def get(key, default = NO_DEFAULT_PROVIDED, jit_context = NO_DEFAULT_PROVIDED)
       ctx = build_context(jit_context)
       record_context_for_telemetry(ctx)
-      result = @resolver.get(key, ctx)
+      result =
+        begin
+          @resolver.get(key, ctx)
+        rescue Quonfig::Errors::MissingDefaultError
+          # The Resolver raises (matching Quonfig.get_or_raise semantics).
+          # The Client's get applies the caller-provided default *or* the
+          # configured on_no_default policy via handle_missing.
+          nil
+        end
       return handle_missing(key, default) if result.nil?
 
       record_evaluation_for_telemetry(result)

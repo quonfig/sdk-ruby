@@ -134,12 +134,18 @@ class TestResolverTrio < Minitest::Test
     assert_equal DEFAULT_VALUE, result.unwrapped_value
   end
 
-  def test_resolver_get_returns_nil_for_missing_key
+  def test_resolver_get_raises_missing_default_for_missing_key
     store = Quonfig::ConfigStore.new
     evaluator = Quonfig::Evaluator.new(store, base_client: base_client)
     resolver = Quonfig::Resolver.new(store, evaluator)
 
-    assert_nil resolver.get('nope', Quonfig::Context.new({}))
+    # Resolver.get raises Quonfig::Errors::MissingDefaultError when no
+    # config exists for the key (qfg-9x7 alignment with the shared YAML
+    # get_or_raise.yaml suite). Client.get catches this and folds it into
+    # the on_no_default policy / caller-supplied default.
+    assert_raises(Quonfig::Errors::MissingDefaultError) do
+      resolver.get('nope', Quonfig::Context.new({}))
+    end
   end
 
   # ---- ENV_VAR provided value resolution (qfg-08q) ---------------------
