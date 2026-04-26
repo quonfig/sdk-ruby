@@ -179,7 +179,7 @@ module Quonfig
       begin
         plaintext = Quonfig::Encryption.new(secret_key).decrypt(ciphertext)
       rescue StandardError => e
-        raise Quonfig::Errors::DecryptionError.new(config_key(config), e.message)
+        raise Quonfig::Errors::DecryptionError.new(config_key(config), e.message), cause: e
       end
 
       {

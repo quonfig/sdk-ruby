@@ -153,11 +153,23 @@ module Quonfig
         @at_exit_registered = true
       end
 
+      # Wait this long for the background reporter thread to exit before
+      # giving up. Bounded so a thread blocked on a dead telemetry endpoint
+      # can't hang process exit.
+      AT_EXIT_THREAD_JOIN_TIMEOUT_SECONDS = 1.0
+
       # Idempotent final drain. Safe to call after #stop has already
       # drained: aggregators return nil when empty and #sync becomes a
-      # no-op.
+      # no-op. Bounded so a stuck reporter thread or dead telemetry
+      # endpoint can't hang process exit.
       def final_drain_on_exit
         @stopped.make_true
+        thread = @thread
+        @thread = nil
+        if thread&.alive?
+          thread.wakeup
+          thread.join(AT_EXIT_THREAD_JOIN_TIMEOUT_SECONDS)
+        end
         sync
       rescue StandardError => e
         LOG.debug "[quonfig] at_exit telemetry drain failed: #{e.class}: #{e.message}"

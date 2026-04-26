@@ -314,7 +314,7 @@ module Quonfig
         config_key: config_field(config, :key),
         config_type: config_field(config, :type),
         conditional_value_index: result.rule_index,
-        weighted_value_index: nil,
+        weighted_value_index: result.weighted_value_index,
         selected_value: result.unwrapped_value,
         reason: result.wire_reason
       )

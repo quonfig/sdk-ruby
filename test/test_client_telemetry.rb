@@ -129,4 +129,47 @@ class TestClientTelemetry < Minitest::Test
     client.get('does.not.exist', 'fallback')
     assert_nil summaries_agg.drain_event
   end
+
+  # Regression: client used to hardcode weighted_value_index: nil, so split
+  # variants never reported as REASON_SPLIT in telemetry.
+  def test_weighted_value_records_split_reason_and_index
+    weighted_config = {
+      'id' => 'cid-weighted',
+      'key' => 'feature-flag.weighted',
+      'type' => 'feature_flag',
+      'valueType' => 'string',
+      'sendToClientSdk' => false,
+      'default' => {
+        'rules' => [
+          {
+            'criteria' => [{ 'operator' => 'ALWAYS_TRUE' }],
+            'value' => {
+              'type' => 'weighted_values',
+              'value' => {
+                'hashByPropertyName' => 'user.key',
+                'weightedValues' => [
+                  { 'value' => { 'type' => 'string', 'value' => 'control' }, 'weight' => 1 },
+                  { 'value' => { 'type' => 'string', 'value' => 'variant' }, 'weight' => 99 }
+                ]
+              }
+            }
+          }
+        ]
+      },
+      'environment' => nil
+    }
+
+    store = Quonfig::ConfigStore.new
+    store.set('feature-flag.weighted', weighted_config)
+
+    client, _reporter, summaries_agg, _conn = make_client_with_telemetry(store)
+    client.get('feature-flag.weighted', Quonfig::NO_DEFAULT_PROVIDED, 'user' => { 'key' => 'u1' })
+
+    counter = summaries_agg.drain_event['summaries']['summaries'][0]['counters'][0]
+    assert_equal Quonfig::EvalResult::REASON_SPLIT, counter['reason'],
+                 'weighted variant evaluation must report REASON_SPLIT (3)'
+    refute_nil counter['weightedValueIndex'],
+               'weighted variant evaluation must report a weightedValueIndex'
+    assert_kind_of Integer, counter['weightedValueIndex']
+  end
 end

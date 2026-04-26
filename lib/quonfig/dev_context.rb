@@ -20,7 +20,8 @@ module Quonfig
 
       raw = begin
         File.read(path)
-      rescue StandardError
+      rescue StandardError => e
+        warn "[quonfig] dev-context: could not read #{path} (#{e.class}: #{e.message}); skipping injection"
         return nil
       end
 
