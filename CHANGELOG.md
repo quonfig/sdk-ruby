@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.0.7 - 2026-04-26
+
+- **New: `client.enabled?` / `client.default` / `client.client_construction` integration helpers** —
+  Adds aggregator helpers used by the cross-SDK post + telemetry integration suites.
+- **New: telemetry eval-summaries aggregator + `at_exit` drain (qfg-9x7)** —
+  Periodically batches evaluation summaries and drains them on process exit so
+  short-lived scripts still report telemetry.
+- **New: context telemetry aggregators ported from sdk-node** — context shapes
+  and example-contexts ship through the same aggregator path as sdk-node and
+  sdk-go.
+- **New errors: `DecryptionError`, `MissingEnvironmentError`,
+  `InvalidEnvironmentError`** — explicit error classes raised from the resolver
+  and datadir loaders.
+- **Resolver: provided ENV_VAR resolution + coercion (qfg-08q)** — config values
+  marked `provided` now resolve from the environment at evaluation time and are
+  coerced to the declared value type.
+- **Fix (resolver): raise on missing key, decode weighted/duration/decryption** —
+  `get_or_raise` now raises `MissingDefaultError` for unknown keys, and weighted /
+  duration / decryption value types decode correctly through the JSON resolver.
+- **Fix (context): `grouped_key` drops anonymous contexts** — anonymous contexts
+  are no longer mixed into the grouped-context key, matching sdk-node and sdk-go.
+
 ## 0.0.6 - 2026-04-22
 
 - **New: `Quonfig::StdlibFormatter` + `client.stdlib_formatter(logger_name:)`** —
