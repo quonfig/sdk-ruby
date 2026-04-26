@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 #
 # AUTO-GENERATED from integration-test-data/tests/eval/datadir_environment.yaml.
-# Regenerate with `bundle exec ruby scripts/generate_integration_tests.rb`.
+# Regenerate with:
+#   cd integration-test-data/generators && npm run generate -- --target=ruby
+# Source: integration-test-data/generators/src/targets/ruby.ts
 # Do NOT edit by hand — changes will be overwritten.
 
 require 'test_helper'
@@ -14,63 +16,39 @@ class TestDatadirEnvironment < Minitest::Test
 
   # datadir with environment option gets environment-specific value
   def test_datadir_with_environment_option_gets_environment_specific_value
-    begin
-      client = Quonfig::Client.new(datadir: IntegrationTestHelpers.data_dir, environment: "Production")
-      assert_equal "test4", client.get("james.test.key")
-    rescue Exception => e
-      skip("datadir Client.new not yet wired: #{e.class}: #{e.message}")
-    end
+    client = Quonfig::Client.new(datadir: IntegrationTestHelpers.data_dir, environment: "Production")
+    assert_equal "test4", client.get("james.test.key")
   end
 
   # datadir with QUONFIG_ENVIRONMENT env var gets environment-specific value
   def test_datadir_with_quonfig_environment_env_var_gets_environment_specific_value
-    begin
-      IntegrationTestHelpers.with_env({"QUONFIG_ENVIRONMENT" => "Production"}) do
-        client = Quonfig::Client.new(datadir: IntegrationTestHelpers.data_dir)
-        assert_equal "test4", client.get("james.test.key")
-      end
-    rescue Exception => e
-      skip("datadir Client.new not yet wired: #{e.class}: #{e.message}")
+    IntegrationTestHelpers.with_env({"QUONFIG_ENVIRONMENT" => "Production"}) do
+      client = Quonfig::Client.new(datadir: IntegrationTestHelpers.data_dir)
+      assert_equal "test4", client.get("james.test.key")
     end
   end
 
   # environment option supersedes QUONFIG_ENVIRONMENT env var
   def test_environment_option_supersedes_quonfig_environment_env_var
-    begin
-      IntegrationTestHelpers.with_env({"QUONFIG_ENVIRONMENT" => "nonexistent"}) do
-        client = Quonfig::Client.new(datadir: IntegrationTestHelpers.data_dir, environment: "Production")
-        assert_equal "test4", client.get("james.test.key")
-      end
-    rescue Exception => e
-      skip("datadir Client.new not yet wired: #{e.class}: #{e.message}")
+    IntegrationTestHelpers.with_env({"QUONFIG_ENVIRONMENT" => "nonexistent"}) do
+      client = Quonfig::Client.new(datadir: IntegrationTestHelpers.data_dir, environment: "Production")
+      assert_equal "test4", client.get("james.test.key")
     end
   end
 
   # config without environment override returns default value
   def test_config_without_environment_override_returns_default_value
-    begin
-      client = Quonfig::Client.new(datadir: IntegrationTestHelpers.data_dir, environment: "Production")
-      assert_equal "hello from no env row", client.get("config.with.only.default.env.row")
-    rescue Exception => e
-      skip("datadir Client.new not yet wired: #{e.class}: #{e.message}")
-    end
+    client = Quonfig::Client.new(datadir: IntegrationTestHelpers.data_dir, environment: "Production")
+    assert_equal "hello from no env row", client.get("config.with.only.default.env.row")
   end
 
   # datadir without environment fails to init
   def test_datadir_without_environment_fails_to_init
-    begin
-      skip("init raise-case (missing_environment) — no Quonfig::Errors mapping yet")
-    rescue Exception => e
-      skip("datadir Client.new not yet wired: #{e.class}: #{e.message}")
-    end
+    assert_raises(Quonfig::Errors::MissingEnvironmentError) { Quonfig::Client.new(datadir: IntegrationTestHelpers.data_dir) }
   end
 
   # datadir with invalid environment fails to init
   def test_datadir_with_invalid_environment_fails_to_init
-    begin
-      skip("init raise-case (invalid_environment) — no Quonfig::Errors mapping yet")
-    rescue Exception => e
-      skip("datadir Client.new not yet wired: #{e.class}: #{e.message}")
-    end
+    assert_raises(Quonfig::Errors::InvalidEnvironmentError) { Quonfig::Client.new(datadir: IntegrationTestHelpers.data_dir, environment: "nonexistent") }
   end
 end
