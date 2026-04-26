@@ -17,49 +17,49 @@ class TestContextPrecedence < Minitest::Test
   # returns the correct `flag` value using the global context (1)
   def test_returns_the_correct_flag_value_using_the_global_context_1
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "verified"}}, true)
+    IntegrationTestHelpers.assert_enabled(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "verified"}}, true)
   end
 
   # returns the correct `flag` value using the global context (2)
   def test_returns_the_correct_flag_value_using_the_global_context_2
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "?"}}, false)
+    IntegrationTestHelpers.assert_enabled(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "?"}}, false)
   end
 
   # returns the correct `flag` value when local context clobbers global context (1)
   def test_returns_the_correct_flag_value_when_local_context_clobbers_global_context_1
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "verified"}}, true)
+    IntegrationTestHelpers.assert_enabled(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "verified"}}, true)
   end
 
   # returns the correct `flag` value when local context clobbers global context (2)
   def test_returns_the_correct_flag_value_when_local_context_clobbers_global_context_2
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "?"}}, false)
+    IntegrationTestHelpers.assert_enabled(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "?"}}, false)
   end
 
   # returns the correct `flag` value when block context clobbers global context (1)
   def test_returns_the_correct_flag_value_when_block_context_clobbers_global_context_1
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "?"}}, false)
+    IntegrationTestHelpers.assert_enabled(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "?"}}, false)
   end
 
   # returns the correct `flag` value when block context clobbers global context (2)
   def test_returns_the_correct_flag_value_when_block_context_clobbers_global_context_2
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "verified"}}, true)
+    IntegrationTestHelpers.assert_enabled(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "verified"}}, true)
   end
 
   # returns the correct `flag` value when local context clobbers block context (1)
   def test_returns_the_correct_flag_value_when_local_context_clobbers_block_context_1
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "?"}}, false)
+    IntegrationTestHelpers.assert_enabled(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "?"}}, false)
   end
 
   # returns the correct `flag` value when local context clobbers block context (2)
   def test_returns_the_correct_flag_value_when_local_context_clobbers_block_context_2
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "verified"}}, true)
+    IntegrationTestHelpers.assert_enabled(resolver, "mixed.case.property.name", {"user" => {"isHuman" => "verified"}}, true)
   end
 
   # returns the correct `get` value using the global context (1)

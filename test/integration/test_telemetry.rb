@@ -18,63 +18,63 @@ class TestTelemetry < Minitest::Test
   def test_reason_is_static_for_config_with_no_targeting_rules
     aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
     IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["brand.new.string"]}, contexts: {})
-    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "brand.new.string", "type" => "CONFIG", "value" => "hello.world", "value_type" => "string", "count" => 1, "reason" => 1, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "brand.new.string", "type" => "CONFIG", "value" => "hello.world", "value_type" => "string", "count" => 1, "reason" => 1, "selected_value" => {"string" => "hello.world"}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
   end
 
   # reason is STATIC for feature flag with only ALWAYS_TRUE rules
   def test_reason_is_static_for_feature_flag_with_only_always_true_rules
     aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
     IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["always.true"]}, contexts: {})
-    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "always.true", "type" => "FEATURE_FLAG", "value" => true, "value_type" => "bool", "count" => 1, "reason" => 1, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "always.true", "type" => "FEATURE_FLAG", "value" => true, "value_type" => "bool", "count" => 1, "reason" => 1, "selected_value" => {"bool" => true}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
   end
 
   # reason is TARGETING_MATCH when config has targeting rules but evaluation falls through
   def test_reason_is_targeting_match_when_config_has_targeting_rules_but_evaluation_falls_through
     aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
     IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["my-test-key"]}, contexts: {})
-    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "my-test-key", "type" => "CONFIG", "value" => "my-test-value", "value_type" => "string", "count" => 1, "reason" => 2, "summary" => {"config_row_index" => 0, "conditional_value_index" => 1}}], endpoint: "/api/v1/telemetry")
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "my-test-key", "type" => "CONFIG", "value" => "my-test-value", "value_type" => "string", "count" => 1, "reason" => 2, "selected_value" => {"string" => "my-test-value"}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 1}}], endpoint: "/api/v1/telemetry")
   end
 
   # reason is TARGETING_MATCH when a targeting rule matches
   def test_reason_is_targeting_match_when_a_targeting_rule_matches
     aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
     IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["feature-flag.integer"]}, contexts: {"user" => {"key" => "michael"}})
-    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "feature-flag.integer", "type" => "FEATURE_FLAG", "value" => 5, "value_type" => "int", "count" => 1, "reason" => 2, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "feature-flag.integer", "type" => "FEATURE_FLAG", "value" => 5, "value_type" => "int", "count" => 1, "reason" => 2, "selected_value" => {"int" => 5}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
   end
 
   # reason is SPLIT for weighted value evaluation
   def test_reason_is_split_for_weighted_value_evaluation
     aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
     IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["feature-flag.weighted"]}, contexts: {"user" => {"tracking_id" => "92a202f2"}})
-    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "feature-flag.weighted", "type" => "FEATURE_FLAG", "value" => 2, "value_type" => "int", "count" => 1, "reason" => 3, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0, "weighted_value_index" => 2}}], endpoint: "/api/v1/telemetry")
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "feature-flag.weighted", "type" => "FEATURE_FLAG", "value" => 2, "value_type" => "int", "count" => 1, "reason" => 3, "selected_value" => {"int" => 2}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0, "weighted_value_index" => 2}}], endpoint: "/api/v1/telemetry")
   end
 
   # reason is TARGETING_MATCH for feature flag fallthrough with targeting rules
   def test_reason_is_targeting_match_for_feature_flag_fallthrough_with_targeting_rules
     aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
     IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["feature-flag.integer"]}, contexts: {})
-    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "feature-flag.integer", "type" => "FEATURE_FLAG", "value" => 3, "value_type" => "int", "count" => 1, "reason" => 2, "summary" => {"config_row_index" => 0, "conditional_value_index" => 1}}], endpoint: "/api/v1/telemetry")
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "feature-flag.integer", "type" => "FEATURE_FLAG", "value" => 3, "value_type" => "int", "count" => 1, "reason" => 2, "selected_value" => {"int" => 3}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 1}}], endpoint: "/api/v1/telemetry")
   end
 
   # evaluation summary deduplicates identical evaluations
   def test_evaluation_summary_deduplicates_identical_evaluations
     aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
     IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["brand.new.string", "brand.new.string", "brand.new.string", "brand.new.string", "brand.new.string"]}, contexts: {})
-    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "brand.new.string", "type" => "CONFIG", "value" => "hello.world", "value_type" => "string", "count" => 5, "reason" => 1, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "brand.new.string", "type" => "CONFIG", "value" => "hello.world", "value_type" => "string", "count" => 5, "reason" => 1, "selected_value" => {"string" => "hello.world"}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
   end
 
   # evaluation summary creates separate counters for different rules of same config
   def test_evaluation_summary_creates_separate_counters_for_different_rules_of_same_config
     aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
     IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["feature-flag.integer"], "keys_without_context" => ["feature-flag.integer"]}, contexts: {"user" => {"key" => "michael"}})
-    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "feature-flag.integer", "type" => "FEATURE_FLAG", "value" => 5, "value_type" => "int", "count" => 1, "reason" => 2, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}, {"key" => "feature-flag.integer", "type" => "FEATURE_FLAG", "value" => 3, "value_type" => "int", "count" => 1, "reason" => 2, "summary" => {"config_row_index" => 0, "conditional_value_index" => 1}}], endpoint: "/api/v1/telemetry")
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "feature-flag.integer", "type" => "FEATURE_FLAG", "value" => 5, "value_type" => "int", "count" => 1, "reason" => 2, "selected_value" => {"int" => 5}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}, {"key" => "feature-flag.integer", "type" => "FEATURE_FLAG", "value" => 3, "value_type" => "int", "count" => 1, "reason" => 2, "selected_value" => {"int" => 3}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 1}}], endpoint: "/api/v1/telemetry")
   end
 
   # evaluation summary groups by config key
   def test_evaluation_summary_groups_by_config_key
     aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
     IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["brand.new.string", "always.true"]}, contexts: {})
-    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "brand.new.string", "type" => "CONFIG", "value" => "hello.world", "value_type" => "string", "count" => 1, "reason" => 1, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}, {"key" => "always.true", "type" => "FEATURE_FLAG", "value" => true, "value_type" => "bool", "count" => 1, "reason" => 1, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "brand.new.string", "type" => "CONFIG", "value" => "hello.world", "value_type" => "string", "count" => 1, "reason" => 1, "selected_value" => {"string" => "hello.world"}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}, {"key" => "always.true", "type" => "FEATURE_FLAG", "value" => true, "value_type" => "bool", "count" => 1, "reason" => 1, "selected_value" => {"bool" => true}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
   end
 
   # selectedValue wraps string correctly

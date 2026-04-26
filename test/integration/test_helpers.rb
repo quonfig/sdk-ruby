@@ -67,33 +67,25 @@ module IntegrationTestHelpers
 
   # Resolve +key+ against +context+ and assert the unwrapped value (and,
   # when present, its reported value_type) match. Generated tests call
-  # this; keep the failure message specific so diffs are readable.
-  #
-  # Missing-key semantics: the YAML "default" cases generate the same
-  # `assert_resolved(resolver, key, ctx, expected)` call for both
-  #   - "expected nil" (no default, key not found → nil)
-  #   - "expected DEFAULT" (default supplied, key not found → DEFAULT)
-  # When the resolver yields nothing we treat the call as if a `default:
-  # expected_value` had been threaded through, mirroring the Quonfig
-  # public-API `get(key, default)` semantics. Tests that *want* an
-  # absent-key failure pass nil/false as expected and still pass.
+  # this for the "no default, no enabled" path. With the generator now
+  # threading input.default through assert_get_with_default and routing
+  # function: enabled cases through assert_enabled, this helper can stay
+  # strict: missing keys still raise, non-bool actual stays non-bool.
+  # Nil-expected cases (e.g. "get returns nil if value not found" with
+  # on_no_default: 2) catch the resolver's MissingDefaultError and return nil.
   def self.assert_resolved(resolver, key, context, expected_value, expected_type = nil)
     ctx = context.is_a?(Quonfig::Context) ? context : Quonfig::Context.new(context || {})
     result =
       begin
         resolver.get(key, ctx)
       rescue Quonfig::Errors::MissingDefaultError
-        # Missing-key path: YAML happy-path cases like
-        #   "get returns nil if value not found"  → expected nil
-        #   "get returns a default for a missing value" → expected "DEFAULT"
-        # both compile to assert_resolved(.., expected). Treat the
-        # missing-key raise as "default kicks in" and return the
-        # expected value as if the SDK's get(key, default) had served it.
-        return expected_value
+        nil
       end
-    return expected_value if result.nil?
+    return expected_value if result.nil? && expected_value.nil?
 
-    actual = if result.respond_to?(:unwrapped_value)
+    actual = if result.nil?
+               nil
+             elsif result.respond_to?(:unwrapped_value)
                result.unwrapped_value
              elsif result.respond_to?(:value)
                v = result.value
@@ -101,15 +93,6 @@ module IntegrationTestHelpers
              else
                result
              end
-
-    # Quonfig::Client#enabled? semantic: a non-bool value coerces to false
-    # for the boolean assertion path. The shared YAML uses `function: enabled`
-    # for these cases (expected value is strictly true/false). Without a
-    # per-suite signal in the generated call we infer from the expected
-    # value: if the YAML says `expected: false`/`true`, force a strict bool.
-    if (expected_value == true || expected_value == false) && !(actual == true || actual == false)
-      actual = (actual == true)
-    end
 
     unless actual == expected_value
       raise Minitest::Assertion,
@@ -122,6 +105,152 @@ module IntegrationTestHelpers
               "#{key}: expected type #{expected_type}, got #{result.value_type}"
       end
     end
+    actual
+  end
+
+  # function: enabled semantics — Quonfig::Client#enabled? returns the
+  # bool value if the resolved value is a boolean, false otherwise.
+  # The generator routes function: enabled cases through this helper so
+  # the bool-coercion lives here, not inferred from the expected literal.
+  def self.assert_enabled(resolver, key, context, expected_bool)
+    ctx = context.is_a?(Quonfig::Context) ? context : Quonfig::Context.new(context || {})
+    actual =
+      begin
+        result = resolver.get(key, ctx)
+        if result.nil?
+          false
+        else
+          v = result.respond_to?(:unwrapped_value) ? result.unwrapped_value : result
+          (v == true || v == 'true') ? true : false
+        end
+      rescue Quonfig::Errors::MissingDefaultError
+        false
+      end
+    unless actual == expected_bool
+      raise Minitest::Assertion,
+            "enabled?(#{key}): expected #{expected_bool.inspect}, got #{actual.inspect}"
+    end
+    actual
+  end
+
+  # input.default — thread the YAML default through the SDK's public
+  # get(key, default) API. Build a Client over the same store the
+  # resolver uses; that way we observe what the SDK actually returns
+  # (default kicks in for missing keys, found-key wins over default).
+  def self.assert_get_with_default(store, key, context, default_value, expected_value)
+    # Build with environment: ENV_ID so config rules evaluate against the
+    # 'Production' environment (matching what build_resolver does). Without
+    # this the Client falls back to default rules.
+    client = Quonfig::Client.new(store: store, environment: ENV_ID)
+    ctx_arg =
+      if context.nil? || (context.respond_to?(:empty?) && context.empty?)
+        Quonfig::NO_DEFAULT_PROVIDED
+      elsif context.is_a?(Quonfig::Context)
+        context
+      else
+        Quonfig::Context.new(context)
+      end
+    actual = client.get(key, default_value, ctx_arg)
+    unless actual == expected_value
+      raise Minitest::Assertion,
+            "#{key}: expected #{expected_value.inspect} (default=#{default_value.inspect}), got #{actual.inspect}"
+    end
+    actual
+  end
+
+  # Build a real Quonfig::Client whose initial fetch is intentionally slow
+  # (an unreachable api_url + tiny init timeout) and assert that
+  # Client#get raises Quonfig::Errors::InitializationTimeoutError.
+  def self.assert_initialization_timeout_error(key, timeout_sec, api_url, on_init_failure)
+    on_init = on_init_failure.to_s.sub(/\A:/, '').to_sym
+    api_urls = api_url && !api_url.empty? ? [api_url] : ['https://127.0.0.1:1']
+    client =
+      begin
+        Quonfig::Client.new(
+          sdk_key: 'test-unused',
+          api_urls: api_urls,
+          initialization_timeout_sec: timeout_sec,
+          on_init_failure: on_init,
+          enable_sse: false,
+          enable_polling: false
+        )
+      rescue Quonfig::Errors::InitializationTimeoutError
+        return # construction itself raised — that's the expected outcome
+      end
+    raise Minitest::Assertion,
+          'expected Quonfig::Errors::InitializationTimeoutError to raise on get' \
+      unless on_init == :raise
+
+    begin
+      client.get(key)
+      raise Minitest::Assertion, "expected get(#{key}) to raise InitializationTimeoutError but it returned"
+    rescue Quonfig::Errors::InitializationTimeoutError
+      # success
+    ensure
+      client.respond_to?(:close) && client.close
+      $logs = nil if defined?($logs)
+    end
+  end
+
+  # Generic raise path through a real-client construction (e.g. on_init_failure
+  # :return + missing_default on get_or_raise — init returns zero value,
+  # then get_or_raise still raises MissingDefault). The function arg picks
+  # the call shape: 'get_or_raise' uses get_or_raise(key); anything else
+  # falls back to client.get(key).
+  #
+  # The Client logs a warning when init returns the zero value (the typical
+  # on_init_failure: :return path). Drain $logs (if it exists from
+  # CommonHelpers) so the test's teardown doesn't trip on it — that's the
+  # whole point of the case.
+  def self.assert_client_construction_raises(key, timeout_sec, api_url, on_init_failure, fn, err_class)
+    on_init = on_init_failure.to_s.sub(/\A:/, '').to_sym
+    api_urls = api_url && !api_url.empty? ? [api_url] : ['https://127.0.0.1:1']
+    client = Quonfig::Client.new(
+      sdk_key: 'test-unused',
+      api_urls: api_urls,
+      initialization_timeout_sec: timeout_sec,
+      on_init_failure: on_init,
+      enable_sse: false,
+      enable_polling: false
+    )
+    begin
+      if fn == 'get_or_raise' && client.respond_to?(:get_or_raise)
+        client.get_or_raise(key)
+      else
+        # No public get_or_raise: call .get with no default and the SDK's
+        # internal NO_DEFAULT_PROVIDED forces the missing-default raise.
+        client.get(key)
+      end
+      raise Minitest::Assertion, "expected #{err_class} to raise but call returned"
+    rescue err_class
+      # success
+    ensure
+      client.respond_to?(:close) && client.close
+      # Acknowledge the init-warning log so common_helpers' teardown won't
+      # blow up. The warning IS the thing we asked for via :return policy.
+      $logs = nil if defined?($logs)
+    end
+  end
+
+  # Happy path through a real-client construction (rare; mostly here for
+  # symmetry — the YAML init-timeout cases are all raise-path).
+  def self.assert_client_construction_value(key, timeout_sec, api_url, on_init_failure, _fn, expected_value)
+    on_init = on_init_failure.to_s.sub(/\A:/, '').to_sym
+    api_urls = api_url && !api_url.empty? ? [api_url] : ['https://127.0.0.1:1']
+    client = Quonfig::Client.new(
+      sdk_key: 'test-unused',
+      api_urls: api_urls,
+      initialization_timeout_sec: timeout_sec,
+      on_init_failure: on_init,
+      enable_sse: false,
+      enable_polling: false
+    )
+    actual = client.get(key)
+    unless actual == expected_value
+      raise Minitest::Assertion,
+            "#{key}: expected #{expected_value.inspect}, got #{actual.inspect}"
+    end
+    client.respond_to?(:close) && client.close
     actual
   end
 

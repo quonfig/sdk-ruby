@@ -29,13 +29,13 @@ class TestGet < Minitest::Test
   # get returns a default for a missing value if a default is given
   def test_get_returns_a_default_for_a_missing_value_if_a_default_is_given
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "my-missing-key", {}, "DEFAULT")
+    IntegrationTestHelpers.assert_get_with_default(@store, "my-missing-key", {}, "DEFAULT", "DEFAULT")
   end
 
   # get ignores a provided default if the key is found
   def test_get_ignores_a_provided_default_if_the_key_is_found
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "my-test-key", {}, "my-test-value")
+    IntegrationTestHelpers.assert_get_with_default(@store, "my-test-key", {}, "DEFAULT", "my-test-value")
   end
 
   # get can return a double

@@ -24,21 +24,17 @@ class TestGetOrRaise < Minitest::Test
   # get_or_raise returns a default value instead of raising
   def test_get_or_raise_returns_a_default_value_instead_of_raising
     resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "my-missing-key", {}, "DEFAULT")
+    IntegrationTestHelpers.assert_get_with_default(@store, "my-missing-key", {}, "DEFAULT", "DEFAULT")
   end
 
   # get_or_raise raises the correct error if it doesn't raise on init timeout
   def test_get_or_raise_raises_the_correct_error_if_it_doesn_t_raise_on_init_timeout
-    resolver = IntegrationTestHelpers.build_resolver(@store)
-    ctx = Quonfig::Context.new({})
-    assert_raises(Quonfig::Errors::MissingDefaultError) { resolver.get("any-key", ctx) }
+    IntegrationTestHelpers.assert_client_construction_raises("any-key", 0.01, "https://app.staging-prefab.cloud", "return", "get_or_raise", Quonfig::Errors::MissingDefaultError)
   end
 
   # get_or_raise can raise an error if the client does not initialize in time
   def test_get_or_raise_can_raise_an_error_if_the_client_does_not_initialize_in_time
-    resolver = IntegrationTestHelpers.build_resolver(@store)
-    ctx = Quonfig::Context.new({})
-    assert_raises(Quonfig::Errors::InitializationTimeoutError) { resolver.get("any-key", ctx) }
+    IntegrationTestHelpers.assert_initialization_timeout_error("any-key", 0.01, "https://app.staging-prefab.cloud", "raise")
   end
 
   # raises an error if a config is provided by a missing environment variable
