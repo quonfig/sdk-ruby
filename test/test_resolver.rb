@@ -141,4 +141,145 @@ class TestResolverTrio < Minitest::Test
 
     assert_nil resolver.get('nope', Quonfig::Context.new({}))
   end
+
+  # ---- ENV_VAR provided value resolution (qfg-08q) ---------------------
+
+  # Build a config whose value comes from a `provided` ENV_VAR lookup.
+  # value_type drives coercion of the env var string back to the SDK type
+  # (mirrors sdk-node/sdk-go behavior).
+  def make_provided_config(key:, value_type:, lookup:)
+    {
+      id: '1',
+      key: key,
+      type: 'config',
+      value_type: value_type,
+      send_to_client_sdk: false,
+      default: {
+        'rules' => [
+          {
+            'criteria' => [{ 'operator' => 'ALWAYS_TRUE' }],
+            'value' => {
+              'type' => 'provided',
+              'value' => { 'source' => 'ENV_VAR', 'lookup' => lookup }
+            }
+          }
+        ]
+      },
+      environment: nil
+    }
+  end
+
+  def with_env(name, value)
+    original = ENV[name]
+    ENV[name] = value
+    yield
+  ensure
+    if original.nil?
+      ENV.delete(name)
+    else
+      ENV[name] = original
+    end
+  end
+
+  def build_resolver(cfg)
+    store = Quonfig::ConfigStore.new({ cfg[:key] => cfg })
+    evaluator = Quonfig::Evaluator.new(store, base_client: base_client)
+    Quonfig::Resolver.new(store, evaluator)
+  end
+
+  def test_resolver_get_resolves_provided_env_var_as_string
+    cfg = make_provided_config(key: 'a.string', value_type: 'string', lookup: 'QFG_TEST_STRING')
+    resolver = build_resolver(cfg)
+
+    with_env('QFG_TEST_STRING', 'hello') do
+      result = resolver.get('a.string', Quonfig::Context.new({}))
+      assert_equal 'hello', result.unwrapped_value
+      assert_equal 'string', result.value_type
+    end
+  end
+
+  def test_resolver_get_resolves_provided_env_var_as_int
+    cfg = make_provided_config(key: 'a.number', value_type: 'int', lookup: 'QFG_TEST_INT')
+    resolver = build_resolver(cfg)
+
+    with_env('QFG_TEST_INT', '1234') do
+      result = resolver.get('a.number', Quonfig::Context.new({}))
+      assert_equal 1234, result.unwrapped_value
+      assert_equal 'int', result.value_type
+    end
+  end
+
+  def test_resolver_get_resolves_provided_env_var_as_double
+    cfg = make_provided_config(key: 'a.double', value_type: 'double', lookup: 'QFG_TEST_DOUBLE')
+    resolver = build_resolver(cfg)
+
+    with_env('QFG_TEST_DOUBLE', '3.14') do
+      result = resolver.get('a.double', Quonfig::Context.new({}))
+      assert_in_delta 3.14, result.unwrapped_value, 0.0001
+      assert_equal 'double', result.value_type
+    end
+  end
+
+  def test_resolver_get_resolves_provided_env_var_as_bool
+    cfg = make_provided_config(key: 'a.bool', value_type: 'bool', lookup: 'QFG_TEST_BOOL')
+    resolver = build_resolver(cfg)
+
+    with_env('QFG_TEST_BOOL', 'true') do
+      result = resolver.get('a.bool', Quonfig::Context.new({}))
+      assert_equal true, result.unwrapped_value
+      assert_equal 'bool', result.value_type
+    end
+
+    with_env('QFG_TEST_BOOL', 'no') do
+      result = resolver.get('a.bool', Quonfig::Context.new({}))
+      assert_equal false, result.unwrapped_value
+    end
+  end
+
+  def test_resolver_get_resolves_provided_env_var_as_string_list
+    cfg = make_provided_config(key: 'a.list', value_type: 'string_list', lookup: 'QFG_TEST_LIST')
+    resolver = build_resolver(cfg)
+
+    with_env('QFG_TEST_LIST', 'a, b ,c') do
+      result = resolver.get('a.list', Quonfig::Context.new({}))
+      assert_equal %w[a b c], result.unwrapped_value
+      assert_equal 'string_list', result.value_type
+    end
+  end
+
+  def test_resolver_get_raises_missing_env_var_error_when_unset
+    cfg = make_provided_config(key: 'a.missing', value_type: 'string', lookup: 'QFG_DEFINITELY_UNSET')
+    resolver = build_resolver(cfg)
+    ENV.delete('QFG_DEFINITELY_UNSET')
+
+    err = assert_raises(Quonfig::Errors::MissingEnvVarError) do
+      resolver.get('a.missing', Quonfig::Context.new({}))
+    end
+    assert_match(/QFG_DEFINITELY_UNSET/, err.message)
+    assert_match(/a\.missing/, err.message)
+  end
+
+  def test_resolver_get_raises_env_var_parse_error_on_bad_int
+    cfg = make_provided_config(key: 'a.number', value_type: 'int', lookup: 'QFG_TEST_BAD_INT')
+    resolver = build_resolver(cfg)
+
+    with_env('QFG_TEST_BAD_INT', 'not_a_number') do
+      err = assert_raises(Quonfig::Errors::EnvVarParseError) do
+        resolver.get('a.number', Quonfig::Context.new({}))
+      end
+      assert_match(/a\.number/, err.message)
+      assert_match(/not_a_number/, err.message)
+    end
+  end
+
+  def test_resolver_get_raises_env_var_parse_error_on_bad_double
+    cfg = make_provided_config(key: 'a.double', value_type: 'double', lookup: 'QFG_TEST_BAD_DOUBLE')
+    resolver = build_resolver(cfg)
+
+    with_env('QFG_TEST_BAD_DOUBLE', 'not_a_number') do
+      assert_raises(Quonfig::Errors::EnvVarParseError) do
+        resolver.get('a.double', Quonfig::Context.new({}))
+      end
+    end
+  end
 end
