@@ -90,7 +90,10 @@ class TestContext < Minitest::Test
       team: { key: 't1' }
     )
 
-    assert_equal 'team:t1|user:u1', context.grouped_key
+    # Mirrors sdk-node groupedKey: just the key/trackingId values, sorted
+    # and pipe-joined. Contexts without a key/trackingId contribute
+    # nothing — so the example aggregator drops anonymous contexts.
+    assert_equal 't1|u1', context.grouped_key
   end
 
   def test_named_context_lookup_returns_namedcontext

@@ -32,15 +32,15 @@ class TestExampleContextsAggregator < Minitest::Test
     assert_equal 2, aggregator.data.size
   end
 
-  def test_record_handles_partial_key_contexts
+  def test_record_drops_contexts_without_a_key_property
     aggregator = Quonfig::Telemetry::ExampleContextsAggregator.new(max_contexts: 10)
 
-    # Missing 'key' property still produces a deterministic grouped_key
-    # (Quonfig::Context.grouped_key uses name+":"+key, matching what
-    # sdk-node emits). Record it once, then dedupe on repeat.
+    # Anonymous contexts (no `key` / `trackingId`) produce an empty
+    # grouped_key under the sdk-node-aligned shape. The aggregator drops
+    # them so we don't ship rows the backend can't dedupe.
     aggregator.record(Quonfig::Context.new('user' => { 'name' => 'no-key' }))
     aggregator.record(Quonfig::Context.new('user' => { 'name' => 'still-no-key' }))
-    assert_equal 1, aggregator.data.size
+    assert_equal 0, aggregator.data.size
   end
 
   def test_record_with_expiry_allows_re_recording_after_window

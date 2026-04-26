@@ -85,8 +85,17 @@ module Quonfig
       @contexts[name.to_s] || NamedContext.new(name, {})
     end
 
+    # Concatenate each named context's `key` (or `trackingId`) value into
+    # a stable identifier used for example-contexts dedupe. Mirrors
+    # sdk-node's groupedKey: contexts that don't have a `key` property
+    # contribute nothing — the resulting string is empty for "anonymous"
+    # contexts so the example aggregator can drop them entirely.
     def grouped_key
-      @contexts.map { |_, ctx| ctx.key }.sort.join('|')
+      @contexts.values.map do |ctx|
+        h = ctx.to_h
+        v = h['key'] || h[:key] || h['trackingId'] || h[:trackingId]
+        v.nil? ? nil : v.to_s
+      end.compact.reject(&:empty?).sort.join('|')
     end
 
     include Comparable
