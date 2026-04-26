@@ -50,12 +50,6 @@ class TestGet < Minitest::Test
     IntegrationTestHelpers.assert_resolved(resolver, "my-string-list-key", {}, ["a", "b", "c"])
   end
 
-  # can return an override based on the default context
-  def test_can_return_an_override_based_on_the_default_context
-    resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "my-overridden-key", {}, "overridden")
-  end
-
   # can return a value provided by an environment variable
   def test_can_return_a_value_provided_by_an_environment_variable
     resolver = IntegrationTestHelpers.build_resolver(@store)

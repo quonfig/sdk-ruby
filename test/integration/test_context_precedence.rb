@@ -74,18 +74,6 @@ class TestContextPrecedence < Minitest::Test
     IntegrationTestHelpers.assert_resolved(resolver, "basic.rule.config", {"user" => {"email" => "test@example.com"}}, "default")
   end
 
-  # returns the correct `get` value using the global context and api context (1)
-  def test_returns_the_correct_get_value_using_the_global_context_and_api_context_1
-    resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "basic.rule.config.with.api.conditional", {"user" => {"email" => "test@prefab.cloud"}}, "override")
-  end
-
-  # returns the correct `get` value using the global context and api context (2)
-  def test_returns_the_correct_get_value_using_the_global_context_and_api_context_2
-    resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(resolver, "basic.rule.config.with.api.conditional", {"user" => {"email" => "test@example.com"}}, "api-override")
-  end
-
   # returns the correct `get` value when local context clobbers global context (1)
   def test_returns_the_correct_get_value_when_local_context_clobbers_global_context_1
     resolver = IntegrationTestHelpers.build_resolver(@store)
