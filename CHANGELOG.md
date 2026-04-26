@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.8 - 2026-04-26
+
+- **Fix (gemspec): drop deleted `scripts/` entry from manifest** — regenerated
+  juwelier gemspec so `gem build` no longer fails on the missing
+  `scripts/generate_integration_tests.rb` file. Also untracked stray
+  `.DS_Store`. v0.0.7 was tagged but never published due to this bug.
+
 ## 0.0.7 - 2026-04-26
 
 - **New: `client.enabled?` / `client.default` / `client.client_construction` integration helpers** —
