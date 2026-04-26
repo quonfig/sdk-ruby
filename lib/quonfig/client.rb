@@ -32,7 +32,7 @@ module Quonfig
         else
           Quonfig::Options.new(option_kwargs)
         end
-      @global_context = normalize_context(@options.global_context)
+      @global_context = build_initial_global_context(@options)
       @instance_hash = SecureRandom.uuid
       @store = store || Quonfig::ConfigStore.new
       @evaluator = Quonfig::Evaluator.new(@store, env_id: @options.environment)
@@ -439,6 +439,21 @@ module Quonfig
     def build_context(jit_context)
       jit = jit_context == NO_DEFAULT_PROVIDED ? nil : normalize_context(jit_context)
       merge_contexts(@global_context, jit)
+    end
+
+    # Combine the customer-supplied globalContext with the optional dev
+    # context loaded from ~/.quonfig/tokens.json. Dev context goes UNDER the
+    # customer's so any explicit `quonfig-user` keys win on collision.
+    def build_initial_global_context(options)
+      customer = normalize_context(options.global_context)
+      enabled = options.enable_quonfig_user_context == true ||
+                ENV['QUONFIG_DEV_CONTEXT'] == 'true'
+      return customer unless enabled
+
+      dev = Quonfig::DevContext.load_quonfig_user_context
+      return customer if dev.nil?
+
+      merge_contexts(dev, customer)
     end
 
     def normalize_context(ctx)
