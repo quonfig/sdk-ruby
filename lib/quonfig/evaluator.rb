@@ -416,14 +416,20 @@ module Quonfig
     REASON_TARGETING_MATCH  = 2
     REASON_SPLIT            = 3
 
-    attr_reader :value, :rule_index, :config
+    attr_reader :value, :rule_index, :config, :reportable_value
     attr_accessor :weighted_value_index
 
-    def initialize(value:, rule_index:, config:, weighted_value_index: nil)
+    def initialize(value:, rule_index:, config:, weighted_value_index: nil, reportable_value: nil)
       @value = value
       @rule_index = rule_index
       @config = config
       @weighted_value_index = weighted_value_index
+      # Telemetry-safe substitute for #unwrapped_value. Set by Resolver when
+      # the underlying Value was confidential / decryptWith, so callers
+      # (the eval-summary aggregator) never see the plaintext. Mirrors
+      # ReforgeHQ/sdk-ruby ConfigValueUnwrapper#reportable_value (the
+      # `*****<5-md5>` hash form).
+      @reportable_value = reportable_value
     end
 
     # Integer reason code for telemetry. Mirrors sdk-node's computeReason:

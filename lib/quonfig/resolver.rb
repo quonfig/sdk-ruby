@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'digest'
+
 module Quonfig
   # Public-API resolver: looks up a config by key in a ConfigStore and runs
   # it through an Evaluator against a Context.
@@ -15,6 +17,11 @@ module Quonfig
   # Quonfig::ConfigResolver — the two coexist during the JSON migration.
   class Resolver
     TRUE_VALUES = %w[true 1 t yes].freeze
+    # Prefix the eval-summary aggregator stamps onto redacted confidential
+    # values before the 5-char MD5 hash. Matches CONFIDENTIAL_PREFIX in
+    # ReforgeHQ/sdk-ruby/lib/reforge/config_value_unwrapper.rb so dashboards
+    # built against the predecessor wire format keep working.
+    CONFIDENTIAL_PREFIX = '*****'
 
     attr_reader :store, :evaluator
     attr_accessor :project_env_id
@@ -50,7 +57,8 @@ module Quonfig
         value: resolved_value,
         rule_index: eval_result.rule_index,
         config: config,
-        weighted_value_index: weighted_index
+        weighted_value_index: weighted_index,
+        reportable_value: redacted_reportable_value(eval_result.value)
       )
     end
 
@@ -86,6 +94,26 @@ module Quonfig
     end
 
     private
+
+    # If +value+ is confidential or has a decryptWith key, return the
+    # `*****<5-hex>` redacted string the eval-summary telemetry aggregator
+    # should ship in place of the resolved plaintext. The hash is computed
+    # over the raw `value[:value]` (ciphertext when decryptWith is set,
+    # plaintext-as-stored when only `confidential: true`) — matches
+    # ReforgeHQ/sdk-ruby ConfigValueUnwrapper#reportable_wrapped_value
+    # (CONFIDENTIAL_PREFIX + first 5 chars of MD5).
+    def redacted_reportable_value(value)
+      return nil if value.nil?
+
+      confidential = vget(value, :confidential, 'confidential')
+      decrypt_with = vget(value, :decryptWith, 'decryptWith', :decrypt_with, 'decrypt_with')
+      return nil unless confidential || (decrypt_with && !decrypt_with.to_s.empty?)
+
+      raw = vget(value, :value, 'value')
+      return nil if raw.nil?
+
+      "#{CONFIDENTIAL_PREFIX}#{Digest::MD5.hexdigest(raw.to_s)[0, 5]}"
+    end
 
     def vget(hash, *keys)
       return nil if hash.nil?

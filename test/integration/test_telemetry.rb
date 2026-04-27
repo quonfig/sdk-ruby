@@ -153,4 +153,18 @@ class TestTelemetry < Minitest::Test
     IntegrationTestHelpers.feed_aggregator(aggregator, :context_shape, {}, contexts: {})
     IntegrationTestHelpers.assert_aggregator_post(aggregator, :context_shape, nil, endpoint: "/api/v1/context-shapes")
   end
+
+  # confidential plain string is redacted in selectedValue
+  def test_confidential_plain_string_is_redacted_in_selectedvalue
+    aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
+    IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["confidential.new.string"]}, contexts: {})
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "confidential.new.string", "type" => "CONFIG", "value" => "hello.world", "value_type" => "string", "count" => 1, "reason" => 1, "selected_value" => {"string" => "*****18aa7"}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
+  end
+
+  # confidential encrypted string is redacted using ciphertext hash
+  def test_confidential_encrypted_string_is_redacted_using_ciphertext_hash
+    aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
+    IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, {"keys" => ["a.secret.config"]}, contexts: {})
+    IntegrationTestHelpers.assert_aggregator_post(aggregator, :evaluation_summary, [{"key" => "a.secret.config", "type" => "CONFIG", "value" => "hello.world", "value_type" => "string", "count" => 1, "reason" => 1, "selected_value" => {"string" => "*****936c9"}, "summary" => {"config_row_index" => 0, "conditional_value_index" => 0}}], endpoint: "/api/v1/telemetry")
+  end
 end

@@ -290,6 +290,13 @@ module IntegrationTestHelpers
   # so eval-summary cases can resolve real values for each key.
   class << self
     attr_accessor :last_store
+    # Side-channel populated by record_one_eval whenever we redact a
+    # confidential value before recording it on the aggregator. Keyed by
+    # config_key → { unwrapped:, value_type: }. evaluation_summary_post
+    # consults it so the YAML's `value` / `value_type` fields can still
+    # assert the runtime resolved value while `selected_value` carries
+    # the wire-redacted form.
+    attr_accessor :last_unwrapped_overrides
   end
 
   # Construct an aggregator. +kind+ is one of :context_shape,
@@ -465,6 +472,7 @@ module IntegrationTestHelpers
     ctx = contexts.is_a?(Quonfig::Context) ? contexts : Quonfig::Context.new(contexts || {})
     empty_ctx = Quonfig::Context.new({})
 
+    self.last_unwrapped_overrides = {}
     Array(keys).each { |key| record_one_eval(aggregator, resolver, store, key, ctx) }
     Array(keys_no_ctx).each { |key| record_one_eval(aggregator, resolver, store, key, empty_ctx) }
   end
@@ -482,13 +490,28 @@ module IntegrationTestHelpers
       end
     return if result.nil?
 
+    # Confidential / decryptWith values must never appear in plaintext on
+    # the wire. EvalResult#reportable_value, when populated, is the
+    # `*****<md5>`-redacted substitute the resolver computed pre-decryption.
+    # When we substitute, stash the runtime unwrapped value so the
+    # post-projection can still assert YAML's `value` / `value_type` against
+    # the resolved plaintext (the YAML treats `value` as the runtime view
+    # and `selected_value` as the wire view).
+    selected_for_telemetry = result.unwrapped_value
+    if result.reportable_value
+      selected_for_telemetry = result.reportable_value
+      (self.last_unwrapped_overrides ||= {})[key] = {
+        unwrapped: result.unwrapped_value,
+        value_type: result.value_type
+      }
+    end
     aggregator.record(
       config_id: (cfg[:id] || cfg['id']).to_s,
       config_key: key,
       config_type: (cfg[:type] || cfg['type']).to_s,
       conditional_value_index: result.rule_index,
       weighted_value_index: result.weighted_value_index,
-      selected_value: result.unwrapped_value,
+      selected_value: selected_for_telemetry,
       reason: result.wire_reason
     )
   end
@@ -545,6 +568,7 @@ module IntegrationTestHelpers
 
   def self.evaluation_summary_post(event)
     summaries = event.dig('summaries', 'summaries') || []
+    overrides = last_unwrapped_overrides || {}
     rows = []
     summaries.each do |summary|
       type_label = TYPE_LABELS[summary['type'].to_s] || summary['type'].to_s.upcase
@@ -552,6 +576,15 @@ module IntegrationTestHelpers
       counters.each do |counter|
         selected = counter['selectedValue'] || {}
         unwrapped, value_type = unwrap_selected(selected)
+        # When the resolver redacted this key (confidential / decryptWith),
+        # selected_value carries the redacted form on the wire but YAML's
+        # `value` / `value_type` should still reflect the runtime resolved
+        # plaintext. Restore from the side channel populated in
+        # record_one_eval.
+        if (override = overrides[summary['key']])
+          unwrapped = override[:unwrapped]
+          value_type = override[:value_type] if override[:value_type]
+        end
         row = {
           'key' => summary['key'],
           'type' => type_label,
