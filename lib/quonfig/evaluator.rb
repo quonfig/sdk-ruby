@@ -442,6 +442,19 @@ module Quonfig
       REASON_TARGETING_MATCH
     end
 
+    # OpenFeature-aligned reason string. Same classification logic as
+    # +wire_reason+ but as a public string the OF provider (and any
+    # third-party consumer of EvaluationDetails) can pass straight through.
+    #
+    # Returns one of: "STATIC", "TARGETING_MATCH", "SPLIT".
+    def of_reason
+      case wire_reason
+      when REASON_STATIC          then EvaluationDetails::REASON_STATIC
+      when REASON_SPLIT           then EvaluationDetails::REASON_SPLIT
+      else                             EvaluationDetails::REASON_TARGETING_MATCH
+      end
+    end
+
     # True if any rule on the config (default or environment) has a
     # non-ALWAYS_TRUE criterion. Used to decide STATIC vs TARGETING_MATCH.
     def self.targeting_rules?(config)

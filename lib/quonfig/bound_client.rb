@@ -40,6 +40,32 @@ module Quonfig
       @client.get_json(key, default: default, context: @context)
     end
 
+    # ---- Details getters ----------------------------------------------
+
+    def get_bool_details(key)
+      @client.get_bool_details(key, context: @context)
+    end
+
+    def get_string_details(key)
+      @client.get_string_details(key, context: @context)
+    end
+
+    def get_int_details(key)
+      @client.get_int_details(key, context: @context)
+    end
+
+    def get_float_details(key)
+      @client.get_float_details(key, context: @context)
+    end
+
+    def get_string_list_details(key)
+      @client.get_string_list_details(key, context: @context)
+    end
+
+    def get_json_details(key)
+      @client.get_json_details(key, context: @context)
+    end
+
     def enabled?(feature_name)
       @client.enabled?(feature_name, @context)
     end

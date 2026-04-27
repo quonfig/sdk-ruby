@@ -103,6 +103,38 @@ module Quonfig
       typed_get(key, :json, default: default, context: context)
     end
 
+    # ---- Details getters ----------------------------------------------
+    #
+    # Mirrors the typed getters above but returns a +Quonfig::EvaluationDetails+
+    # carrying the OpenFeature-aligned resolution +reason+ ("STATIC",
+    # "TARGETING_MATCH", "SPLIT", "DEFAULT", or "ERROR") plus an
+    # +error_code+/+error_message+ on the error path. These methods never
+    # raise — exceptions are caught and rendered as ERROR details.
+
+    def get_bool_details(key, context: NO_DEFAULT_PROVIDED)
+      evaluate_details(key, :bool, context)
+    end
+
+    def get_string_details(key, context: NO_DEFAULT_PROVIDED)
+      evaluate_details(key, String, context)
+    end
+
+    def get_int_details(key, context: NO_DEFAULT_PROVIDED)
+      evaluate_details(key, Integer, context)
+    end
+
+    def get_float_details(key, context: NO_DEFAULT_PROVIDED)
+      evaluate_details(key, Float, context)
+    end
+
+    def get_string_list_details(key, context: NO_DEFAULT_PROVIDED)
+      evaluate_details(key, :string_list, context)
+    end
+
+    def get_json_details(key, context: NO_DEFAULT_PROVIDED)
+      evaluate_details(key, :json, context)
+    end
+
     def enabled?(feature_name, jit_context = NO_DEFAULT_PROVIDED)
       value = get(feature_name, false, jit_context)
       value == true || value == 'true'
@@ -498,6 +530,61 @@ module Quonfig
       end
 
       nil
+    end
+
+    # Build a Quonfig::EvaluationDetails for +key+, evaluated against the
+    # caller's context, after coercing/checking +expected_type+. Never
+    # raises; all exceptions become ERROR details.
+    def evaluate_details(key, expected_type, context)
+      jit = context == NO_DEFAULT_PROVIDED ? nil : context
+      ctx = build_context(jit)
+      record_context_for_telemetry(ctx)
+
+      result =
+        begin
+          @resolver.get(key, ctx)
+        rescue Quonfig::Errors::MissingDefaultError => e
+          return Quonfig::EvaluationDetails.new(
+            value: nil,
+            reason: Quonfig::EvaluationDetails::REASON_ERROR,
+            error_code: Quonfig::EvaluationDetails::ERROR_FLAG_NOT_FOUND,
+            error_message: e.message
+          )
+        end
+
+      if result.nil?
+        return Quonfig::EvaluationDetails.new(
+          value: nil,
+          reason: Quonfig::EvaluationDetails::REASON_DEFAULT
+        )
+      end
+
+      record_evaluation_for_telemetry(result)
+
+      raw_value = result.unwrapped_value
+
+      begin
+        coerced = coerce_and_check(key, raw_value, expected_type) unless raw_value.nil?
+      rescue Quonfig::Errors::TypeMismatchError => e
+        return Quonfig::EvaluationDetails.new(
+          value: nil,
+          reason: Quonfig::EvaluationDetails::REASON_ERROR,
+          error_code: Quonfig::EvaluationDetails::ERROR_TYPE_MISMATCH,
+          error_message: e.message
+        )
+      end
+
+      Quonfig::EvaluationDetails.new(
+        value: coerced,
+        reason: result.of_reason
+      )
+    rescue StandardError => e
+      Quonfig::EvaluationDetails.new(
+        value: nil,
+        reason: Quonfig::EvaluationDetails::REASON_ERROR,
+        error_code: Quonfig::EvaluationDetails::ERROR_GENERAL,
+        error_message: e.message
+      )
     end
 
     def typed_get(key, expected_type, default:, context:)
