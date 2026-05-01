@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.0.10 - 2026-05-01
+
+- **BREAKING (env): `QUONFIG_TELEMETRY_URL` and `QUONFIG_API_URLS` env vars
+  removed.** Replaced by a single `QUONFIG_DOMAIN` env var (default
+  `quonfig.com`) that derives api, sse, and telemetry URLs uniformly. e.g.
+  `QUONFIG_DOMAIN=quonfig-staging.com` → `https://primary.quonfig-staging.com`,
+  `https://stream.primary.quonfig-staging.com`,
+  `https://telemetry.quonfig-staging.com`. Mirrors the CLI's
+  `domain-urls.ts` convention and matches sdk-go / sdk-node. Resolution order
+  (highest wins): explicit `api_urls:` / `telemetry_url:` kwargs >
+  `QUONFIG_DOMAIN` > hardcoded default. Fixes qfg-w6gg, where the prior
+  primary-prefix regex silently fell through to prod telemetry on staging
+  hosts. The new `Quonfig::Options#init` also accepts an explicit
+  `telemetry_url:` kwarg (was previously documented but not wired up).
+- **Default `api_urls` now includes secondary.** Was `[primary]`, now
+  `[primary, secondary]` to match every other SDK and provide failover.
+
 ## 0.0.8 - 2026-04-26
 
 - **Fix (gemspec): drop deleted `scripts/` entry from manifest** — regenerated

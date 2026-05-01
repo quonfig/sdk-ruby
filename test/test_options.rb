@@ -5,23 +5,13 @@ require 'test_helper'
 class TestOptions < Minitest::Test
   API_KEY = 'abcdefg'
 
-  def test_api_urls_override_env_var
-    assert_equal Quonfig::Options::DEFAULT_API_URLS, Quonfig::Options.new.api_urls
-
-    # blank doesn't take effect
-    with_env('QUONFIG_API_URLS', '') do
-      assert_equal Quonfig::Options::DEFAULT_API_URLS, Quonfig::Options.new.api_urls
-    end
-
-    # non-blank does take effect
-    with_env('QUONFIG_API_URLS', 'https://override.example.com') do
-      assert_equal ["https://override.example.com"], Quonfig::Options.new.api_urls
-    end
-  end
-
   def test_default_api_urls_point_to_quonfig
+    # DEFAULT_API_URLS is the hardcoded fallback when neither QUONFIG_DOMAIN
+    # nor an explicit api_urls: kwarg is set. Domain-derivation happens at
+    # construction time, not at constant load time — see derive_api_urls.
     assert_equal [
       'https://primary.quonfig.com',
+      'https://secondary.quonfig.com',
     ], Quonfig::Options::DEFAULT_API_URLS
   end
 
@@ -150,18 +140,59 @@ class TestOptions < Minitest::Test
     assert_equal 0, options.collect_max_shapes
   end
 
-  def test_telemetry_destination_reads_env_first
-    with_env('QUONFIG_TELEMETRY_URL', 'https://custom-telemetry.example.com') do
-      assert_equal 'https://custom-telemetry.example.com', Quonfig::Options.new.telemetry_destination
+  # ---- QUONFIG_DOMAIN tests (qfg-w6gg) ----
+  # A single env var `QUONFIG_DOMAIN` governs api, sse, and telemetry URL
+  # derivation. Resolution order (highest wins): explicit kwargs >
+  # QUONFIG_DOMAIN > hardcoded default 'quonfig.com'.
+
+  def test_default_domain_is_quonfig_com
+    with_env('QUONFIG_DOMAIN', nil) do
+      options = Quonfig::Options.new
+      assert_equal [
+        'https://primary.quonfig.com',
+        'https://secondary.quonfig.com',
+      ], options.api_urls
+      assert_equal 'https://telemetry.quonfig.com', options.telemetry_destination
     end
   end
 
-  def test_telemetry_destination_derives_from_default_sources
-    assert_equal 'https://telemetry.quonfig.com', Quonfig::Options.new.telemetry_destination
+  def test_quonfig_domain_env_var_derives_all_urls
+    with_env('QUONFIG_DOMAIN', 'quonfig-staging.com') do
+      options = Quonfig::Options.new
+      assert_equal [
+        'https://primary.quonfig-staging.com',
+        'https://secondary.quonfig-staging.com',
+      ], options.api_urls
+      assert_equal [
+        'https://stream.primary.quonfig-staging.com',
+        'https://stream.secondary.quonfig-staging.com',
+      ], options.sse_api_urls
+      assert_equal 'https://telemetry.quonfig-staging.com', options.telemetry_destination
+    end
   end
 
-  def test_telemetry_destination_derives_from_custom_quonfig_api_urls
-    options = Quonfig::Options.new(api_urls: ['https://primary.eu.quonfig.com'])
-    assert_equal 'https://telemetry.eu.quonfig.com', options.telemetry_destination
+  def test_explicit_api_urls_override_quonfig_domain
+    with_env('QUONFIG_DOMAIN', 'quonfig-staging.com') do
+      options = Quonfig::Options.new(api_urls: ['http://localhost:8080'])
+      assert_equal ['http://localhost:8080'], options.api_urls
+    end
+  end
+
+  def test_explicit_telemetry_url_overrides_quonfig_domain
+    with_env('QUONFIG_DOMAIN', 'quonfig-staging.com') do
+      options = Quonfig::Options.new(telemetry_url: 'http://localhost:6555')
+      assert_equal 'http://localhost:6555', options.telemetry_destination
+    end
+  end
+
+  def test_quonfig_telemetry_url_env_var_no_longer_read
+    # QUONFIG_TELEMETRY_URL has been removed. Setting it must not affect
+    # anything; the default (quonfig.com) wins.
+    with_env('QUONFIG_DOMAIN', nil) do
+      with_env('QUONFIG_TELEMETRY_URL', 'https://should-be-ignored.example.com') do
+        assert_equal 'https://telemetry.quonfig.com',
+                     Quonfig::Options.new.telemetry_destination
+      end
+    end
   end
 end

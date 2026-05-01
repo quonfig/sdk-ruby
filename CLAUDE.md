@@ -26,4 +26,4 @@ integration suite cannot resolve its YAML specs.
 - `QUONFIG_BACKEND_SDK_KEY` — backend SDK key for authenticated config delivery
 - `QUONFIG_DIR` — path to a local Quonfig workspace (datadir mode)
 - `QUONFIG_ENVIRONMENT` — which environment to evaluate (`production`, `staging`, `development`)
-- `QUONFIG_TELEMETRY_URL` — telemetry ingest endpoint
+- `QUONFIG_DOMAIN` — base domain used to derive api/sse/telemetry URLs (default `quonfig.com`). Setting `QUONFIG_DOMAIN=quonfig-staging.com` derives `https://primary.quonfig-staging.com`, `https://stream.primary.quonfig-staging.com`, and `https://telemetry.quonfig-staging.com` automatically. Explicit `api_urls:` / `telemetry_url:` kwargs override this.

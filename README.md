@@ -114,14 +114,14 @@ client = Quonfig::Client.new  # reads QUONFIG_DIR + QUONFIG_ENVIRONMENT
 | `QUONFIG_BACKEND_SDK_KEY`   | SDK key used to authenticate against the Quonfig API. Used when `sdk_key:` is omitted.   |
 | `QUONFIG_DIR`               | Path to a workspace directory. When set, the SDK runs in datadir/offline mode.           |
 | `QUONFIG_ENVIRONMENT`       | Environment name (`production`, `staging`, `development`) evaluated in datadir mode.     |
-| `QUONFIG_TELEMETRY_URL`     | Overrides the telemetry endpoint. Defaults to `https://telemetry.quonfig.com`.           |
+| `QUONFIG_DOMAIN`            | Base domain used to derive api, sse, and telemetry URLs. Defaults to `quonfig.com`. Set to `quonfig-staging.com` to point at staging. Explicit `api_urls:` / `telemetry_url:` kwargs override this. |
 
 ## Constructor options
 
 ```ruby
 Quonfig::Client.new(
   sdk_key:         '...',                          # required unless QUONFIG_BACKEND_SDK_KEY is set
-  api_urls:        ['https://primary.quonfig.com'],
+  api_urls:        ['https://primary.quonfig.com', 'https://secondary.quonfig.com'],
   telemetry_url:   'https://telemetry.quonfig.com',
   enable_sse:      true,
   enable_polling:  false,
@@ -137,8 +137,8 @@ Quonfig::Client.new(
 | Option            | Type                       | Default                                                             | Description                                                                                       |
 |-------------------|----------------------------|---------------------------------------------------------------------|---------------------------------------------------------------------------------------------------|
 | `sdk_key`         | `String`                   | `ENV['QUONFIG_BACKEND_SDK_KEY']`                                    | SDK key for API authentication.                                                                   |
-| `api_urls`        | `Array<String>`            | `['https://primary.quonfig.com']`                                    | Ordered list of API base URLs to try. SSE stream URLs are derived by prepending `stream.` to each hostname. |
-| `telemetry_url`   | `String`                   | `https://telemetry.quonfig.com` (or `ENV['QUONFIG_TELEMETRY_URL']`) | Base URL for the telemetry service.                                                               |
+| `api_urls`        | `Array<String>`            | `["https://primary.${QUONFIG_DOMAIN}", "https://secondary.${QUONFIG_DOMAIN}"]` | Ordered list of API base URLs to try. SSE stream URLs are derived by prepending `stream.` to each hostname. Defaults derive from `QUONFIG_DOMAIN` (default `quonfig.com`). |
+| `telemetry_url`   | `String`                   | `https://telemetry.${QUONFIG_DOMAIN}`                                          | Base URL for the telemetry service. Default derives from `QUONFIG_DOMAIN`.                        |
 | `enable_sse`      | `Boolean`                  | `true`                                                              | Receive real-time updates over Server-Sent Events.                                                |
 | `enable_polling`  | `Boolean`                  | `false`                                                             | Poll the API on an interval as a fallback.                                                        |
 | `poll_interval`   | `Integer` (seconds)        | `60`                                                                | Polling interval when `enable_polling` is `true`.                                                 |

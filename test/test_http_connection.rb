@@ -65,15 +65,17 @@ module Quonfig
       refute(Options::DEFAULT_API_URLS.any? { |s| s.include?('reforge.com') })
     end
 
-    def test_telemetry_destination_honors_quonfig_telemetry_url_env
-      with_env('QUONFIG_TELEMETRY_URL', 'https://override-telemetry.example.com') do
-        assert_equal 'https://override-telemetry.example.com',
+    def test_telemetry_destination_honors_quonfig_domain_env
+      with_env('QUONFIG_DOMAIN', 'quonfig-staging.com') do
+        assert_equal 'https://telemetry.quonfig-staging.com',
                      Options.new.telemetry_destination
       end
     end
 
     def test_telemetry_destination_default
-      assert_equal 'https://telemetry.quonfig.com', Options.new.telemetry_destination
+      with_env('QUONFIG_DOMAIN', nil) do
+        assert_equal 'https://telemetry.quonfig.com', Options.new.telemetry_destination
+      end
     end
   end
 end

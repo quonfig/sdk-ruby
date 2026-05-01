@@ -39,9 +39,37 @@ module Quonfig
     DEFAULT_MAX_EXAMPLE_CONTEXTS = 100_000
     DEFAULT_MAX_EVAL_SUMMARIES = 100_000
 
+    # Hardcoded fallback domain. Overridden by ENV['QUONFIG_DOMAIN'].
+    DEFAULT_DOMAIN = 'quonfig.com'
+
+    # Hardcoded fallback API URLs (used only when no QUONFIG_DOMAIN is set
+    # and no explicit api_urls are provided). Mirrors derive_api_urls(DEFAULT_DOMAIN).
     DEFAULT_API_URLS = [
       'https://primary.quonfig.com',
+      'https://secondary.quonfig.com',
     ].freeze
+
+    # Resolve the active domain. Reads QUONFIG_DOMAIN; falls back to
+    # DEFAULT_DOMAIN. Mirrors `cli/src/util/domain-urls.ts#getDomain`.
+    def self.domain
+      env = ENV['QUONFIG_DOMAIN']
+      env && !env.empty? ? env : DEFAULT_DOMAIN
+    end
+
+    # Derive default api_urls for a given domain. e.g. for domain
+    # `quonfig-staging.com` returns
+    # `["https://primary.quonfig-staging.com", "https://secondary.quonfig-staging.com"]`.
+    def self.derive_api_urls(domain)
+      [
+        "https://primary.#{domain}",
+        "https://secondary.#{domain}",
+      ]
+    end
+
+    # Derive the telemetry URL for a given domain.
+    def self.derive_telemetry_url(domain)
+      "https://telemetry.#{domain}"
+    end
 
     # Derive the SSE stream URL for a given API URL by prepending `stream.` to
     # the hostname. Preserves scheme, port, and path.
@@ -58,6 +86,7 @@ module Quonfig
 
     private def init(
       api_urls: nil,
+      telemetry_url: nil,
       sdk_key: ENV['QUONFIG_BACKEND_SDK_KEY'],
       environment: ENV['QUONFIG_ENVIRONMENT'],
       datadir: ENV['QUONFIG_DIR'],
@@ -104,16 +133,19 @@ module Quonfig
       @collect_example_contexts = false
       @collect_max_example_contexts = 0
 
-      if ENV['QUONFIG_API_URLS'] && ENV['QUONFIG_API_URLS'].length > 0
-        api_urls = ENV['QUONFIG_API_URLS']
-      end
+      # URL resolution order (highest wins):
+      #   1. Explicit kwargs (api_urls:, telemetry_url:)
+      #   2. ENV['QUONFIG_DOMAIN'] -> derives all three
+      #   3. Hardcoded DEFAULT_DOMAIN ('quonfig.com')
+      domain = Quonfig::Options.domain
 
-      @api_urls = Array(api_urls || DEFAULT_API_URLS).map { |url| remove_trailing_slash(url) }
+      @api_urls = Array(api_urls || Quonfig::Options.derive_api_urls(domain))
+                    .map { |url| remove_trailing_slash(url) }
 
       @sse_api_urls = @api_urls.map { |url| Quonfig::Options.derive_stream_url(url) }
       @config_api_urls = @api_urls
 
-      @telemetry_destination = ENV['QUONFIG_TELEMETRY_URL'] || derive_telemetry_destination(@api_urls)
+      @telemetry_destination = telemetry_url || Quonfig::Options.derive_telemetry_url(domain)
 
       case context_upload_mode
       when :none
@@ -187,17 +219,6 @@ module Quonfig
 
     def remove_trailing_slash(url)
       url.end_with?('/') ? url[0..-2] : url
-    end
-
-    # Derive a telemetry URL from the configured api_urls by swapping the
-    # primary/secondary host prefix for `telemetry` on a *.quonfig.com host.
-    # Falls back to https://telemetry.quonfig.com if no URL matches.
-    def derive_telemetry_destination(api_urls)
-      api_urls.each do |api_url|
-        match = api_url.match(%r{\Ahttps?://(?:primary|secondary)\.([^/]*quonfig\.com)}i)
-        return "https://telemetry.#{match[1]}" if match
-      end
-      'https://telemetry.quonfig.com'
     end
   end
 end
