@@ -74,7 +74,7 @@ class TestSSEConfigClient < Minitest::Test
     h = client.headers
 
     assert_equal "Basic #{Base64.strict_encode64('1:mykey')}", h['Authorization']
-    assert_match(/\Asdk-ruby-/, h['X-Quonfig-SDK-Version'])
+    assert_match(/\Aruby-\d+\.\d+\.\d+/, h['X-Quonfig-SDK-Version'])
     refute h.key?('X-Reforge-SDK-Version')
   end
 

@@ -119,7 +119,7 @@ module Quonfig
       return {
         'Authorization' => "Basic #{auth_string}",
         'Accept' => 'text/event-stream',
-        'X-Quonfig-SDK-Version' => "sdk-ruby-#{Quonfig::VERSION}"
+        'X-Quonfig-SDK-Version' => "ruby-#{Quonfig::VERSION}"
       }
     end
 
