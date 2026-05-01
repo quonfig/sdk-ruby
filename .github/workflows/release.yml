@@ -44,6 +44,25 @@ jobs:
             echo "Version $VERSION not found, proceeding with publish"
           fi
 
+      # Build + smoke-check the gem BEFORE rubygems/release-gem pushes it.
+      # qfg-e588: 0.0.9 published with a stale gemspec manifest missing
+      # lib/quonfig/evaluation_details.rb, so `require 'quonfig'` raised
+      # LoadError on install. scripts/smoke_check.sh installs the built
+      # .gem into a sandbox GEM_HOME and runs `ruby -rquonfig`; if the
+      # require fails (or VERSION mismatches) the workflow aborts before
+      # rubygems/release-gem ever runs.
+      - name: Build gem
+        if: steps.version-check.outputs.version-exists == 'false'
+        run: |
+          VERSION=$(cat VERSION)
+          gem build quonfig.gemspec --output "quonfig-${VERSION}.gem"
+
+      - name: Smoke-check built gem
+        if: steps.version-check.outputs.version-exists == 'false'
+        run: |
+          VERSION=$(cat VERSION)
+          ./scripts/smoke_check.sh "quonfig-${VERSION}.gem"
+
       - name: Release gem
         if: steps.version-check.outputs.version-exists == 'false'
         uses: rubygems/release-gem@v1

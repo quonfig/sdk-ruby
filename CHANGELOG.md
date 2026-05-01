@@ -16,6 +16,15 @@
   `telemetry_url:` kwarg (was previously documented but not wired up).
 - **Default `api_urls` now includes secondary.** Was `[primary]`, now
   `[primary, secondary]` to match every other SDK and provide failover.
+- **Release plumbing: pre-publish smoke check (qfg-e588).** The Rakefile
+  `:release` task and the `release.yml` workflow now run
+  `scripts/smoke_check.sh` after `gem build` and before `gem push`. The
+  script installs the freshly built `.gem` into a sandbox `GEM_HOME` and
+  shells out to `ruby -rquonfig -e 'puts Quonfig::VERSION'`. If the
+  require fails or the version mismatches, the publish aborts. This is
+  the prevention measure for qfg-e588, where 0.0.9 was published with a
+  stale gemspec manifest missing `lib/quonfig/evaluation_details.rb` and
+  every consumer hit `LoadError` at install time.
 
 ## 0.0.8 - 2026-04-26
 

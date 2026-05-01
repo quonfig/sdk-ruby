@@ -54,11 +54,24 @@ unless ENV['CI']
   end
 end
 
-# Add release task for CI
+# Add release task for CI.
+#
+# Order is load-bearing:
+#   1. build the gem
+#   2. smoke-test the BUILT gem in a clean sandbox via scripts/smoke_check.sh
+#      (`gem install` + `ruby -rquonfig`). This is the prevention measure for
+#      qfg-e588, where 0.0.9 was published with a stale gemspec manifest that
+#      omitted lib/quonfig/evaluation_details.rb. Every consumer of the
+#      published gem hit LoadError at require-time. The smoke check would
+#      have caught that before `gem push`.
+#   3. only then push to RubyGems.
+#
+# If the smoke check fails, `sh` raises and the publish never happens.
 task :release do
   sh 'mkdir -p pkg'
   version = File.read('VERSION').strip
   gem_file = "pkg/quonfig-#{version}.gem"
   sh "gem build quonfig.gemspec --output #{gem_file}"
+  sh "scripts/smoke_check.sh #{gem_file}"
   sh "gem push #{gem_file}"
 end
