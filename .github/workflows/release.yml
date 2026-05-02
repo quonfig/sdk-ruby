@@ -49,9 +49,12 @@ jobs:
       - name: Build gem
         id: build
         run: |
+          mkdir -p pkg
           version="$(ruby -Ilib -rquonfig/version -e 'puts Quonfig::VERSION')"
-          gem build quonfig.gemspec --output "quonfig-${version}.gem"
-          echo "gem_file=quonfig-${version}.gem" >> "$GITHUB_OUTPUT"
+          # rubygems/release-gem@v1's post-publish step runs
+          # `rubygems-await pkg/*.gem`, so the artifact has to live under pkg/.
+          gem build quonfig.gemspec --output "pkg/quonfig-${version}.gem"
+          echo "gem_file=pkg/quonfig-${version}.gem" >> "$GITHUB_OUTPUT"
 
       - name: Smoke-check built gem
         run: ./scripts/smoke_check.sh "${{ steps.build.outputs.gem_file }}"
