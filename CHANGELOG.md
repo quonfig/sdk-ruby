@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.0.11 - 2026-05-02
+
+- **Fix (telemetry): SSE clientName attribution.** The SSE client was sending
+  `X-Quonfig-SDK-Version: sdk-ruby-<version>`, which the api-telemetry parser
+  splits on the first dash, so it landed as `clientName="sdk"`,
+  `clientVersion="ruby-<version>"`. Now sends `ruby-<version>` to match
+  `http_connection.rb`, so both transports attribute consistently as
+  `clientName="ruby"`.
+- **Release plumbing: drop juwelier, tag-triggered publish.** The gem is now
+  built from a hand-written `quonfig.gemspec` that reads the version from
+  `Quonfig::VERSION` (in `lib/quonfig/version.rb`) and lists shipped files
+  explicitly. The `release.yml` workflow now fires on `v*` tag pushes, not
+  every successful main build, and refuses to publish unless the tag matches
+  `Quonfig::VERSION`. Together these eliminate the gemspec-vs-VERSION drift
+  that prevented the original 0.0.11 publish (gem built as 0.0.10 internally
+  while filename said 0.0.11) and the manifest-drift bug from qfg-e588.
+
 ## 0.0.10 - 2026-05-01
 
 - **BREAKING (env): `QUONFIG_TELEMETRY_URL` and `QUONFIG_API_URLS` env vars

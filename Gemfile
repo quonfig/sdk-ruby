@@ -11,7 +11,6 @@ group :development do
   gem 'allocation_stats'
   gem 'benchmark-ips'
   gem 'bundler'
-  gem 'juwelier', '~> 2.4.9'
   gem 'rdoc'
   gem 'simplecov', '>= 0'
 end
