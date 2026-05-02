@@ -41,11 +41,10 @@ jobs:
             exit 1
           fi
 
-      - name: Run tests
-        run: bundle exec rake test
-        env:
-          NOT_A_NUMBER: "abcd"
-          IS_A_NUMBER: "1234"
+      # No test step here on purpose. The Ruby workflow runs the full matrix
+      # on every push to main / PR; by the time you tag, that commit is
+      # already green. Release's job is to verify the artifact (tag ==
+      # version, gem builds, smoke check passes), not re-test the code.
 
       - name: Build gem
         id: build
