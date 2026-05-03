@@ -3,7 +3,6 @@ source 'https://rubygems.org'
 gem 'concurrent-ruby', '~> 1.0', '>= 1.0.5'
 gem 'faraday', '~> 1.10.5'
 gem 'ld-eventsource'
-gem 'uuid'
 
 gem 'activesupport', '>= 4'
 

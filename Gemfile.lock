@@ -77,8 +77,6 @@ GEM
     llhttp-ffi (0.5.0)
       ffi-compiler (~> 1.0)
       rake (~> 13.0)
-    macaddr (1.7.2)
-      systemu (~> 2.6.5)
     minitest (5.22.3)
     minitest-focus (1.4.0)
       minitest (>= 4, < 6)
@@ -128,7 +126,6 @@ GEM
     simplecov-html (0.12.3)
     simplecov_json_formatter (0.1.4)
     stringio (3.1.0)
-    systemu (2.6.5)
     thor (1.5.0)
     timecop (0.9.8)
     tzinfo (2.0.6)
@@ -136,8 +133,6 @@ GEM
     unicode-display_width (3.2.0)
       unicode-emoji (~> 4.1)
     unicode-emoji (4.2.0)
-    uuid (2.3.9)
-      macaddr (~> 1.0)
     webrick (1.8.2)
 
 PLATFORMS
@@ -162,7 +157,6 @@ DEPENDENCIES
   semantic_logger (!= 4.16.0)
   simplecov
   timecop
-  uuid
   webrick
 
 BUNDLED WITH

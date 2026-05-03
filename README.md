@@ -240,6 +240,99 @@ logger.progname  = 'MyApp::Services::Auth'
 
 If both are supplied, the explicit `logger_name:` wins.
 
+## Rails integration
+
+The SDK runs a background SSE thread (and optional polling thread) that you do
+not want to inherit across a `fork(2)`. Forked threads in the child process
+are dead — the SSE socket is held open by a thread that no longer exists, and
+the child silently stops receiving live updates.
+
+Use `Quonfig::Client#fork` (or `Quonfig.fork` if you use the module-level
+singleton) in any process that fork-spawns workers. It returns a fresh client
+configured for the child: a new `ConfigStore`, a new SSE subscription, and
+suppressed telemetry double-counting (`Options#is_fork` is set to `true`).
+
+### Puma (clustered mode)
+
+```ruby
+# config/puma.rb
+before_fork do
+  Quonfig.instance.stop          # close the master's SSE before forking
+end
+
+on_worker_boot do
+  Quonfig.fork                   # rebuild a fresh client per worker
+end
+```
+
+If you initialize Quonfig lazily (in a Rails initializer) and run Puma in
+single mode (no clustering), no fork hook is needed.
+
+### Sidekiq
+
+Sidekiq's parent process forks workers. Wire the same lifecycle:
+
+```ruby
+# config/initializers/quonfig.rb
+Quonfig.init(Quonfig::Options.new(sdk_key: ENV.fetch('QUONFIG_BACKEND_SDK_KEY')))
+
+# config/initializers/sidekiq.rb
+Sidekiq.configure_server do |config|
+  config.on(:startup)  { Quonfig.fork if Process.ppid != 1 }
+  config.on(:shutdown) { Quonfig.instance.stop rescue nil }
+end
+```
+
+For Sidekiq web/CLI processes that don't fork (default `concurrency: 1`),
+`Quonfig.init` in the initializer is sufficient.
+
+### Spring / Bootsnap preloaders
+
+Spring forks the preloader for each command. If your initializer creates a
+Quonfig client at boot, the SSE thread will be inherited dead in every child.
+Two options:
+
+1. **Recommended:** initialize lazily — wrap `Quonfig.init` so it only runs
+   the first time `Quonfig.instance` is called from a non-preloader process.
+2. **Or:** call `Quonfig.fork` from a `Spring.after_fork` hook.
+
+```ruby
+# config/spring.rb
+Spring.after_fork do
+  Quonfig.fork if defined?(Quonfig) && Quonfig.instance_variable_get(:@singleton)
+end
+```
+
+### Code reloading (Zeitwerk, development mode)
+
+`Quonfig::Client` is a long-lived object — keep it out of `app/` (where
+Zeitwerk reloads classes on every request) and pin it to a constant set in a
+Rails initializer. The client itself is reload-safe because it does not
+reference any application classes; the failure mode to avoid is *creating a
+new client per request*, which leaks SSE threads and quickly exhausts file
+descriptors.
+
+```ruby
+# config/initializers/quonfig.rb
+# Quonfig.init is idempotent — a second call warns and returns the existing
+# singleton — so it's safe to wrap in to_prepare for reload-friendliness.
+Rails.application.config.to_prepare do
+  Quonfig.init(Quonfig::Options.new(sdk_key: ENV.fetch('QUONFIG_BACKEND_SDK_KEY')))
+end
+```
+
+## Thread safety
+
+`Quonfig::Client` is safe to share across threads. Reads (`get`, `enabled?`,
+`get_*`) and SSE-driven writes to the underlying `ConfigStore` use
+`Concurrent::Map` for per-key atomicity. Eventual consistency across an
+envelope is intentional: a reader concurrent with envelope application may
+observe the new value for some keys and the old value for others, then
+converge once the envelope finishes applying.
+
+`Quonfig.fork` is the only safe way to "carry" a client across `Process.fork`
+— do not reuse the parent's client in a child process.
+
 ## Documentation
 
 Full documentation, including SPEC, SDK reference, and operational guides, is

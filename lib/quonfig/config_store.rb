@@ -6,9 +6,15 @@ module Quonfig
   # Mirrors sdk-node's ConfigStore (src/store.ts). Integration tests and the
   # new Resolver/Evaluator trio construct this directly, independent of any
   # Client/ConfigLoader plumbing.
+  #
+  # Thread-safety: backed by Concurrent::Map, whose per-key reads, writes, and
+  # deletes are atomic. There is no compound multi-key operation here that
+  # needs an outer lock — envelope application in ConfigLoader is a sequence
+  # of independent set/delete calls, and readers tolerate seeing the
+  # in-progress mix. Eventual consistency across an envelope is acceptable
+  # and matches sdk-node behavior.
   class ConfigStore
     def initialize(initial_configs = nil)
-      @lock = Concurrent::ReadWriteLock.new
       @configs = Concurrent::Map.new
       return unless initial_configs
 
@@ -20,17 +26,15 @@ module Quonfig
     end
 
     def set(key, config)
-      @lock.with_write_lock { @configs[key] = config }
+      @configs[key] = config
     end
 
     def delete(key)
-      @lock.with_write_lock { @configs.delete(key) }
+      @configs.delete(key)
     end
 
     def clear
-      @lock.with_write_lock do
-        @configs.keys.each { |k| @configs.delete(k) }
-      end
+      @configs.keys.each { |k| @configs.delete(k) }
     end
 
     def keys
