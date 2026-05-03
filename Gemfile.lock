@@ -15,10 +15,16 @@ GEM
       public_suffix (>= 2.0.2, < 6.0)
     allocation_stats (0.1.5)
     ansi (1.5.0)
+    ast (2.4.3)
     base64 (0.2.0)
     benchmark-ips (2.13.0)
     bigdecimal (3.1.7)
+    brakeman (8.0.4)
+      racc
     builder (3.2.4)
+    bundler-audit (0.9.3)
+      bundler (>= 1.2.0)
+      thor (~> 1.0)
     concurrent-ruby (1.2.3)
     connection_pool (2.4.1)
     docile (1.4.0)
@@ -62,9 +68,12 @@ GEM
     http-form_data (2.3.0)
     i18n (1.14.4)
       concurrent-ruby (~> 1.0)
+    json (2.19.4)
+    language_server-protocol (3.17.0.5)
     ld-eventsource (2.2.2)
       concurrent-ruby (~> 1.0)
       http (>= 4.4.1, < 6.0.0)
+    lint_roller (1.1.0)
     llhttp-ffi (0.5.0)
       ffi-compiler (~> 1.0)
       rake (~> 13.0)
@@ -80,12 +89,34 @@ GEM
       ruby-progressbar
     multipart-post (2.4.0)
     mutex_m (0.2.0)
+    parallel (1.28.0)
+    parser (3.3.11.1)
+      ast (~> 2.4.1)
+      racc
+    prism (1.9.0)
     psych (5.1.2)
       stringio
     public_suffix (5.0.4)
+    racc (1.8.1)
+    rainbow (3.1.1)
     rake (13.1.0)
     rdoc (6.6.3.1)
       psych (>= 4.0.0)
+    regexp_parser (2.12.0)
+    rubocop (1.86.1)
+      json (~> 2.3)
+      language_server-protocol (~> 3.17.0.2)
+      lint_roller (~> 1.1.0)
+      parallel (>= 1.10)
+      parser (>= 3.3.0.2)
+      rainbow (>= 2.2.2, < 4.0)
+      regexp_parser (>= 2.9.3, < 3.0)
+      rubocop-ast (>= 1.49.0, < 2.0)
+      ruby-progressbar (~> 1.7)
+      unicode-display_width (>= 2.4.0, < 4.0)
+    rubocop-ast (1.49.1)
+      parser (>= 3.3.7.2)
+      prism (~> 1.7)
     ruby-progressbar (1.13.0)
     ruby2_keywords (0.0.5)
     semantic_logger (4.15.0)
@@ -98,9 +129,13 @@ GEM
     simplecov_json_formatter (0.1.4)
     stringio (3.1.0)
     systemu (2.6.5)
+    thor (1.5.0)
     timecop (0.9.8)
     tzinfo (2.0.6)
       concurrent-ruby (~> 1.0)
+    unicode-display_width (3.2.0)
+      unicode-emoji (~> 4.1)
+    unicode-emoji (4.2.0)
     uuid (2.3.9)
       macaddr (~> 1.0)
     webrick (1.8.2)
@@ -112,14 +147,18 @@ DEPENDENCIES
   activesupport (>= 4)
   allocation_stats
   benchmark-ips
+  brakeman
   bundler
+  bundler-audit
   concurrent-ruby (~> 1.0, >= 1.0.5)
   faraday
   ld-eventsource
   minitest
   minitest-focus
   minitest-reporters
+  parallel (< 2.0)
   rdoc
+  rubocop
   semantic_logger (!= 4.16.0)
   simplecov
   timecop

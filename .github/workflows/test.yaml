@@ -4,37 +4,58 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
+    name: Test (Ruby ${{ matrix.ruby-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        ruby-version: ['3.1', '3.2', '3.3']
+        ruby-version: ['3.2', '3.3', '3.4']
     steps:
       - name: Checkout sdk-ruby
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           path: sdk-ruby
 
       - name: Checkout integration-test-data
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           repository: quonfig/integration-test-data
           path: integration-test-data
           ref: main
 
       - name: Set up Ruby ${{ matrix.ruby-version }}
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f  # v1.306.0
         with:
           ruby-version: ${{ matrix.ruby-version }}
           bundler-cache: true
           working-directory: sdk-ruby
 
-      - name: Install dependencies
-        working-directory: sdk-ruby
-        run: bundle install
-
       - name: Run tests
         working-directory: sdk-ruby
         run: bundle exec rake test
+
+      # Soft-fail: sdk-ruby has never been linted; an initial run reports
+      # ~2772 offenses (2421 autocorrectable). Tracked in qfg-rsc0 — remove
+      # continue-on-error once that resolves.
+      - name: Rubocop
+        working-directory: sdk-ruby
+        continue-on-error: true
+        run: bundle exec rubocop --no-color
+
+      # Soft-fail: faraday 1.10.3 has GHSA-33mh-2634-fwr2 (SSRF). Tracked
+      # in qfg-ubpz — remove continue-on-error once faraday is bumped.
+      - name: Bundler-audit
+        working-directory: sdk-ruby
+        continue-on-error: true
+        run: bundle exec bundle-audit check --update
+
+      # --force scans non-Rails code (sdk-ruby is a client gem, not a Rails
+      # app). Currently reports 0 warnings.
+      - name: Brakeman
+        working-directory: sdk-ruby
+        run: bundle exec brakeman --no-pager --force

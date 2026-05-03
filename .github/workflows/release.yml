@@ -21,12 +21,12 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           persist-credentials: false
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@e5517072e87f198d9533967ae13d97c11b604005  # v1.99.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
@@ -60,4 +60,4 @@ jobs:
         run: ./scripts/smoke_check.sh "${{ steps.build.outputs.gem_file }}"
 
       - name: Release gem
-        uses: rubygems/release-gem@v1
+        uses: rubygems/release-gem@6317d8d1f7e28c24d28f6eff169ea854948bd9f7  # v1.2.0
