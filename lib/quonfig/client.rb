@@ -32,6 +32,7 @@ module Quonfig
         else
           Quonfig::Options.new(option_kwargs)
         end
+      Quonfig::InternalLogger.user_logger = @options.logger if @options.logger
       @global_context = build_initial_global_context(@options)
       @instance_hash = SecureRandom.uuid
       @store = store || Quonfig::ConfigStore.new

@@ -147,6 +147,7 @@ Quonfig::Client.new(
 | `global_context`  | `Hash`                     | `{}`                                                                | Context applied to every evaluation.                                                              |
 | `datadir`         | `String`                   | `ENV['QUONFIG_DIR']`                                                | Path to a local workspace. When set, the SDK runs offline from disk.                              |
 | `environment`     | `String`                   | `ENV['QUONFIG_ENVIRONMENT']`                                        | Environment to evaluate in datadir mode. Required when `datadir` is set.                          |
+| `logger`          | Logger-like object         | `nil`                                                               | Optional host-app logger (e.g. `Rails.logger`). Must respond to `debug`/`info`/`warn`/`error`. When set, all SDK warnings/errors flow through this logger instead of the default stderr / SemanticLogger backend. |
 
 ## Typed getters
 

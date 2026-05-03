@@ -12,6 +12,8 @@ module Quonfig
   # run `qfg login` and therefore have no tokens file. Rules keyed on
   # `quonfig-user.email` are dead code in prod.
   module DevContext
+    LOG = Quonfig::InternalLogger.new(self)
+
     TOKENS_BASENAME = File.join('.quonfig', 'tokens.json')
 
     def self.load_quonfig_user_context
@@ -21,14 +23,14 @@ module Quonfig
       raw = begin
         File.read(path)
       rescue StandardError => e
-        warn "[quonfig] dev-context: could not read #{path} (#{e.class}: #{e.message}); skipping injection"
+        LOG.warn "dev-context: could not read #{path} (#{e.class}: #{e.message}); skipping injection"
         return nil
       end
 
       parsed = begin
         JSON.parse(raw)
       rescue JSON::ParserError => e
-        warn "[quonfig] dev-context: could not parse #{path} (#{e.message}); skipping injection"
+        LOG.warn "dev-context: could not parse #{path} (#{e.message}); skipping injection"
         return nil
       end
 

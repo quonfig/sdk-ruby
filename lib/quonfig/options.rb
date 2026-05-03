@@ -21,6 +21,7 @@ module Quonfig
     attr_reader :poll_interval
     attr_reader :global_context
     attr_reader :logger_key
+    attr_reader :logger
     attr_reader :enable_quonfig_user_context
     attr_accessor :is_fork
 
@@ -105,6 +106,7 @@ module Quonfig
       allow_telemetry_in_local_mode: false,
       global_context: {},
       logger_key: nil,
+      logger: nil,
       enable_quonfig_user_context: false
     )
       @sdk_key = sdk_key
@@ -125,6 +127,7 @@ module Quonfig
       @is_fork = false
       @global_context = global_context
       @logger_key = logger_key
+      @logger = logger
       @enable_quonfig_user_context = enable_quonfig_user_context
 
       # defaults that may be overridden by context_upload_mode

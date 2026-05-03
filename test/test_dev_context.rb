@@ -84,8 +84,8 @@ class TestDevContext < Minitest::Test
     )
 
     assert_equal({}, global_context_of(client))
-    # The dev-context loader emits a warning to stderr that we want to verify.
-    assert_stderr(['quonfig'])
+    # qfg-mol-1qw.3: dev-context now routes warnings through InternalLogger.
+    assert_logged([/dev-context: could not parse/])
   end
 
   # 5. RED: customer-supplied quonfig-user keys win on collision

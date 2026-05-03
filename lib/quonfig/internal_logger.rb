@@ -4,11 +4,24 @@ module Quonfig
   # Internal logger for the Quonfig SDK
   # Uses SemanticLogger if available, falls back to stdlib Logger
   class InternalLogger
-    def initialize(klass)
+    # Optional, host-app-supplied logger. When set (typically via
+    # Quonfig::Client.new(logger:)), all InternalLogger instances route
+    # writes to it instead of their default backend. Must duck-type as a
+    # stdlib Logger (responds to debug/info/warn/error). Missing levels
+    # are silently dropped.
+    class << self
+      attr_accessor :user_logger
+    end
+
+    def initialize(klass, logger: nil)
       @klass = klass
       @level_sym = nil # Track the symbol level for consistency
+      @injected_logger = logger
 
-      if defined?(SemanticLogger)
+      if @injected_logger
+        @logger = @injected_logger
+        @using_semantic = false
+      elsif defined?(SemanticLogger)
         @logger = create_semantic_logger
         @using_semantic = true
       else
@@ -69,14 +82,16 @@ module Quonfig
         @level_sym = new_level
 
         # Map symbol to Logger constant
-        @logger.level = case new_level
-                       when :trace, :debug then Logger::DEBUG
-                       when :info then Logger::INFO
-                       when :warn then Logger::WARN
-                       when :error then Logger::ERROR
-                       when :fatal then Logger::FATAL
-                       else Logger::WARN
-                       end
+        next_level = case new_level
+                     when :trace, :debug then Logger::DEBUG
+                     when :info then Logger::INFO
+                     when :warn then Logger::WARN
+                     when :error then Logger::ERROR
+                     when :fatal then Logger::FATAL
+                     else Logger::WARN
+                     end
+
+        @logger.level = next_level if @logger.respond_to?(:level=)
       end
     end
 
@@ -157,13 +172,32 @@ module Quonfig
     end
 
     def log_message(level, message, &block)
+      override = Quonfig::InternalLogger.user_logger
+      if override
+        write_to_user_logger(override, level, message, &block)
+        return
+      end
+
       if @using_semantic
         @logger.send(level, message, &block)
       else
         # stdlib Logger doesn't have trace
         level = :debug if level == :trace
+        return unless @logger.respond_to?(level)
         @logger.send(level, message || block&.call)
       end
+    end
+
+    # Route a message to a host-app-supplied logger that duck-types as a
+    # stdlib Logger. Missing levels degrade gracefully (trace -> debug;
+    # otherwise a no-op). The class name is prepended to keep parity with
+    # the SemanticLogger / stdlib formatter output.
+    def write_to_user_logger(target, level, message, &block)
+      level = :debug if level == :trace && !target.respond_to?(:trace)
+      return unless target.respond_to?(level)
+
+      msg = message || block&.call
+      target.public_send(level, "#{@klass} -- #{msg}")
     end
 
     def instances
