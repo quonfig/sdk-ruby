@@ -70,4 +70,34 @@ class TestIntegrationHelpers < Minitest::Test
     end
     assert_nil ENV.fetch('ROLLBACK_ME', nil)
   end
+
+  # qfg-g0rp — helpers must call assert_* on the test instance so Minitest
+  # actually counts the assertion. Previously they raised Minitest::Assertion
+  # directly, leaving the suite at "N tests, 0 assertions".
+  def test_assert_enabled_records_an_assertion_on_the_test_instance
+    store = IntegrationTestHelpers.build_store('enabled')
+    resolver = IntegrationTestHelpers.build_resolver(store)
+    before = assertions
+    IntegrationTestHelpers.assert_enabled(self, resolver, 'feature-flag.simple', {}, true)
+    after = assertions
+    assert_operator after, :>, before,
+                    "expected assert_enabled to bump self.assertions from #{before} but it was #{after}"
+  end
+
+  def test_assert_enabled_still_raises_minitest_assertion_on_mismatch
+    store = IntegrationTestHelpers.build_store('enabled')
+    resolver = IntegrationTestHelpers.build_resolver(store)
+    assert_raises(Minitest::Assertion) do
+      IntegrationTestHelpers.assert_enabled(self, resolver, 'feature-flag.simple', {}, false)
+    end
+  end
+
+  def test_assert_resolved_records_an_assertion_on_the_test_instance
+    store = IntegrationTestHelpers.build_store('get')
+    resolver = IntegrationTestHelpers.build_resolver(store)
+    before = assertions
+    IntegrationTestHelpers.assert_resolved(self, resolver, 'my-test-key', {}, 'my-test-value')
+    after = assertions
+    assert_operator after, :>, before, 'expected assert_resolved to bump self.assertions'
+  end
 end

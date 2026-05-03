@@ -73,7 +73,7 @@ module IntegrationTestHelpers
   # strict: missing keys still raise, non-bool actual stays non-bool.
   # Nil-expected cases (e.g. "get returns nil if value not found" with
   # on_no_default: 2) catch the resolver's MissingDefaultError and return nil.
-  def self.assert_resolved(resolver, key, context, expected_value, expected_type = nil)
+  def self.assert_resolved(test, resolver, key, context, expected_value, expected_type = nil)
     ctx = context.is_a?(Quonfig::Context) ? context : Quonfig::Context.new(context || {})
     result =
       begin
@@ -81,7 +81,6 @@ module IntegrationTestHelpers
       rescue Quonfig::Errors::MissingDefaultError
         nil
       end
-    return expected_value if result.nil? && expected_value.nil?
 
     actual = if result.nil?
                nil
@@ -94,14 +93,16 @@ module IntegrationTestHelpers
                result
              end
 
-    unless actual == expected_value
-      raise Minitest::Assertion,
-            "#{key}: expected #{expected_value.inspect} (#{expected_type}), got #{actual.inspect}"
+    msg = "#{key}: expected #{expected_value.inspect} (#{expected_type}), got #{actual.inspect}"
+    if expected_value.nil?
+      test.assert_nil actual, msg
+    else
+      test.assert_equal expected_value, actual, msg
     end
 
-    if expected_type && result.respond_to?(:value_type) && result.value_type.to_s != expected_type.to_s
-      raise Minitest::Assertion,
-            "#{key}: expected type #{expected_type}, got #{result.value_type}"
+    if expected_type && result.respond_to?(:value_type)
+      test.assert_equal expected_type.to_s, result.value_type.to_s,
+                        "#{key}: expected type #{expected_type}, got #{result.value_type}"
     end
     actual
   end
@@ -110,7 +111,7 @@ module IntegrationTestHelpers
   # bool value if the resolved value is a boolean, false otherwise.
   # The generator routes function: enabled cases through this helper so
   # the bool-coercion lives here, not inferred from the expected literal.
-  def self.assert_enabled(resolver, key, context, expected_bool)
+  def self.assert_enabled(test, resolver, key, context, expected_bool)
     ctx = context.is_a?(Quonfig::Context) ? context : Quonfig::Context.new(context || {})
     actual =
       begin
@@ -124,10 +125,8 @@ module IntegrationTestHelpers
       rescue Quonfig::Errors::MissingDefaultError
         false
       end
-    unless actual == expected_bool
-      raise Minitest::Assertion,
-            "enabled?(#{key}): expected #{expected_bool.inspect}, got #{actual.inspect}"
-    end
+    test.assert_equal expected_bool, actual,
+                      "enabled?(#{key}): expected #{expected_bool.inspect}, got #{actual.inspect}"
     actual
   end
 
@@ -135,7 +134,7 @@ module IntegrationTestHelpers
   # get(key, default) API. Build a Client over the same store the
   # resolver uses; that way we observe what the SDK actually returns
   # (default kicks in for missing keys, found-key wins over default).
-  def self.assert_get_with_default(store, key, context, default_value, expected_value)
+  def self.assert_get_with_default(test, store, key, context, default_value, expected_value)
     # Build with environment: ENV_ID so config rules evaluate against the
     # 'Production' environment (matching what build_resolver does). Without
     # this the Client falls back to default rules.
@@ -149,17 +148,15 @@ module IntegrationTestHelpers
         Quonfig::Context.new(context)
       end
     actual = client.get(key, default_value, ctx_arg)
-    unless actual == expected_value
-      raise Minitest::Assertion,
-            "#{key}: expected #{expected_value.inspect} (default=#{default_value.inspect}), got #{actual.inspect}"
-    end
+    test.assert_equal expected_value, actual,
+                      "#{key}: expected #{expected_value.inspect} (default=#{default_value.inspect}), got #{actual.inspect}"
     actual
   end
 
   # Build a real Quonfig::Client whose initial fetch is intentionally slow
   # (an unreachable api_url + tiny init timeout) and assert that
   # Client#get raises Quonfig::Errors::InitializationTimeoutError.
-  def self.assert_initialization_timeout_error(key, timeout_sec, api_url, on_init_failure)
+  def self.assert_initialization_timeout_error(test, key, timeout_sec, api_url, on_init_failure)
     on_init = on_init_failure.to_s.sub(/\A:/, '').to_sym
     api_urls = api_url && !api_url.empty? ? [api_url] : ['https://127.0.0.1:1']
     client =
@@ -173,18 +170,17 @@ module IntegrationTestHelpers
           enable_polling: false
         )
       rescue Quonfig::Errors::InitializationTimeoutError
-        return # construction itself raised — that's the expected outcome
+        test.assert(true, 'init raised InitializationTimeoutError as expected')
+        return
       end
-    unless on_init == :raise
-      raise Minitest::Assertion,
-            'expected Quonfig::Errors::InitializationTimeoutError to raise on get'
-    end
+    test.assert_equal :raise, on_init,
+                      'expected on_init_failure :raise so client.get raises InitializationTimeoutError'
 
     begin
       client.get(key)
-      raise Minitest::Assertion, "expected get(#{key}) to raise InitializationTimeoutError but it returned"
+      test.flunk("expected get(#{key}) to raise InitializationTimeoutError but it returned")
     rescue Quonfig::Errors::InitializationTimeoutError
-      # success
+      test.assert(true, 'get raised InitializationTimeoutError as expected')
     ensure
       client.respond_to?(:close) && client.close
       $logs = nil if defined?($logs)
@@ -201,7 +197,7 @@ module IntegrationTestHelpers
   # on_init_failure: :return path). Drain $logs (if it exists from
   # CommonHelpers) so the test's teardown doesn't trip on it — that's the
   # whole point of the case.
-  def self.assert_client_construction_raises(key, timeout_sec, api_url, on_init_failure, fn, err_class)
+  def self.assert_client_construction_raises(test, key, timeout_sec, api_url, on_init_failure, fn, err_class)
     on_init = on_init_failure.to_s.sub(/\A:/, '').to_sym
     api_urls = api_url && !api_url.empty? ? [api_url] : ['https://127.0.0.1:1']
     client = Quonfig::Client.new(
@@ -220,9 +216,9 @@ module IntegrationTestHelpers
         # internal NO_DEFAULT_PROVIDED forces the missing-default raise.
         client.get(key)
       end
-      raise Minitest::Assertion, "expected #{err_class} to raise but call returned"
+      test.flunk("expected #{err_class} to raise but call returned")
     rescue err_class
-      # success
+      test.assert(true, "#{err_class} raised as expected")
     ensure
       client.respond_to?(:close) && client.close
       # Acknowledge the init-warning log so common_helpers' teardown won't
@@ -233,7 +229,7 @@ module IntegrationTestHelpers
 
   # Happy path through a real-client construction (rare; mostly here for
   # symmetry — the YAML init-timeout cases are all raise-path).
-  def self.assert_client_construction_value(key, timeout_sec, api_url, on_init_failure, _fn, expected_value)
+  def self.assert_client_construction_value(test, key, timeout_sec, api_url, on_init_failure, _fn, expected_value)
     on_init = on_init_failure.to_s.sub(/\A:/, '').to_sym
     api_urls = api_url && !api_url.empty? ? [api_url] : ['https://127.0.0.1:1']
     client = Quonfig::Client.new(
@@ -245,10 +241,8 @@ module IntegrationTestHelpers
       enable_polling: false
     )
     actual = client.get(key)
-    unless actual == expected_value
-      raise Minitest::Assertion,
-            "#{key}: expected #{expected_value.inspect}, got #{actual.inspect}"
-    end
+    test.assert_equal expected_value, actual,
+                      "#{key}: expected #{expected_value.inspect}, got #{actual.inspect}"
     client.respond_to?(:close) && client.close
     actual
   end
@@ -356,24 +350,20 @@ module IntegrationTestHelpers
   # is YAML-shaped (snake_case `field_types` etc.); we project the
   # aggregator's drain output into that shape so the comparison is
   # apples-to-apples.
-  def self.assert_aggregator_post(aggregator, kind, expected_data, endpoint:)
+  def self.assert_aggregator_post(test, aggregator, kind, expected_data, endpoint:)
     actual = build_actual_post(aggregator, kind)
 
     if expected_data.nil?
-      unless actual.nil?
-        raise Minitest::Assertion,
-              "[#{endpoint}] expected no telemetry POST but aggregator produced #{actual.inspect}"
-      end
+      test.assert_nil actual,
+                      "[#{endpoint}] expected no telemetry POST but aggregator produced #{actual.inspect}"
       return
     end
 
     expected_normalized, actual_normalized = align_for_comparison(expected_data, actual, kind)
     actual_normalized = scrub_optional_fields(actual_normalized, expected_normalized, kind)
 
-    return if actual_normalized == expected_normalized
-
-    raise Minitest::Assertion,
-          "[#{endpoint}] aggregator POST mismatch\n  expected: #{expected_normalized.inspect}\n  actual:   #{actual_normalized.inspect}"
+    test.assert_equal expected_normalized, actual_normalized,
+                      "[#{endpoint}] aggregator POST mismatch"
   end
 
   # Normalize ordering on both sides for comparison. Telemetry payloads
