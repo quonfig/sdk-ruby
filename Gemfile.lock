@@ -89,7 +89,7 @@ GEM
       ruby-progressbar
     multipart-post (2.4.0)
     mutex_m (0.2.0)
-    parallel (2.1.0)
+    parallel (1.28.0)
     parser (3.3.11.1)
       ast (~> 2.4.1)
       racc
@@ -156,6 +156,7 @@ DEPENDENCIES
   minitest
   minitest-focus
   minitest-reporters
+  parallel (< 2.0)
   rdoc
   rubocop
   semantic_logger (!= 4.16.0)
