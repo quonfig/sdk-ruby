@@ -11,7 +11,7 @@ class TestOptions < Minitest::Test
     # construction time, not at constant load time — see derive_api_urls.
     assert_equal [
       'https://primary.quonfig.com',
-      'https://secondary.quonfig.com',
+      'https://secondary.quonfig.com'
     ], Quonfig::Options::DEFAULT_API_URLS
   end
 
@@ -150,7 +150,7 @@ class TestOptions < Minitest::Test
       options = Quonfig::Options.new
       assert_equal [
         'https://primary.quonfig.com',
-        'https://secondary.quonfig.com',
+        'https://secondary.quonfig.com'
       ], options.api_urls
       assert_equal 'https://telemetry.quonfig.com', options.telemetry_destination
     end
@@ -161,11 +161,11 @@ class TestOptions < Minitest::Test
       options = Quonfig::Options.new
       assert_equal [
         'https://primary.quonfig-staging.com',
-        'https://secondary.quonfig-staging.com',
+        'https://secondary.quonfig-staging.com'
       ], options.api_urls
       assert_equal [
         'https://stream.primary.quonfig-staging.com',
-        'https://stream.secondary.quonfig-staging.com',
+        'https://stream.secondary.quonfig-staging.com'
       ], options.sse_api_urls
       assert_equal 'https://telemetry.quonfig-staging.com', options.telemetry_destination
     end

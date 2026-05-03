@@ -39,12 +39,8 @@ jobs:
         working-directory: sdk-ruby
         run: bundle exec rake test
 
-      # Soft-fail: sdk-ruby has never been linted; an initial run reports
-      # ~2772 offenses (2421 autocorrectable). Tracked in qfg-rsc0 — remove
-      # continue-on-error once that resolves.
       - name: Rubocop
         working-directory: sdk-ruby
-        continue-on-error: true
         run: bundle exec rubocop --no-color
 
       - name: Bundler-audit

@@ -44,7 +44,7 @@ module Quonfig
     # raise into the test's expected default).
     def get(key, context = nil)
       config = raw(key)
-      raise Quonfig::Errors::MissingDefaultError.new(key) if config.nil?
+      raise Quonfig::Errors::MissingDefaultError, key if config.nil?
 
       eval_result = @evaluator.evaluate_config(config, context, resolver: self)
       return nil if eval_result.nil?
@@ -72,17 +72,16 @@ module Quonfig
 
       type = vget(value, :type, 'type')
 
-      if type == 'provided'
-        return resolve_provided(value, config)
-      end
+      return resolve_provided(value, config) if type == 'provided'
 
-      if type == 'weighted_values'
-        return resolve_weighted(value, config, context, &on_weighted_index)
-      end
+      return resolve_weighted(value, config, context, &on_weighted_index) if type == 'weighted_values'
 
       confidential = vget(value, :confidential, 'confidential')
       decrypt_with = vget(value, :decryptWith, 'decryptWith', :decrypt_with, 'decrypt_with')
-      return resolve_decryption(value, config, context, decrypt_with) if confidential && decrypt_with && !decrypt_with.to_s.empty?
+      if confidential && decrypt_with && !decrypt_with.to_s.empty?
+        return resolve_decryption(value, config, context,
+                                  decrypt_with)
+      end
 
       value
     end
@@ -144,7 +143,7 @@ module Quonfig
       lookup = vget(provided, :lookup, 'lookup')
       return value if source != 'ENV_VAR' || lookup.nil? || lookup.to_s.empty?
 
-      env_value = ENV[lookup.to_s]
+      env_value = ENV.fetch(lookup.to_s, nil)
       if env_value.nil?
         raise Quonfig::Errors::MissingEnvVarError,
               %(Environment variable "#{lookup}" not set for config "#{config_key(config)}")

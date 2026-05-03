@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'test_helper'
 class TestSemanticVersion < Minitest::Test
   def test_parse_valid_version
@@ -65,7 +67,7 @@ class TestSemanticVersion < Minitest::Test
     assert_equal v1, v2
     refute_equal v1, v3
     refute_equal v1, v4
-    assert_equal v1, v5  # build metadata is ignored in equality
+    assert_equal v1, v5 # build metadata is ignored in equality
   end
 
   def test_comparison

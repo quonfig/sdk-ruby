@@ -3,7 +3,6 @@
 require 'test_helper'
 
 class TestInternalLogger < Minitest::Test
-
   def teardown
     # using_quonfig_log_filter! mutates the shared @@instances list — restore
     # the default :warn level so it doesn't bleed into other tests' $logs.
@@ -24,7 +23,6 @@ class TestInternalLogger < Minitest::Test
     assert_equal :trace, logger_a.level
     assert_equal :trace, logger_b.level
   end
-
 end
 
 class A

@@ -185,7 +185,7 @@ class TestTelemetryReporter < Minitest::Test
 
     assert_equal 1, fake.posts.size
     _path, body = fake.posts.first
-    refute_nil body['events'].find { |e| e.key?('contextShapes') }
+    refute_nil(body['events'].find { |e| e.key?('contextShapes') })
   end
 
   def test_at_exit_handler_registered_on_start

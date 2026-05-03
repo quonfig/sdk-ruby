@@ -27,7 +27,7 @@ module Quonfig
 
       @hash[:d] = 4
       assert_equal @max_size, @hash.size
-      assert_nil @hash[:a]  # First item should be evicted
+      assert_nil @hash[:a] # First item should be evicted
       assert_equal 4, @hash[:d]
     end
 
@@ -36,10 +36,10 @@ module Quonfig
       @hash[:b] = 2
       @hash[:c] = 3
 
-      @hash[:b] = 'new value'  # Update existing key
+      @hash[:b] = 'new value' # Update existing key
 
       assert_equal @max_size, @hash.size
-      assert_equal 1, @hash[:a]  # First item should still be present
+      assert_equal 1, @hash[:a] # First item should still be present
       assert_equal 'new value', @hash[:b]
       assert_equal 3, @hash[:c]
     end
@@ -50,7 +50,7 @@ module Quonfig
       @hash[:c] = 3
       @hash[:d] = 4
 
-      assert_nil @hash[:a]  # First item should be evicted
+      assert_nil @hash[:a] # First item should be evicted
       assert_equal 4, @hash[:d]
     end
 
@@ -58,7 +58,7 @@ module Quonfig
       @hash[:a] = 1
       @hash[:b] = 2
 
-      assert_equal [:a, :b], @hash.keys
+      assert_equal %i[a b], @hash.keys
       assert_equal [1, 2], @hash.values
       assert @hash.key?(:a)
       refute @hash.key?(:z)
@@ -70,7 +70,7 @@ module Quonfig
       @hash['c'] = 3
       @hash['d'] = 4
 
-      assert_nil @hash['a']  # First item should be evicted
+      assert_nil @hash['a'] # First item should be evicted
       assert_equal 4, @hash['d']
     end
 
@@ -85,7 +85,7 @@ module Quonfig
       @hash[key3] = 3
       @hash[key4] = 4
 
-      assert_nil @hash[key1]  # First item should be evicted
+      assert_nil @hash[key1] # First item should be evicted
       assert_equal 4, @hash[key4]
     end
 
@@ -97,7 +97,7 @@ module Quonfig
       @hash[:a] = 1
       @hash[:b] = 2
 
-      mapped = @hash.map { |k, v| [k, v * 2] }.to_h
+      mapped = @hash.to_h { |k, v| [k, v * 2] }
       assert_equal({ a: 2, b: 4 }, mapped)
 
       filtered = @hash.select { |_, v| v > 1 }

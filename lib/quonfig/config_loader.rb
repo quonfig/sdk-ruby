@@ -124,8 +124,9 @@ module Quonfig
 
     def short_body(response)
       return '' if response.body.nil?
+
       str = response.body.to_s
-      str.length > 200 ? str[0, 200] + '...' : str
+      str.length > 200 ? "#{str[0, 200]}..." : str
     end
 
     def install_envelope(envelope, source:)
@@ -134,6 +135,7 @@ module Quonfig
       envelope.configs.each do |cfg|
         key = config_key(cfg)
         next if key.nil?
+
         next_map[key] = { source: source, config: cfg }
       end
       @api_config = next_map
@@ -153,12 +155,14 @@ module Quonfig
       envelope.configs.each do |cfg|
         key = config_key(cfg)
         next if key.nil?
+
         @store.set(key, cfg)
       end
     end
 
     def config_key(cfg)
       return cfg['key'] || cfg[:key] if cfg.is_a?(Hash)
+
       cfg.respond_to?(:key) ? cfg.key : nil
     end
   end

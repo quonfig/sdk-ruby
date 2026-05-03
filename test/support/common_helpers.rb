@@ -4,13 +4,14 @@ module CommonHelpers
   require 'timecop'
 
   def setup
-    $oldstderr, $stderr = $stderr, StringIO.new
+    $oldstderr = $stderr
+    $stderr = StringIO.new
     $logs = StringIO.new
 
-    if defined?(SemanticLogger)
-      SemanticLogger.add_appender(io: $logs)
-      SemanticLogger.sync!
-    end
+    return unless defined?(SemanticLogger)
+
+    SemanticLogger.add_appender(io: $logs)
+    SemanticLogger.sync!
   end
 
   def teardown
@@ -19,24 +20,20 @@ module CommonHelpers
         line.match(/Quonfig::ConfigClient -- No success loading checkpoints/)
       end
 
-      if log_lines.size > 0
+      if log_lines.size.positive?
         $logs = nil
         raise "Unexpected logs. Handle logs with assert_logged\n\n#{log_lines}"
       end
     end
 
-    # note this skips the output check in environments like rubymine that hijack the output
-    if $stderr != $oldstderr && $stderr.respond_to?(:string) && !$stderr.string.empty?
-      if !RUBY_VERSION.start_with?('2.')
-        # Filter out ld-eventsource frozen string literal warnings in Ruby 3.4+
-        stderr_lines = $stderr.string.split("\n").reject do |line|
-          line.include?('ld-eventsource') && line.include?('literal string will be frozen in the future')
-        end
-
-        if !stderr_lines.empty?
-          raise "Unexpected stderr. Handle stderr with assert_stderr\n\n#{stderr_lines.join("\n")}"
-        end
+    # NOTE: this skips the output check in environments like rubymine that hijack the output
+    if $stderr != $oldstderr && $stderr.respond_to?(:string) && !$stderr.string.empty? && !RUBY_VERSION.start_with?('2.')
+      # Filter out ld-eventsource frozen string literal warnings in Ruby 3.4+
+      stderr_lines = $stderr.string.split("\n").reject do |line|
+        line.include?('ld-eventsource') && line.include?('literal string will be frozen in the future')
       end
+
+      raise "Unexpected stderr. Handle stderr with assert_stderr\n\n#{stderr_lines.join("\n")}" unless stderr_lines.empty?
     end
 
     $stderr = $oldstderr if $oldstderr
@@ -57,7 +54,7 @@ module CommonHelpers
 
   def wait_for(condition, max_wait: 10, sleep_time: 0.01)
     wait_time = 0
-    while !condition.call
+    until condition.call
       wait_time += sleep_time
       sleep sleep_time
 
@@ -87,7 +84,7 @@ module CommonHelpers
   end
 
   def assert_stderr(expected)
-    skip "Cannot verify stderr in current environment" unless $stderr.respond_to?(:string)
+    skip 'Cannot verify stderr in current environment' unless $stderr.respond_to?(:string)
     $stderr.string.split("\n").uniq.each do |line|
       matched = false
 

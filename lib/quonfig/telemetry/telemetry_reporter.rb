@@ -157,6 +157,7 @@ module Quonfig
       # giving up. Bounded so a thread blocked on a dead telemetry endpoint
       # can't hang process exit.
       AT_EXIT_THREAD_JOIN_TIMEOUT_SECONDS = 1.0
+      private_constant :AT_EXIT_THREAD_JOIN_TIMEOUT_SECONDS
 
       # Idempotent final drain. Safe to call after #stop has already
       # drained: aggregators return nil when empty and #sync becomes a

@@ -56,21 +56,15 @@ module Quonfig
     end
 
     def resolve_environment(quonfig_path, environment)
-      environment ||= ENV['QUONFIG_ENVIRONMENT']
+      environment ||= ENV.fetch('QUONFIG_ENVIRONMENT', nil)
 
-      if environment.nil? || environment.empty?
-        raise Quonfig::Errors::MissingEnvironmentError
-      end
+      raise Quonfig::Errors::MissingEnvironmentError if environment.nil? || environment.empty?
 
-      unless File.exist?(quonfig_path)
-        raise ArgumentError, "[quonfig] Datadir is missing quonfig.json: #{quonfig_path}"
-      end
+      raise ArgumentError, "[quonfig] Datadir is missing quonfig.json: #{quonfig_path}" unless File.exist?(quonfig_path)
 
       environments = JSON.parse(File.read(quonfig_path)).fetch('environments', [])
 
-      if !environments.empty? && !environments.include?(environment)
-        raise Quonfig::Errors::InvalidEnvironmentError.new(environment, environments)
-      end
+      raise Quonfig::Errors::InvalidEnvironmentError.new(environment, environments) if !environments.empty? && !environments.include?(environment)
 
       environment
     end

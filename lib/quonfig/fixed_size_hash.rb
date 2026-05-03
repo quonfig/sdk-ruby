@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+
 module Quonfig
   class FixedSizeHash < Hash
     def initialize(max_size)

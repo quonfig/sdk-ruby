@@ -138,7 +138,7 @@ module Quonfig
 
     def enabled?(feature_name, jit_context = NO_DEFAULT_PROVIDED)
       value = get(feature_name, false, jit_context)
-      value == true || value == 'true'
+      [true, 'true'].include?(value)
     end
 
     def defined?(key)
@@ -296,19 +296,19 @@ module Quonfig
       example_aggregator = nil
       summaries_aggregator = nil
 
-      if @options.collect_max_shapes.to_i > 0
+      if @options.collect_max_shapes.to_i.positive?
         shape_aggregator = Quonfig::Telemetry::ContextShapeAggregator.new(
           max_shapes: @options.collect_max_shapes
         )
       end
 
-      if @options.collect_max_example_contexts.to_i > 0
+      if @options.collect_max_example_contexts.to_i.positive?
         example_aggregator = Quonfig::Telemetry::ExampleContextsAggregator.new(
           max_contexts: @options.collect_max_example_contexts
         )
       end
 
-      if @options.collect_max_evaluation_summaries.to_i > 0
+      if @options.collect_max_evaluation_summaries.to_i.positive?
         summaries_aggregator = Quonfig::Telemetry::EvaluationSummariesAggregator.new(
           max_keys: @options.collect_max_evaluation_summaries
         )
@@ -383,9 +383,7 @@ module Quonfig
     # Initialize network mode: sync HTTP fetch (bounded by
     # initialization_timeout_sec) then start SSE + polling as requested.
     def initialize_network_mode
-      if @options.sdk_key.nil? || @options.sdk_key.to_s.strip.empty?
-        raise Quonfig::Errors::InvalidSdkKeyError, @options.sdk_key
-      end
+      raise Quonfig::Errors::InvalidSdkKeyError, @options.sdk_key if @options.sdk_key.nil? || @options.sdk_key.to_s.strip.empty?
 
       @config_loader = Quonfig::ConfigLoader.new(@store, @options)
 
@@ -434,6 +432,7 @@ module Quonfig
       @sse_client = Quonfig::SSEConfigClient.new(@options, @config_loader)
       @sse_client.start do |envelope, _event, _source|
         next if @stopped
+
         begin
           @config_loader.apply_envelope(envelope)
           @on_update&.call
@@ -456,6 +455,7 @@ module Quonfig
         Thread.current.name = 'quonfig-poller'
         loop do
           break if @stopped
+
           sleep poll_interval
           break if @stopped
 
@@ -506,11 +506,11 @@ module Quonfig
       merged = {}
       left.each  { |name, ctx| merged[name] = ctx.is_a?(Hash) ? ctx.dup : ctx }
       right.each do |name, ctx|
-        if merged[name].is_a?(Hash) && ctx.is_a?(Hash)
-          merged[name] = merged[name].merge(ctx)
-        else
-          merged[name] = ctx.is_a?(Hash) ? ctx.dup : ctx
-        end
+        merged[name] = if merged[name].is_a?(Hash) && ctx.is_a?(Hash)
+                         merged[name].merge(ctx)
+                       else
+                         ctx.is_a?(Hash) ? ctx.dup : ctx
+                       end
       end
       merged
     end
@@ -526,9 +526,7 @@ module Quonfig
     def handle_missing(key, default)
       return default if default != NO_DEFAULT_PROVIDED
 
-      if @options.on_no_default == Quonfig::Options::ON_NO_DEFAULT::RAISE
-        raise Quonfig::Errors::MissingDefaultError, key
-      end
+      raise Quonfig::Errors::MissingDefaultError, key if @options.on_no_default == Quonfig::Options::ON_NO_DEFAULT::RAISE
 
       nil
     end
@@ -603,29 +601,25 @@ module Quonfig
     def coerce_and_check(key, value, expected_type)
       case expected_type
       when :bool
-        unless value == true || value == false
-          raise Quonfig::Errors::TypeMismatchError.new(key, 'Boolean', value)
-        end
+        raise Quonfig::Errors::TypeMismatchError.new(key, 'Boolean', value) unless [true, false].include?(value)
+
         value
       when :string_list
         arr = value.is_a?(Array) ? value : nil
-        unless arr && arr.all? { |v| v.is_a?(String) }
-          raise Quonfig::Errors::TypeMismatchError.new(key, 'Array<String>', value)
-        end
+        raise Quonfig::Errors::TypeMismatchError.new(key, 'Array<String>', value) unless arr&.all?(String)
+
         arr
       when :duration
         return value.to_i if value.is_a?(Numeric)
-        if value.is_a?(String)
-          return (Quonfig::Duration.parse(value) * 1000).to_i
-        end
+        return (Quonfig::Duration.parse(value) * 1000).to_i if value.is_a?(String)
+
         raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', value)
       when :json
         # JSON values are returned as-is (Hash, Array, or scalar from the wire).
         value
       when Class
-        unless value.is_a?(expected_type)
-          raise Quonfig::Errors::TypeMismatchError.new(key, "expected #{expected_type}", value)
-        end
+        raise Quonfig::Errors::TypeMismatchError.new(key, "expected #{expected_type}", value) unless value.is_a?(expected_type)
+
         value
       else
         value

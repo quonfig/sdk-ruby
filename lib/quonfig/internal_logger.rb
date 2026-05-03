@@ -64,13 +64,13 @@ module Quonfig
       else
         # Return the symbol level we tracked, or map from Logger constant
         @level_sym || case @logger.level
-                     when Logger::DEBUG then :debug
-                     when Logger::INFO then :info
-                     when Logger::WARN then :warn
-                     when Logger::ERROR then :error
-                     when Logger::FATAL then :fatal
-                     else :warn
-                     end
+                      when Logger::DEBUG then :debug
+                      when Logger::INFO then :info
+                      when Logger::WARN then :warn
+                      when Logger::ERROR then :error
+                      when Logger::FATAL then :fatal
+                      else :warn
+                      end
       end
     end
 
@@ -114,9 +114,10 @@ module Quonfig
       class << logger
         def log(log, message = nil, progname = nil, &block)
           return if recurse_check[local_log_id]
+
           recurse_check[local_log_id] = true
           begin
-            super(log, message, progname, &block)
+            super
           ensure
             recurse_check[local_log_id] = false
           end
@@ -147,19 +148,19 @@ module Quonfig
       @level_sym = env_log_level || default_level_sym
 
       logger.level = case @level_sym
-                    when :trace, :debug then Logger::DEBUG
-                    when :info then Logger::INFO
-                    when :warn then Logger::WARN
-                    when :error then Logger::ERROR
-                    when :fatal then Logger::FATAL
-                    else Logger::WARN
-                    end
+                     when :trace, :debug then Logger::DEBUG
+                     when :info then Logger::INFO
+                     when :warn then Logger::WARN
+                     when :error then Logger::ERROR
+                     when :fatal then Logger::FATAL
+                     else Logger::WARN
+                     end
       logger.progname = @klass.to_s
 
       # Use a custom formatter that mimics SemanticLogger format
       # SemanticLogger format: "ClassName -- Message"
       # This helps tests that expect SemanticLogger-style output
-      logger.formatter = proc do |severity, datetime, progname, msg|
+      logger.formatter = proc do |_severity, _datetime, progname, msg|
         "#{progname} -- #{msg}\n"
       end
 
@@ -167,7 +168,7 @@ module Quonfig
     end
 
     def env_log_level
-      level_str = ENV['QUONFIG_LOG_CLIENT_BOOTSTRAP_LOG_LEVEL']
+      level_str = ENV.fetch('QUONFIG_LOG_CLIENT_BOOTSTRAP_LOG_LEVEL', nil)
       level_str&.downcase&.to_sym
     end
 
@@ -184,6 +185,7 @@ module Quonfig
         # stdlib Logger doesn't have trace
         level = :debug if level == :trace
         return unless @logger.respond_to?(level)
+
         @logger.send(level, message || block&.call)
       end
     end

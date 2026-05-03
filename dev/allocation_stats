@@ -3,23 +3,23 @@
 
 require 'bundler/setup'
 
-gemspec = Dir.glob(File.expand_path("../../*.gemspec", __FILE__)).first
+gemspec = Dir.glob(File.expand_path('../*.gemspec', __dir__)).first
 spec = Gem::Specification.load(gemspec)
 
 # Add the require paths to the $LOAD_PATH
 spec.require_paths.each do |path|
-  full_path = File.expand_path("../" + path, __dir__)
+  full_path = File.expand_path("../#{path}", __dir__)
   $LOAD_PATH.unshift(full_path) unless $LOAD_PATH.include?(full_path)
 end
 
-spec.require_paths.each do |path|
-  require "./lib/reforge-sdk"
+spec.require_paths.each do |_path|
+  require './lib/reforge-sdk'
 end
 
 require 'reforge-sdk'
 
 $prefab = Reforge::Client.new(collect_logger_counts: false, collect_evaluation_summaries: false,
-                             context_upload_mode: :none)
+                              context_upload_mode: :none)
 $prefab.get('a.live.integer')
 
 puts '-' * 80
@@ -28,21 +28,17 @@ require 'allocation_stats'
 
 $runs = 100
 
-def measure(description)
+def measure(description, &block)
   puts "Measuring #{description}..."
   stats = $prefab.with_context(user: { email_suffix: 'yahoo.com' }) do
     AllocationStats.trace do
-      $runs.times do
-        yield
-      end
+      $runs.times(&block)
     end
   end
 
   allocations = stats.allocations(alias_paths: true).group_by(:sourcefile, :sourceline, :class)
 
-  if ENV['TOP']
-    puts allocations.sort_by_size.to_text.split("\n").first(20)
-  end
+  puts allocations.sort_by_size.to_text.split("\n").first(20) if ENV['TOP']
 
   puts "Total allocations: #{allocations.all.values.map(&:size).sum}"
   puts "Total memory: #{allocations.all.values.flatten.map(&:memsize).sum}"
@@ -56,5 +52,5 @@ end
 puts "\n\n"
 
 measure "with JIT context (#{$runs} runs)" do
-  $prefab.get('a.live.integer', { a: { b: "c" } })
+  $prefab.get('a.live.integer', { a: { b: 'c' } })
 end

@@ -99,8 +99,10 @@ module Quonfig
 
       keys.each do |k|
         return hash[k] if hash.key?(k)
+
         sk = k.to_s
         return hash[sk] if hash.key?(sk)
+
         sym = k.to_sym
         return hash[sym] if hash.key?(sym)
       end
@@ -147,7 +149,7 @@ module Quonfig
     # Faithful port of sdk-node/src/operators.ts evaluateCriterion. Matches
     # context-exists / missing-context semantics (e.g. PROP_IS_NOT_ONE_OF is
     # true when context is missing).
-    def evaluate_criterion(criterion, context, config)
+    def evaluate_criterion(criterion, context, _config)
       property_name = hget(criterion, :propertyName) || ''
       operator = hget(criterion, :operator)
       match_value = hget(criterion, :valueToMatch)
@@ -156,10 +158,10 @@ module Quonfig
 
       case operator
       when OP_NOT_SET, nil
-        return false
+        false
 
       when OP_ALWAYS_TRUE
-        return true
+        true
 
       when OP_PROP_IS_ONE_OF, OP_PROP_IS_NOT_ONE_OF
         if context_exists && match_value
@@ -170,7 +172,7 @@ module Quonfig
             return match_found == (operator == OP_PROP_IS_ONE_OF)
           end
         end
-        return operator == OP_PROP_IS_NOT_ONE_OF
+        operator == OP_PROP_IS_NOT_ONE_OF
 
       when OP_PROP_STARTS_WITH_ONE_OF, OP_PROP_DOES_NOT_START_WITH_ONE_OF
         if context_exists && match_value
@@ -181,7 +183,7 @@ module Quonfig
             return match_found == (operator == OP_PROP_STARTS_WITH_ONE_OF)
           end
         end
-        return operator == OP_PROP_DOES_NOT_START_WITH_ONE_OF
+        operator == OP_PROP_DOES_NOT_START_WITH_ONE_OF
 
       when OP_PROP_ENDS_WITH_ONE_OF, OP_PROP_DOES_NOT_END_WITH_ONE_OF
         if context_exists && match_value
@@ -192,7 +194,7 @@ module Quonfig
             return match_found == (operator == OP_PROP_ENDS_WITH_ONE_OF)
           end
         end
-        return operator == OP_PROP_DOES_NOT_END_WITH_ONE_OF
+        operator == OP_PROP_DOES_NOT_END_WITH_ONE_OF
 
       when OP_PROP_CONTAINS_ONE_OF, OP_PROP_DOES_NOT_CONTAIN_ONE_OF
         if context_exists && match_value
@@ -203,7 +205,7 @@ module Quonfig
             return match_found == (operator == OP_PROP_CONTAINS_ONE_OF)
           end
         end
-        return operator == OP_PROP_DOES_NOT_CONTAIN_ONE_OF
+        operator == OP_PROP_DOES_NOT_CONTAIN_ONE_OF
 
       when OP_PROP_MATCHES, OP_PROP_DOES_NOT_MATCH
         mv = hget(match_value, :value)
@@ -216,7 +218,7 @@ module Quonfig
             return false
           end
         end
-        return false
+        false
 
       when OP_HIERARCHICAL_MATCH
         if context_exists && match_value
@@ -224,7 +226,7 @@ module Quonfig
           mv = to_s_nil(hget(match_value, :value))
           return cv.start_with?(mv)
         end
-        return false
+        false
 
       when OP_IN_INT_RANGE
         if context_exists && match_value
@@ -232,7 +234,7 @@ module Quonfig
           num_val = to_float(context_value)
           return num_val >= start_v && num_val < end_v unless num_val.nil?
         end
-        return false
+        false
 
       when OP_PROP_GREATER_THAN, OP_PROP_GREATER_THAN_OR_EQUAL,
            OP_PROP_LESS_THAN, OP_PROP_LESS_THAN_OR_EQUAL
@@ -244,13 +246,13 @@ module Quonfig
           return false if cmp.nil?
 
           case operator
-          when OP_PROP_GREATER_THAN          then return cmp > 0
+          when OP_PROP_GREATER_THAN          then return cmp.positive?
           when OP_PROP_GREATER_THAN_OR_EQUAL then return cmp >= 0
-          when OP_PROP_LESS_THAN             then return cmp < 0
+          when OP_PROP_LESS_THAN             then return cmp.negative?
           when OP_PROP_LESS_THAN_OR_EQUAL    then return cmp <= 0
           end
         end
-        return false
+        false
 
       when OP_PROP_BEFORE, OP_PROP_AFTER
         if context_exists && match_value
@@ -260,7 +262,7 @@ module Quonfig
             return operator == OP_PROP_BEFORE ? context_millis < match_millis : context_millis > match_millis
           end
         end
-        return false
+        false
 
       when OP_PROP_SEMVER_LESS_THAN, OP_PROP_SEMVER_EQUAL, OP_PROP_SEMVER_GREATER_THAN
         mv = hget(match_value, :value)
@@ -270,13 +272,13 @@ module Quonfig
           if sv_ctx && sv_mv
             cmp = (sv_ctx <=> sv_mv)
             case operator
-            when OP_PROP_SEMVER_LESS_THAN    then return cmp < 0
-            when OP_PROP_SEMVER_EQUAL        then return cmp == 0
-            when OP_PROP_SEMVER_GREATER_THAN then return cmp > 0
+            when OP_PROP_SEMVER_LESS_THAN    then return cmp.negative?
+            when OP_PROP_SEMVER_EQUAL        then return cmp.zero?
+            when OP_PROP_SEMVER_GREATER_THAN then return cmp.positive?
             end
           end
         end
-        return false
+        false
 
       when OP_IN_SEG, OP_NOT_IN_SEG
         if match_value
@@ -286,21 +288,17 @@ module Quonfig
 
           return result == (operator == OP_IN_SEG)
         end
-        return operator == OP_NOT_IN_SEG
+        operator == OP_NOT_IN_SEG
 
       else
-        return false
+        false
       end
     end
 
     def lookup_context(context, property_name)
-      if MAGIC_CURRENT_TIME_PROPS.include?(property_name)
-        return [(Time.now.utc.to_f * 1000).to_i, true]
-      end
+      return [(Time.now.utc.to_f * 1000).to_i, true] if MAGIC_CURRENT_TIME_PROPS.include?(property_name)
 
-      if property_name.nil? || property_name.empty?
-        return [nil, false]
-      end
+      return [nil, false] if property_name.nil? || property_name.empty?
 
       value = context.get(property_name)
       [value, !value.nil?]
@@ -362,8 +360,7 @@ module Quonfig
       return v.to_f if v.is_a?(Numeric)
       return nil unless v.is_a?(String)
 
-      f = Float(v, exception: false)
-      f
+      Float(v, exception: false)
     end
 
     def compare_numbers(a, b)
@@ -375,7 +372,7 @@ module Quonfig
     end
 
     def extract_int_range(value_hash)
-      min = -(2**53) + 1  # approx Number.MIN_SAFE_INTEGER
+      min = -(2**53) + 1 # approx Number.MIN_SAFE_INTEGER
       max = (2**53) - 1
       raw = hget(value_hash, :value)
       return [min, max] unless raw.is_a?(Hash)
@@ -397,10 +394,8 @@ module Quonfig
         rescue ArgumentError, TypeError
           # not a date; try integer
         end
-        n = Integer(val, exception: false)
-        n
-      else
-        nil
+        Integer(val, exception: false)
+
       end
     end
   end
@@ -437,7 +432,7 @@ module Quonfig
     # of a config with no targeting rules matched, otherwise TARGETING_MATCH.
     def wire_reason
       return REASON_SPLIT unless @weighted_value_index.nil?
-      return REASON_STATIC if @rule_index == 0 && !EvalResult.send(:targeting_rules?, @config)
+      return REASON_STATIC if @rule_index.zero? && !EvalResult.send(:targeting_rules?, @config)
 
       REASON_TARGETING_MATCH
     end
@@ -494,13 +489,15 @@ module Quonfig
     def unwrapped_value
       raw = raw_value
       case type
-      when 'bool'        then !!raw
+      when 'bool' then !!raw
       when 'int'
         return raw if raw.is_a?(Integer)
         return raw.to_i if raw.is_a?(Numeric)
+
         Integer(raw.to_s, 10)
       when 'double'
         return raw.to_f if raw.is_a?(Numeric)
+
         Float(raw.to_s)
       when 'string'      then raw.to_s
       when 'string_list' then raw.is_a?(Array) ? raw.map(&:to_s) : []
@@ -535,8 +532,8 @@ module Quonfig
         (seconds * 1000).round
       when Hash
         secs = (raw['seconds'] || raw[:seconds] || 0).to_f
-        nanos = (raw['nanos']   || raw[:nanos]   || 0).to_f
-        (secs * 1000 + nanos / 1_000_000.0).round
+        nanos = (raw['nanos'] || raw[:nanos] || 0).to_f
+        ((secs * 1000) + (nanos / 1_000_000.0)).round
       else
         raw
       end

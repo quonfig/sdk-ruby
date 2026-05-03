@@ -5,24 +5,8 @@ require 'uri'
 module Quonfig
   # Options passed to Quonfig::Client at construction time.
   class Options
-    attr_reader :sdk_key
-    attr_reader :environment
-    attr_reader :api_urls
-    attr_reader :sse_api_urls
-    attr_reader :telemetry_destination
-    attr_reader :config_api_urls
-    attr_reader :on_no_default
-    attr_reader :initialization_timeout_sec
-    attr_reader :on_init_failure
-    attr_reader :collect_sync_interval
-    attr_reader :datadir
-    attr_reader :enable_sse
-    attr_reader :enable_polling
-    attr_reader :poll_interval
-    attr_reader :global_context
-    attr_reader :logger_key
-    attr_reader :logger
-    attr_reader :enable_quonfig_user_context
+    attr_reader :sdk_key, :environment, :api_urls, :sse_api_urls, :telemetry_destination, :config_api_urls,
+                :on_no_default, :initialization_timeout_sec, :on_init_failure, :collect_sync_interval, :datadir, :enable_sse, :enable_polling, :poll_interval, :global_context, :logger_key, :logger, :enable_quonfig_user_context
     attr_accessor :is_fork
 
     module ON_INITIALIZATION_FAILURE
@@ -47,13 +31,13 @@ module Quonfig
     # and no explicit api_urls are provided). Mirrors derive_api_urls(DEFAULT_DOMAIN).
     DEFAULT_API_URLS = [
       'https://primary.quonfig.com',
-      'https://secondary.quonfig.com',
+      'https://secondary.quonfig.com'
     ].freeze
 
     # Resolve the active domain. Reads QUONFIG_DOMAIN; falls back to
     # DEFAULT_DOMAIN. Mirrors `cli/src/util/domain-urls.ts#getDomain`.
     def self.domain
-      env = ENV['QUONFIG_DOMAIN']
+      env = ENV.fetch('QUONFIG_DOMAIN', nil)
       env && !env.empty? ? env : DEFAULT_DOMAIN
     end
 
@@ -63,7 +47,7 @@ module Quonfig
     def self.derive_api_urls(domain)
       [
         "https://primary.#{domain}",
-        "https://secondary.#{domain}",
+        "https://secondary.#{domain}"
       ]
     end
 
@@ -85,12 +69,62 @@ module Quonfig
       uri.to_s
     end
 
-    private def init(
+    def initialize(options = {})
+      init(**options)
+    end
+
+    # In datadir mode the SDK evaluates config from a local workspace and does
+    # not connect to the delivery service.
+    def local_only?
+      !@datadir.nil?
+    end
+
+    def datadir?
+      !@datadir.nil?
+    end
+
+    def collect_max_paths
+      return 0 unless telemetry_allowed?(true)
+
+      @collect_max_paths
+    end
+
+    def collect_max_shapes
+      return 0 unless telemetry_allowed?(@collect_shapes)
+
+      @collect_max_shapes
+    end
+
+    def collect_max_example_contexts
+      return 0 unless telemetry_allowed?(@collect_example_contexts)
+
+      @collect_max_example_contexts
+    end
+
+    def collect_max_evaluation_summaries
+      return 0 unless telemetry_allowed?(@collect_evaluation_summaries)
+
+      @collect_max_evaluation_summaries
+    end
+
+    def sdk_key_id
+      @sdk_key&.split('-')&.first
+    end
+
+    def for_fork
+      clone = self.clone
+      clone.is_fork = true
+      clone
+    end
+
+    private
+
+    def init(
       api_urls: nil,
       telemetry_url: nil,
-      sdk_key: ENV['QUONFIG_BACKEND_SDK_KEY'],
-      environment: ENV['QUONFIG_ENVIRONMENT'],
-      datadir: ENV['QUONFIG_DIR'],
+      sdk_key: ENV.fetch('QUONFIG_BACKEND_SDK_KEY', nil),
+      environment: ENV.fetch('QUONFIG_ENVIRONMENT', nil),
+      datadir: ENV.fetch('QUONFIG_DIR', nil),
       enable_sse: true,
       enable_polling: true,
       poll_interval: 60,
@@ -143,7 +177,7 @@ module Quonfig
       domain = Quonfig::Options.domain
 
       @api_urls = Array(api_urls || Quonfig::Options.derive_api_urls(domain))
-                    .map { |url| remove_trailing_slash(url) }
+                  .map { |url| remove_trailing_slash(url) }
 
       @sse_api_urls = @api_urls.map { |url| Quonfig::Options.derive_stream_url(url) }
       @config_api_urls = @api_urls
@@ -165,56 +199,6 @@ module Quonfig
         raise "Unknown context_upload_mode #{context_upload_mode}. Please provide :periodic_example, :shapes_only, or :none."
       end
     end
-
-    def initialize(options = {})
-      init(**options)
-    end
-
-    # In datadir mode the SDK evaluates config from a local workspace and does
-    # not connect to the delivery service.
-    def local_only?
-      !@datadir.nil?
-    end
-
-    def datadir?
-      !@datadir.nil?
-    end
-
-    def collect_max_paths
-      return 0 unless telemetry_allowed?(true)
-
-      @collect_max_paths
-    end
-
-    def collect_max_shapes
-      return 0 unless telemetry_allowed?(@collect_shapes)
-
-      @collect_max_shapes
-    end
-
-    def collect_max_example_contexts
-      return 0 unless telemetry_allowed?(@collect_example_contexts)
-
-      @collect_max_example_contexts
-    end
-
-    def collect_max_evaluation_summaries
-      return 0 unless telemetry_allowed?(@collect_evaluation_summaries)
-
-      @collect_max_evaluation_summaries
-    end
-
-    def sdk_key_id
-      @sdk_key&.split('-')&.first
-    end
-
-    def for_fork
-      clone = self.clone
-      clone.is_fork = true
-      clone
-    end
-
-    private
 
     def telemetry_allowed?(option)
       option && (!local_only? || @allow_telemetry_in_local_mode)

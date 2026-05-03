@@ -2,11 +2,9 @@
 # frozen_string_literal: true
 
 require 'irb'
-require_relative "./script_setup"
+require_relative 'script_setup'
 
-if !ENV['REFORGE_LOG_CLIENT_BOOTSTRAP_LOG_LEVEL']
-  puts "run with REFORGE_LOG_CLIENT_BOOTSTRAP_LOG_LEVEL=debug (or trace) for more output"
-end
+puts 'run with REFORGE_LOG_CLIENT_BOOTSTRAP_LOG_LEVEL=debug (or trace) for more output' unless ENV['REFORGE_LOG_CLIENT_BOOTSTRAP_LOG_LEVEL']
 
 # Start an IRB session
 IRB.start(__FILE__)

@@ -24,9 +24,8 @@ class TestThreadSafety < Minitest::Test
           seed_keys.each do |k|
             cfg = store.get(k)
             next if cfg.nil?
-            unless cfg.is_a?(Hash) && cfg['key'] == k
-              errors << "torn read for #{k}: #{cfg.inspect}"
-            end
+
+            errors << "torn read for #{k}: #{cfg.inspect}" unless cfg.is_a?(Hash) && cfg['key'] == k
           end
         end
       rescue StandardError => e
@@ -54,7 +53,7 @@ class TestThreadSafety < Minitest::Test
 
     writers.each(&:join)
     stop.make_true
-    readers.each { |t| t.join(5) || raise("reader thread did not exit — possible deadlock") }
+    readers.each { |t| t.join(5) || raise('reader thread did not exit — possible deadlock') }
 
     assert_empty errors, "concurrent ops produced errors: #{errors.to_a.first(5).inspect}"
     seed_keys.each { |k| refute_nil store.get(k), "seed key #{k} disappeared" }
@@ -69,9 +68,7 @@ class TestThreadSafety < Minitest::Test
 
     reader = Thread.new do
       Thread.current.report_on_exception = false
-      until stop.true?
-        store.keys.each { |k| store.get(k) }
-      end
+      store.each_key { |k| store.get(k) } until stop.true?
     rescue StandardError => e
       errors << e
     end
@@ -82,7 +79,7 @@ class TestThreadSafety < Minitest::Test
     end
 
     stop.make_true
-    reader.join(5) || raise("reader did not exit — possible deadlock")
+    reader.join(5) || raise('reader did not exit — possible deadlock')
     assert_empty errors
   end
 
@@ -113,11 +110,11 @@ class TestThreadSafety < Minitest::Test
 
     child = parent.fork
     refute_same parent, child
-    refute_same parent.store, child.store, "fork must allocate a fresh ConfigStore"
+    refute_same parent.store, child.store, 'fork must allocate a fresh ConfigStore'
 
     child.store.set('child.only', { 'key' => 'child.only' })
-    assert_nil parent.store.get('child.only'), "parent must not see child writes"
-    assert child.options.is_fork, "forked Options must carry is_fork = true"
+    assert_nil parent.store.get('child.only'), 'parent must not see child writes'
+    assert child.options.is_fork, 'forked Options must carry is_fork = true'
 
     # The fork hits a non-listening port and logs a warn under
     # on_init_failure: :return — acknowledge it so common_helpers teardown

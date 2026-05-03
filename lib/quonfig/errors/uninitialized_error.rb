@@ -3,7 +3,7 @@
 module Quonfig
   module Errors
     class UninitializedError < Quonfig::Error
-      def initialize(key=nil)
+      def initialize(key = nil)
         message = "Use Quonfig.initialize before calling Quonfig.get #{key}"
 
         super(message)

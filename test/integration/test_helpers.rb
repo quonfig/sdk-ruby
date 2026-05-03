@@ -99,11 +99,9 @@ module IntegrationTestHelpers
             "#{key}: expected #{expected_value.inspect} (#{expected_type}), got #{actual.inspect}"
     end
 
-    if expected_type && result.respond_to?(:value_type)
-      unless result.value_type.to_s == expected_type.to_s
-        raise Minitest::Assertion,
-              "#{key}: expected type #{expected_type}, got #{result.value_type}"
-      end
+    if expected_type && result.respond_to?(:value_type) && result.value_type.to_s != expected_type.to_s
+      raise Minitest::Assertion,
+            "#{key}: expected type #{expected_type}, got #{result.value_type}"
     end
     actual
   end
@@ -121,7 +119,7 @@ module IntegrationTestHelpers
           false
         else
           v = result.respond_to?(:unwrapped_value) ? result.unwrapped_value : result
-          (v == true || v == 'true') ? true : false
+          [true, 'true'].include?(v)
         end
       rescue Quonfig::Errors::MissingDefaultError
         false
@@ -177,9 +175,10 @@ module IntegrationTestHelpers
       rescue Quonfig::Errors::InitializationTimeoutError
         return # construction itself raised — that's the expected outcome
       end
-    raise Minitest::Assertion,
-          'expected Quonfig::Errors::InitializationTimeoutError to raise on get' \
-      unless on_init == :raise
+    unless on_init == :raise
+      raise Minitest::Assertion,
+            'expected Quonfig::Errors::InitializationTimeoutError to raise on get'
+    end
 
     begin
       client.get(key)
@@ -259,7 +258,7 @@ module IntegrationTestHelpers
   def self.with_env(vars_hash)
     originals = {}
     vars_hash.each do |k, v|
-      originals[k] = ENV[k]
+      originals[k] = ENV.fetch(k, nil)
       ENV[k] = v
     end
     yield
@@ -371,10 +370,10 @@ module IntegrationTestHelpers
     expected_normalized, actual_normalized = align_for_comparison(expected_data, actual, kind)
     actual_normalized = scrub_optional_fields(actual_normalized, expected_normalized, kind)
 
-    unless actual_normalized == expected_normalized
-      raise Minitest::Assertion,
-            "[#{endpoint}] aggregator POST mismatch\n  expected: #{expected_normalized.inspect}\n  actual:   #{actual_normalized.inspect}"
-    end
+    return if actual_normalized == expected_normalized
+
+    raise Minitest::Assertion,
+          "[#{endpoint}] aggregator POST mismatch\n  expected: #{expected_normalized.inspect}\n  actual:   #{actual_normalized.inspect}"
   end
 
   # Normalize ordering on both sides for comparison. Telemetry payloads
@@ -386,7 +385,7 @@ module IntegrationTestHelpers
   def self.align_for_comparison(expected, actual, kind)
     case normalize_kind(kind)
     when :evaluation_summary
-      sort_key = ->(row) { [row['key'].to_s, (row.dig('summary', 'conditional_value_index') || 0)] }
+      sort_key = ->(row) { [row['key'].to_s, row.dig('summary', 'conditional_value_index') || 0] }
       [expected.is_a?(Array) ? expected.sort_by(&sort_key) : expected,
        actual.is_a?(Array)   ? actual.sort_by(&sort_key)   : actual]
     when :context_shape
@@ -412,7 +411,7 @@ module IntegrationTestHelpers
       next row unless row.is_a?(Hash) && exp_row.is_a?(Hash)
       next row if exp_row.key?('selected_value')
 
-      row.reject { |k, _| k == 'selected_value' }
+      row.except('selected_value')
     end
   end
   private_class_method :scrub_optional_fields
@@ -551,8 +550,8 @@ module IntegrationTestHelpers
     # exercised in the YAML; if they ever are, this helper still picks
     # the first dedup'd record, matching sdk-node's wire shape.
     contexts = examples.first.dig('contextSet', 'contexts') || []
-    contexts.each_with_object({}) do |ctx, acc|
-      acc[ctx['type']] = ctx['values']
+    contexts.to_h do |ctx|
+      [ctx['type'], ctx['values']]
     end
   end
   private_class_method :example_contexts_post
@@ -604,9 +603,7 @@ module IntegrationTestHelpers
           'config_row_index' => counter['configRowIndex'],
           'conditional_value_index' => counter['conditionalValueIndex']
         }
-        if counter.key?('weightedValueIndex')
-          summary_block['weighted_value_index'] = counter['weightedValueIndex']
-        end
+        summary_block['weighted_value_index'] = counter['weightedValueIndex'] if counter.key?('weightedValueIndex')
         row['summary'] = summary_block
         rows << row
       end

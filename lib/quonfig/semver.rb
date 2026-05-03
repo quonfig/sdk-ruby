@@ -21,8 +21,8 @@ class SemanticVersion
   attr_reader :major, :minor, :patch, :prerelease, :build_metadata
 
   def self.parse(version_string)
-    raise ArgumentError, "version string cannot be nil" if version_string.nil?
-    raise ArgumentError, "version string cannot be empty" if version_string.empty?
+    raise ArgumentError, 'version string cannot be nil' if version_string.nil?
+    raise ArgumentError, 'version string cannot be empty' if version_string.empty?
 
     match = SEMVER_PATTERN.match(version_string)
     raise ArgumentError, "invalid semantic version format: #{version_string}" unless match
@@ -87,11 +87,11 @@ class SemanticVersion
     result
   end
 
-  private
-
   def self.numeric?(str)
     str.to_i.to_s == str
   end
+
+  private
 
   def compare_prerelease(pre1, pre2)
     # If both are empty, they're equal
@@ -118,9 +118,7 @@ class SemanticVersion
 
   def compare_prerelease_identifiers(id1, id2)
     # If both are numeric, compare numerically
-    if self.class.numeric?(id1) && self.class.numeric?(id2)
-      return id1.to_i <=> id2.to_i
-    end
+    return id1.to_i <=> id2.to_i if self.class.numeric?(id1) && self.class.numeric?(id2)
 
     # If only one is numeric, numeric ones have lower precedence
     return -1 if self.class.numeric?(id1)

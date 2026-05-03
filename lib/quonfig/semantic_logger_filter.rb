@@ -27,8 +27,8 @@ module Quonfig
     LEVELS = {
       trace: 0,
       debug: 1,
-      info:  2,
-      warn:  3,
+      info: 2,
+      warn: 3,
       error: 4,
       fatal: 5
     }.freeze
@@ -42,7 +42,8 @@ module Quonfig
 
     def initialize(client, config_key:)
       unless self.class.semantic_logger_loaded?
-        raise LoadError, "semantic_logger gem is required for Quonfig::SemanticLoggerFilter. Add `gem 'semantic_logger'` to your Gemfile."
+        raise LoadError,
+              "semantic_logger gem is required for Quonfig::SemanticLoggerFilter. Add `gem 'semantic_logger'` to your Gemfile."
       end
 
       @client = client

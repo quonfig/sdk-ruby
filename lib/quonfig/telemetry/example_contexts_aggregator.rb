@@ -45,7 +45,7 @@ module Quonfig
       # Drain accumulated examples into a single telemetry event payload
       # matching api-telemetry's ExampleContextsSchema, or +nil+ if empty.
       def drain_event
-        return nil if @data.size.zero?
+        return nil if @data.empty?
 
         to_ship = prepare_data
 

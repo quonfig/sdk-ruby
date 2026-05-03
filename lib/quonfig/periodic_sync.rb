@@ -5,7 +5,7 @@ module Quonfig
     LOG = Quonfig::InternalLogger.new(self)
 
     def sync
-      return if @data.size.zero?
+      return if @data.empty?
 
       LOG.debug "Syncing #{@data.size} items"
 

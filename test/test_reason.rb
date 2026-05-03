@@ -8,7 +8,7 @@ require 'quonfig/reason'
 class TestReason < Minitest::Test
   FakeCriterion = Struct.new(:operator)
   FakeConditionalValue = Struct.new(:criteria)
-  FakeRow = Struct.new(:values, :project_env_id)
+  FakeRow = Struct.new(:values, :project_env_id) # rubocop:disable Lint/StructNewOverride
   FakeConfig = Struct.new(:rows)
 
   ALWAYS_TRUE = FakeCriterion.new(:ALWAYS_TRUE)
@@ -24,9 +24,9 @@ class TestReason < Minitest::Test
 
   def targeted_config
     FakeConfig.new([
-      FakeRow.new([DEFAULT_CV], 0),
-      FakeRow.new([RULE_CV, ALWAYS_TRUE_CV], 1)
-    ])
+                     FakeRow.new([DEFAULT_CV], 0),
+                     FakeRow.new([RULE_CV, ALWAYS_TRUE_CV], 1)
+                   ])
   end
 
   def test_default_for_default_only_config

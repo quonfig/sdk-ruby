@@ -17,7 +17,7 @@ class TestEvaluationSummariesAggregator < Minitest::Test
       selected_value: 'hello',
       reason: 1
     }
-    agg.record(**defaults.merge(overrides))
+    agg.record(**defaults, **overrides)
   end
 
   def test_record_dedupes_identical_evaluations_into_one_counter
@@ -50,7 +50,7 @@ class TestEvaluationSummariesAggregator < Minitest::Test
     counters = summaries[0]['counters']
     assert_equal 2, counters.size
 
-    by_idx = counters.each_with_object({}) { |c, h| h[c['conditionalValueIndex']] = c['count'] }
+    by_idx = counters.to_h { |c| [c['conditionalValueIndex'], c['count']] }
     assert_equal 1, by_idx[0]
     assert_equal 2, by_idx[1]
   end
@@ -65,7 +65,7 @@ class TestEvaluationSummariesAggregator < Minitest::Test
     summaries = agg.drain_event['summaries']['summaries']
     assert_equal 2, summaries.size
 
-    by_key = summaries.each_with_object({}) { |s, h| h[s['key']] = s }
+    by_key = summaries.to_h { |s| [s['key'], s] }
     assert_equal 'config',        by_key['alpha']['type']
     assert_equal 'feature_flag',  by_key['beta']['type']
     assert_equal 2, by_key['alpha']['counters'][0]['count']
@@ -131,7 +131,7 @@ class TestEvaluationSummariesAggregator < Minitest::Test
     record_eval(agg, selected_value: %w[a b],   conditional_value_index: 4)
 
     counters = agg.drain_event['summaries']['summaries'][0]['counters']
-    by_idx = counters.each_with_object({}) { |c, h| h[c['conditionalValueIndex']] = c['selectedValue'] }
+    by_idx = counters.to_h { |c| [c['conditionalValueIndex'], c['selectedValue']] }
 
     assert_equal({ 'bool'       => true },  by_idx[0])
     assert_equal({ 'int'        => 3 },     by_idx[1])

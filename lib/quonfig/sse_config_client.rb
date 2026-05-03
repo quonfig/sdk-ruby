@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+
 require 'base64'
 require 'json'
 
@@ -51,15 +52,15 @@ module Quonfig
         loop do
           sleep @options.sleep_delay_for_new_connection_check
 
-          if @client.closed?
-            closed_count += @options.sleep_delay_for_new_connection_check
+          next unless @client.closed?
 
-            if closed_count > @options.seconds_between_new_connection
-              closed_count = 0
-              @logger.debug 'Reconnecting SSE client'
-              @client = connect(&load_configs)
-            end
-          end
+          closed_count += @options.sleep_delay_for_new_connection_check
+
+          next unless closed_count > @options.seconds_between_new_connection
+
+          closed_count = 0
+          @logger.debug 'Reconnecting SSE client'
+          @client = connect(&load_configs)
         end
       end
     end
@@ -79,7 +80,7 @@ module Quonfig
           if event.data.nil? || event.data.empty?
             @logger.error "SSE Streaming Error: Received empty data for url #{url}"
             client.close
-            return
+            next
           end
 
           begin
@@ -87,7 +88,7 @@ module Quonfig
           rescue JSON::ParserError => e
             @logger.error "SSE Streaming Error: Failed to parse JSON for url #{url}: #{e.message}"
             client.close
-            return
+            next
           end
 
           envelope = Quonfig::ConfigEnvelope.new(
@@ -116,7 +117,7 @@ module Quonfig
     def headers
       auth = "1:#{@prefab_options.sdk_key}"
       auth_string = Base64.strict_encode64(auth)
-      return {
+      {
         'Authorization' => "Basic #{auth_string}",
         'Accept' => 'text/event-stream',
         'X-Quonfig-SDK-Version' => "ruby-#{Quonfig::VERSION}"
@@ -126,9 +127,7 @@ module Quonfig
     def source
       @source_index = @source_index.nil? ? 0 : @source_index + 1
 
-      if @source_index >= @prefab_options.sse_api_urls.size
-        @source_index = 0
-      end
+      @source_index = 0 if @source_index >= @prefab_options.sse_api_urls.size
 
       @prefab_options.sse_api_urls[@source_index]
     end

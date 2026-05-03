@@ -58,6 +58,7 @@ class TestClientNetworkMode < Minitest::Test
     # Wait for server to be ready.
     50.times do
       break if tcp_open?
+
       sleep 0.05
     end
   end

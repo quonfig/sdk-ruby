@@ -42,10 +42,9 @@ module Quonfig
         duped = @data.dup
         @data.clear
 
-        duped.inject({}) do |acc, (name, key, type)|
+        duped.each_with_object({}) do |(name, key, type), acc|
           acc[name] ||= {}
           acc[name][key] = type
-          acc
         end
       end
 
@@ -53,7 +52,7 @@ module Quonfig
       # matching api-telemetry's ContextShapesSchema. Returns +nil+ when
       # there is nothing to ship — the reporter should skip empty events.
       def drain_event
-        return nil if @data.size.zero?
+        return nil if @data.empty?
 
         shapes = prepare_data.map do |name, field_types|
           { 'name' => name, 'fieldTypes' => field_types }

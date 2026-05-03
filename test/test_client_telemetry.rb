@@ -10,8 +10,13 @@ class TestClientTelemetry < Minitest::Test
   class FakeHttpConnection
     FakeResponse = Struct.new(:status)
     attr_reader :posts
-    def initialize; @posts = []; end
-    def post(path, body); @posts << [path, body]; FakeResponse.new(200); end
+
+    def initialize = @posts = []
+
+    def post(path, body)
+      @posts << [path, body]
+      FakeResponse.new(200)
+    end
   end
 
   # Plain ConfigResponse-shaped hash (matches Datadir.to_config_response).
@@ -93,14 +98,14 @@ class TestClientTelemetry < Minitest::Test
   def test_get_with_targeting_rule_reports_targeting_match
     store = Quonfig::ConfigStore.new
     store.set(CONFIG_KEY, make_config(
-      key: CONFIG_KEY,
-      value: 'targeted',
-      criteria: [{
-        'operator' => 'PROP_IS_ONE_OF',
-        'propertyName' => 'user.tier',
-        'valueToMatch' => { 'type' => 'string_list', 'value' => ['pro'] }
-      }]
-    ))
+                            key: CONFIG_KEY,
+                            value: 'targeted',
+                            criteria: [{
+                              'operator' => 'PROP_IS_ONE_OF',
+                              'propertyName' => 'user.tier',
+                              'valueToMatch' => { 'type' => 'string_list', 'value' => ['pro'] }
+                            }]
+                          ))
 
     client, _reporter, summaries_agg, _conn = make_client_with_telemetry(store)
     client.get(CONFIG_KEY, 'fallback', 'user' => { 'key' => 'u1', 'tier' => 'pro' })

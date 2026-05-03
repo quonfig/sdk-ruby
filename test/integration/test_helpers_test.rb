@@ -33,11 +33,11 @@ class TestIntegrationHelpers < Minitest::Test
 
   def test_env_vars_for_encryption_and_env_lookups_are_set_at_load
     assert_equal 'c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221',
-                 ENV['PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY']
+                 ENV.fetch('PREFAB_INTEGRATION_TEST_ENCRYPTION_KEY', nil)
     # IS_A_NUMBER / NOT_A_NUMBER support the env-var lookup integration tests.
-    assert_equal '1234', ENV['IS_A_NUMBER']
-    assert_equal 'not_a_number', ENV['NOT_A_NUMBER']
-    assert_nil ENV['MISSING_ENV_VAR']
+    assert_equal '1234', ENV.fetch('IS_A_NUMBER', nil)
+    assert_equal 'not_a_number', ENV.fetch('NOT_A_NUMBER', nil)
+    assert_nil ENV.fetch('MISSING_ENV_VAR', nil)
   end
 
   def test_with_env_sets_and_restores
@@ -46,14 +46,14 @@ class TestIntegrationHelpers < Minitest::Test
 
     IntegrationTestHelpers.with_env(
       'ORIGINAL_PRESENT' => 'overridden',
-      'ORIGINAL_ABSENT'  => 'temporary'
+      'ORIGINAL_ABSENT' => 'temporary'
     ) do
-      assert_equal 'overridden', ENV['ORIGINAL_PRESENT']
-      assert_equal 'temporary',  ENV['ORIGINAL_ABSENT']
+      assert_equal 'overridden', ENV.fetch('ORIGINAL_PRESENT', nil)
+      assert_equal 'temporary',  ENV.fetch('ORIGINAL_ABSENT', nil)
     end
 
-    assert_equal 'keep-me', ENV['ORIGINAL_PRESENT']
-    assert_nil ENV['ORIGINAL_ABSENT']
+    assert_equal 'keep-me', ENV.fetch('ORIGINAL_PRESENT', nil)
+    assert_nil ENV.fetch('ORIGINAL_ABSENT', nil)
   ensure
     ENV.delete('ORIGINAL_PRESENT')
     ENV.delete('ORIGINAL_ABSENT')
@@ -68,6 +68,6 @@ class TestIntegrationHelpers < Minitest::Test
     rescue RuntimeError
       # swallow — we only care that ENV was cleaned up
     end
-    assert_nil ENV['ROLLBACK_ME']
+    assert_nil ENV.fetch('ROLLBACK_ME', nil)
   end
 end

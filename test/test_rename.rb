@@ -24,8 +24,8 @@ class TestRename < Minitest::Test
     # NOTE: the REFORGE_/PREFAB_ keys below are intentionally spelled out in string literals
     # so the bulk rename tool does not touch them — we are asserting that the NEW env var name
     # is the one the SDK reads.
-    old_key_a = 'REFORGE_' + 'BACKEND_SDK_KEY'
-    old_key_b = 'PREFAB_' + 'API_KEY'
+    old_key_a = 'REFORGE_BACKEND_SDK_KEY'
+    old_key_b = 'PREFAB_API_KEY'
     original = ENV.to_h.slice('QUONFIG_BACKEND_SDK_KEY', old_key_a, old_key_b)
     ENV.delete(old_key_a)
     ENV.delete(old_key_b)

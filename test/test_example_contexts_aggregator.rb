@@ -87,7 +87,7 @@ class TestExampleContextsAggregator < Minitest::Test
 
     first = examples[0]
     assert_kind_of Integer, first['timestamp']
-    assert first['timestamp'] > 0
+    assert first['timestamp'].positive?
 
     contexts_list = first['contextSet']['contexts']
     user_ctx = contexts_list.find { |c| c['type'] == 'user' }

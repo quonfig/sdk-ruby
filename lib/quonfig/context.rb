@@ -47,7 +47,7 @@ module Quonfig
 
         @contexts[name.to_s] = NamedContext.new(name, values)
         values.each do |key, value|
-          @flattened[name.to_s + '.' + key.to_s] = value
+          @flattened["#{name}.#{key}"] = value
         end
       end
     end
@@ -59,12 +59,12 @@ module Quonfig
     def set(name, hash)
       @contexts[name.to_s] = NamedContext.new(name, hash)
       hash.each do |key, value|
-        @flattened[name.to_s + '.' + key.to_s] = value
+        @flattened["#{name}.#{key}"] = value
       end
     end
 
     def get(property_key, scope: nil)
-      property_key = BLANK_CONTEXT_NAME + '.' + property_key unless property_key.include?('.')
+      property_key = "#{BLANK_CONTEXT_NAME}.#{property_key}" unless property_key.include?('.')
       @flattened[property_key]
     end
 
@@ -94,11 +94,12 @@ module Quonfig
       @contexts.values.map do |ctx|
         h = ctx.to_h
         v = h['key'] || h[:key] || h['trackingId'] || h[:trackingId]
-        v.nil? ? nil : v.to_s
+        v&.to_s
       end.compact.reject(&:empty?).sort.join('|')
     end
 
     include Comparable
+
     def <=>(other)
       if other.is_a?(Quonfig::Context)
         to_h <=> other.to_h

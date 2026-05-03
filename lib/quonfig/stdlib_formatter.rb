@@ -45,11 +45,11 @@ module Quonfig
     # every label the stdlib actually emits.
     SEVERITY_TO_LEVEL = {
       'DEBUG' => :debug,
-      'INFO'  => :info,
-      'WARN'  => :warn,
+      'INFO' => :info,
+      'WARN' => :warn,
       'ERROR' => :error,
       'FATAL' => :fatal,
-      'ANY'   => :fatal # Logger::UNKNOWN formats as "ANY"
+      'ANY' => :fatal # Logger::UNKNOWN formats as "ANY"
     }.freeze
 
     # Build a formatter Proc. Exposed on +Quonfig::Client#stdlib_formatter+;

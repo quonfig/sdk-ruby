@@ -20,9 +20,10 @@ module Quonfig
     module_function
 
     def compute(config:, conditional_value:, weighted_value_index: nil)
-      return SPLIT if weighted_value_index && weighted_value_index.positive?
+      return SPLIT if weighted_value_index&.positive?
       return RULE_MATCH if targeting_rules?(config)
       return RULE_MATCH if non_always_true_criteria?(conditional_value)
+
       DEFAULT
     end
 

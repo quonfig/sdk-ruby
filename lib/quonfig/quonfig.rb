@@ -51,8 +51,8 @@ module Quonfig
   end
 
   def self.ensure_initialized(key = nil)
-    if !defined?(@singleton) || @singleton.nil?
-      raise Quonfig::Errors::UninitializedError.new(key)
-    end
+    return unless !defined?(@singleton) || @singleton.nil?
+
+    raise Quonfig::Errors::UninitializedError, key
   end
 end

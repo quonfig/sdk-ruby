@@ -108,7 +108,7 @@ class TestStdlibFormatter < Minitest::Test
     assert_includes out, 'INFO'
     assert_includes out, 'MyApp::Foo'
     assert_includes out, 'hello world'
-    assert out.end_with?("\n"), "formatter output should end with a newline"
+    assert out.end_with?("\n"), 'formatter output should end with a newline'
   end
 
   # ---- progname -> context ---------------------------------------------

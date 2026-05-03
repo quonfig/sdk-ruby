@@ -9,9 +9,7 @@ module Quonfig
     class InvalidEnvironmentError < Quonfig::Error
       def initialize(environment, available = nil)
         message = "[quonfig] Environment \"#{environment}\" not found in workspace"
-        if available && !Array(available).empty?
-          message += "; available environments: #{Array(available).join(', ')}"
-        end
+        message += "; available environments: #{Array(available).join(', ')}" if available && !Array(available).empty?
         super(message)
       end
     end

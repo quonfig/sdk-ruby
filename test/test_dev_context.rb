@@ -16,7 +16,7 @@ class TestDevContext < Minitest::Test
     super
     @tmphome = Dir.mktmpdir('quonfig-dev-ctx-')
     FileUtils.mkdir_p(File.join(@tmphome, '.quonfig'))
-    @old_home = ENV.fetch('HOME', nil)
+    @old_home = Dir.home
     ENV['HOME'] = @tmphome
     ENV.delete('QUONFIG_DEV_CONTEXT')
   end

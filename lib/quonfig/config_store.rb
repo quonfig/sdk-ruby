@@ -34,7 +34,7 @@ module Quonfig
     end
 
     def clear
-      @configs.keys.each { |k| @configs.delete(k) }
+      @configs.each_key { |k| @configs.delete(k) }
     end
 
     def keys

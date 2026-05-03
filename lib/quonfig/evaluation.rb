@@ -16,13 +16,15 @@ module Quonfig
     end
 
     def reason
-      @reason ||= @conditional_value ?
-        Quonfig::Reason.compute(
-          config: @config,
-          conditional_value: @conditional_value,
-          weighted_value_index: deepest_value.weighted_value_index
-        ) :
-        Quonfig::Reason::UNKNOWN
+      @reason ||= if @conditional_value
+                    Quonfig::Reason.compute(
+                      config: @config,
+                      conditional_value: @conditional_value,
+                      weighted_value_index: deepest_value.weighted_value_index
+                    )
+                  else
+                    Quonfig::Reason::UNKNOWN
+                  end
     end
 
     def unwrapped_value
@@ -54,7 +56,8 @@ module Quonfig
           selected_value: deepest_value.reportable_wrapped_value,
           weighted_value_index: deepest_value.weighted_value_index,
           selected_index: nil # TODO
-        })
+        }
+      )
     end
 
     def deepest_value

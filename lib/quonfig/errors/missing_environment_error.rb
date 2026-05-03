@@ -11,7 +11,7 @@ module Quonfig
       def initialize(message = nil)
         message ||= '[quonfig] Environment required for datadir mode; ' \
                     'set the `environment` option or QUONFIG_ENVIRONMENT env var'
-        super(message)
+        super
       end
     end
   end

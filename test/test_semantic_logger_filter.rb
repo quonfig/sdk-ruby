@@ -51,7 +51,7 @@ class TestSemanticLoggerFilter < Minitest::Test
   end
 
   def test_passes_through_when_level_meets_configured_minimum
-    filter, _ = filter_for(:info)
+    filter, = filter_for(:info)
 
     assert_equal true, filter.call(make_log('Anything', :info))
     assert_equal true, filter.call(make_log('Anything', :warn))
@@ -60,7 +60,7 @@ class TestSemanticLoggerFilter < Minitest::Test
   end
 
   def test_suppresses_below_configured_minimum
-    filter, _ = filter_for(:warn)
+    filter, = filter_for(:warn)
 
     assert_equal false, filter.call(make_log('Anything', :trace))
     assert_equal false, filter.call(make_log('Anything', :debug))
@@ -69,7 +69,7 @@ class TestSemanticLoggerFilter < Minitest::Test
   end
 
   def test_missing_key_falls_through_to_semantic_logger_default
-    filter, _ = filter_for(nil) # FakeClient returns the default (nil) when configured level is nil
+    filter, = filter_for(nil) # FakeClient returns the default (nil) when configured level is nil
 
     assert_equal true, filter.call(make_log('Anything', :trace))
     assert_equal true, filter.call(make_log('Anything', :debug))
@@ -97,7 +97,7 @@ class TestSemanticLoggerFilter < Minitest::Test
   def test_no_dotted_path_traversal_or_get_log_level
     # Verifies the legacy hierarchical walk is gone — the filter must NOT
     # synthesize keys like "log-levels.my_app" or call any `get_log_level`.
-    refute Quonfig::SemanticLoggerFilter.instance_methods.include?(:get_log_level)
+    refute Quonfig::SemanticLoggerFilter.method_defined?(:get_log_level)
 
     filter, client = filter_for(:info)
     filter.call(make_log('MyApp::Foo::Bar', :info))
@@ -111,7 +111,7 @@ class TestSemanticLoggerFilter < Minitest::Test
     # The old normalize() method converted "MyApp::Foo" → "my_app.foo".
     # It is intentionally removed so callers see native Ruby class names in
     # context telemetry and rule matching.
-    refute Quonfig::SemanticLoggerFilter.instance_methods.include?(:normalize),
+    refute Quonfig::SemanticLoggerFilter.method_defined?(:normalize),
            'normalize() should be removed — logger names are passed through as-is'
   end
 
@@ -127,7 +127,7 @@ class TestSemanticLoggerFilter < Minitest::Test
   end
 
   def test_string_level_from_config
-    filter, _ = filter_for('warn')
+    filter, = filter_for('warn')
 
     assert_equal false, filter.call(make_log('Anything', :info))
     assert_equal true,  filter.call(make_log('Anything', :warn))

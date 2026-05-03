@@ -30,10 +30,10 @@ class Murmur3
     numbers = str.unpack('V*C*')
     tailn = str.length % 4
     tail = numbers.slice!(numbers.size - tailn, tailn)
-    for k1 in numbers
+    numbers.each do |k1|
       h1 ^= murmur3_32__mmix(k1)
       h1 = murmur3_32_rotl(h1, 13)
-      h1 = (h1 * 5 + 0xe6546b64) & MASK32
+      h1 = ((h1 * 5) + 0xe6546b64) & MASK32
     end
 
     unless tail.empty?

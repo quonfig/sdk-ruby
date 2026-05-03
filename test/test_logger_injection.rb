@@ -24,10 +24,10 @@ class TestLoggerInjection < Minitest::Test
       @messages = Hash.new { |h, k| h[k] = [] }
     end
 
-    def debug(msg = nil); @messages[:debug] << (msg || (block_given? ? yield : nil)); end
-    def info(msg = nil); @messages[:info] << (msg || (block_given? ? yield : nil)); end
-    def warn(msg = nil); @messages[:warn] << (msg || (block_given? ? yield : nil)); end
-    def error(msg = nil); @messages[:error] << (msg || (block_given? ? yield : nil)); end
+    def debug(msg = nil) = @messages[:debug] << (msg || (block_given? ? yield : nil))
+    def info(msg = nil) = @messages[:info] << (msg || (block_given? ? yield : nil))
+    def warn(msg = nil) = @messages[:warn] << (msg || (block_given? ? yield : nil))
+    def error(msg = nil) = @messages[:error] << (msg || (block_given? ? yield : nil))
   end
 
   # Even more partial — has only warn/error. Used to verify InternalLogger
@@ -39,15 +39,15 @@ class TestLoggerInjection < Minitest::Test
       @messages = Hash.new { |h, k| h[k] = [] }
     end
 
-    def warn(msg = nil); @messages[:warn] << msg; end
-    def error(msg = nil); @messages[:error] << msg; end
+    def warn(msg = nil) = @messages[:warn] << msg
+    def error(msg = nil) = @messages[:error] << msg
   end
 
   def setup
     super
     @tmphome = Dir.mktmpdir('quonfig-logger-inj-')
     FileUtils.mkdir_p(File.join(@tmphome, '.quonfig'))
-    @old_home = ENV.fetch('HOME', nil)
+    @old_home = Dir.home
     ENV['HOME'] = @tmphome
     ENV.delete('QUONFIG_DEV_CONTEXT')
   end
@@ -76,9 +76,9 @@ class TestLoggerInjection < Minitest::Test
       store: Quonfig::ConfigStore.new
     )
 
-    warn_lines = fake.messages[:warn].compact.map(&:to_s).join("\n")
+    warn_lines = fake.messages[:warn].compact.join("\n")
     assert_match(/could not parse/, warn_lines,
-      "expected fake logger to receive dev-context parse warning, got: #{fake.messages.inspect}")
+                 "expected fake logger to receive dev-context parse warning, got: #{fake.messages.inspect}")
   end
 
   def test_options_exposes_logger_attr
@@ -104,7 +104,7 @@ class TestLoggerInjection < Minitest::Test
       store: Quonfig::ConfigStore.new
     )
 
-    warn_lines = partial.messages[:warn].compact.map(&:to_s).join("\n")
+    warn_lines = partial.messages[:warn].compact.join("\n")
     assert_match(/could not parse/, warn_lines)
   end
 
@@ -115,7 +115,7 @@ class TestLoggerInjection < Minitest::Test
     log = Quonfig::InternalLogger.new(self.class)
     log.warn('hello from sdk')
 
-    warn_lines = fake.messages[:warn].compact.map(&:to_s).join("\n")
+    warn_lines = fake.messages[:warn].compact.join("\n")
     assert_match(/hello from sdk/, warn_lines)
   ensure
     Quonfig::InternalLogger.user_logger = nil

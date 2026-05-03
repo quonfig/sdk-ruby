@@ -176,7 +176,7 @@ class TestResolverTrio < Minitest::Test
   end
 
   def with_env(name, value)
-    original = ENV[name]
+    original = ENV.fetch(name, nil)
     ENV[name] = value
     yield
   ensure

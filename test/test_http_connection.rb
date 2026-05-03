@@ -11,7 +11,7 @@ module Quonfig
 
     def test_uses_basic_auth_with_username_1
       conn = HttpConnection.new(URI, SDK_KEY).connection
-      expected = 'Basic ' + Base64.strict_encode64("1:#{SDK_KEY}")
+      expected = "Basic #{Base64.strict_encode64("1:#{SDK_KEY}")}"
       assert_equal expected, conn.headers['Authorization']
     end
 

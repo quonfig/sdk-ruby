@@ -8,7 +8,7 @@ class TestEncryption < Minitest::Test
 
     enc = Quonfig::Encryption.new(secret)
 
-    clear_text = "hello world"
+    clear_text = 'hello world'
     encrypted = enc.encrypt(clear_text)
     decrypted = enc.decrypt(encrypted)
     assert_equal clear_text, decrypted

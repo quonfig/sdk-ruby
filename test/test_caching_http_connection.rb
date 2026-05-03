@@ -92,6 +92,7 @@ module Quonfig
 
       mock.verify
     end
+
     def test_handles_304_not_modified
       initial_response = Faraday::Response.new(
         status: 200,
@@ -158,6 +159,7 @@ module Quonfig
 
       mock.verify
     end
+
     def test_cache_is_shared_across_instances
       HttpConnection.stub :new, @http_connection do
         instance1 = CachingHttpConnection.new(@uri, @sdk_key)

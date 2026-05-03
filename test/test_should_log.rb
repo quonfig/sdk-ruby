@@ -132,7 +132,7 @@ class TestShouldLog < Minitest::Test
     # path and verify the evaluator would see it. We assert via the public
     # contract: context reaches get(), so we patch get() temporarily.
     captured = []
-    client.define_singleton_method(:get) do |key, default = nil, jit_context = nil|
+    client.define_singleton_method(:get) do |key, _default = nil, jit_context = nil|
       captured << { key: key, jit_context: jit_context }
       'trace'
     end
@@ -150,7 +150,7 @@ class TestShouldLog < Minitest::Test
     client = client_with(store, logger_key: LOG_LEVEL_KEY)
 
     captured = []
-    client.define_singleton_method(:get) do |key, default = nil, jit_context = nil|
+    client.define_singleton_method(:get) do |_key, _default = nil, jit_context = nil|
       captured << jit_context
       'trace'
     end
@@ -175,7 +175,7 @@ class TestShouldLog < Minitest::Test
     client = client_with(store, logger_key: LOG_LEVEL_KEY)
 
     captured = []
-    client.define_singleton_method(:get) do |key, default = nil, jit_context = nil|
+    client.define_singleton_method(:get) do |_key, _default = nil, jit_context = nil|
       captured << jit_context
       'trace'
     end

@@ -2,7 +2,7 @@
 
 module Quonfig
   class CachingHttpConnection
-    CACHE_SIZE = 2.freeze
+    CACHE_SIZE = 2
     CacheEntry = Struct.new(:data, :etag, :expires_at)
 
     class << self
@@ -68,7 +68,7 @@ module Quonfig
       return response if cache_control.include?('no-store')
 
       # Calculate expiration
-      max_age = cache_control.match(/max-age=(\d+)/)&.captures&.first&.to_i
+      max_age = cache_control[/max-age=(\d+)/, 1]&.to_i
       expires_at = max_age ? now + max_age : nil
 
       # Cache the response if we have caching headers

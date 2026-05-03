@@ -126,7 +126,7 @@ class TestContext < Minitest::Test
   private
 
   def stringify(hash)
-    hash.map { |k, v| [k.to_s, stringify_keys(v)] }.to_h
+    hash.to_h { |k, v| [k.to_s, stringify_keys(v)] }
   end
 
   def stringify_keys(value)

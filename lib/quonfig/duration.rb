@@ -20,7 +20,7 @@ module Quonfig
       minutes = match[:minutes]&.to_f || 0
       seconds = match[:seconds]&.to_f || 0
 
-      (days * DAYS_IN_SECONDS + hours * HOURS_IN_SECONDS + minutes * MINUTES_IN_SECONDS + seconds)
+      ((days * DAYS_IN_SECONDS) + (hours * HOURS_IN_SECONDS) + (minutes * MINUTES_IN_SECONDS) + seconds)
     end
 
     def in_seconds
@@ -52,7 +52,7 @@ module Quonfig
     end
 
     def as_json
-      { ms:  in_seconds * 1000, seconds: in_seconds }
+      { ms: in_seconds * 1000, seconds: in_seconds }
     end
   end
 end

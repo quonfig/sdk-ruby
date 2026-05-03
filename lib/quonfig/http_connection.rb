@@ -18,9 +18,7 @@ module Quonfig
       @sdk_key = sdk_key
     end
 
-    def uri
-      @uri
-    end
+    attr_reader :uri
 
     def get(path, headers = {})
       connection(headers).get(path)
@@ -40,7 +38,7 @@ module Quonfig
     private
 
     def auth_header
-      'Basic ' + Base64.strict_encode64("1:#{@sdk_key}")
+      "Basic #{Base64.strict_encode64("1:#{@sdk_key}")}"
     end
   end
 end

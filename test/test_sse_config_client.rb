@@ -15,11 +15,11 @@ class TestSSEConfigClient < Minitest::Test
     fake = OpenStruct.new(closed?: false)
     fake.define_singleton_method(:on_event) { |&_b| }
     fake.define_singleton_method(:on_error) { |&_b| }
-    fake.define_singleton_method(:close) { }
+    fake.define_singleton_method(:close) {}
 
-    SSE::Client.stub :new, ->(url, *_args, **_kwargs, &block) {
+    SSE::Client.stub :new, lambda { |url, *_args, **_kwargs, &block|
       captured_url = url
-      block.call(fake) if block
+      block&.call(fake)
       fake
     } do
       client.connect { |_e, _ev, _s| }
@@ -38,11 +38,11 @@ class TestSSEConfigClient < Minitest::Test
     fake = Object.new
     fake.define_singleton_method(:on_event) { |&block| event_handler = block }
     fake.define_singleton_method(:on_error) { |&_b| }
-    fake.define_singleton_method(:close) { }
+    fake.define_singleton_method(:close) {}
     fake.define_singleton_method(:closed?) { false }
 
-    SSE::Client.stub :new, ->(*_args, **_kwargs, &block) {
-      block.call(fake) if block
+    SSE::Client.stub :new, lambda { |*_args, **_kwargs, &block|
+      block&.call(fake)
       fake
     } do
       client.connect do |envelope, event, source|
@@ -53,9 +53,9 @@ class TestSSEConfigClient < Minitest::Test
     end
 
     json_data = JSON.generate({
-      configs: [{ key: 'my.key', valueType: 'string', default: { rules: [] } }],
-      meta: { version: 'abc123', environment: 'prod' }
-    })
+                                configs: [{ key: 'my.key', valueType: 'string', default: { rules: [] } }],
+                                meta: { version: 'abc123', environment: 'prod' }
+                              })
 
     event_handler.call(OpenStruct.new(data: json_data))
 
@@ -201,6 +201,7 @@ class TestSSEConfigClient < Minitest::Test
 
   class ErroringEndpoint < WEBrick::HTTPServlet::AbstractServlet
     include SharedEndpointLogic
+
     NUMBER_OF_FAILURES = 5
 
     def do_GET(_request, response)
@@ -231,7 +232,7 @@ class TestSSEConfigClient < Minitest::Test
 
     # Simulate the on_event handler logic
     if mock_event.data.nil? || mock_event.data.empty?
-      logger.error "SSE Streaming Error: Received empty data for url http://test"
+      logger.error 'SSE Streaming Error: Received empty data for url http://test'
       mock_client.close
     end
 
@@ -248,7 +249,7 @@ class TestSSEConfigClient < Minitest::Test
     mock_client.expect(:close, nil)
 
     if mock_event.data.nil? || mock_event.data.empty?
-      logger.error "SSE Streaming Error: Received empty data for url http://test"
+      logger.error 'SSE Streaming Error: Received empty data for url http://test'
       mock_client.close
     end
 
@@ -265,7 +266,7 @@ class TestSSEConfigClient < Minitest::Test
     client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
 
     # Mock SSE::Client.new to capture the last_event_id argument
-    SSE::Client.stub :new, ->(*args, **kwargs, &block) {
+    SSE::Client.stub :new, lambda { |*_args, **kwargs|
       assert_equal '42', kwargs[:last_event_id], 'Expected last_event_id to be "42"'
       OpenStruct.new(closed?: false, close: nil)
     } do
@@ -276,7 +277,7 @@ class TestSSEConfigClient < Minitest::Test
     config_loader = OpenStruct.new(highwater_mark: nil)
     client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
 
-    SSE::Client.stub :new, ->(*args, **kwargs, &block) {
+    SSE::Client.stub :new, lambda { |*_args, **kwargs|
       assert_nil kwargs[:last_event_id], 'Expected last_event_id to be nil when highwater_mark is nil'
       OpenStruct.new(closed?: false, close: nil)
     } do
@@ -287,7 +288,7 @@ class TestSSEConfigClient < Minitest::Test
     config_loader = OpenStruct.new(highwater_mark: 0)
     client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
 
-    SSE::Client.stub :new, ->(*args, **kwargs, &block) {
+    SSE::Client.stub :new, lambda { |*_args, **kwargs|
       assert_nil kwargs[:last_event_id], 'Expected last_event_id to be nil when highwater_mark is 0'
       OpenStruct.new(closed?: false, close: nil)
     } do
