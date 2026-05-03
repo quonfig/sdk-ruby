@@ -47,11 +47,8 @@ jobs:
         continue-on-error: true
         run: bundle exec rubocop --no-color
 
-      # Soft-fail: faraday 1.10.3 has GHSA-33mh-2634-fwr2 (SSRF). Tracked
-      # in qfg-ubpz — remove continue-on-error once faraday is bumped.
       - name: Bundler-audit
         working-directory: sdk-ruby
-        continue-on-error: true
         run: bundle exec bundle-audit check --update
 
       # --force scans non-Rails code (sdk-ruby is a client gem, not a Rails
