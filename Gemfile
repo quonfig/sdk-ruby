@@ -10,8 +10,11 @@ gem 'activesupport', '>= 4'
 group :development do
   gem 'allocation_stats'
   gem 'benchmark-ips'
+  gem 'brakeman'
   gem 'bundler'
+  gem 'bundler-audit'
   gem 'rdoc'
+  gem 'rubocop'
   gem 'simplecov', '>= 0'
 end
 
