@@ -13,19 +13,19 @@ jobs:
         ruby-version: ['3.1', '3.2', '3.3']
     steps:
       - name: Checkout sdk-ruby
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           path: sdk-ruby
 
       - name: Checkout integration-test-data
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           repository: quonfig/integration-test-data
           path: integration-test-data
           ref: main
 
       - name: Set up Ruby ${{ matrix.ruby-version }}
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@e5517072e87f198d9533967ae13d97c11b604005  # v1.99.0
         with:
           ruby-version: ${{ matrix.ruby-version }}
           bundler-cache: true
