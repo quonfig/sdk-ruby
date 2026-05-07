@@ -51,6 +51,8 @@ module Quonfig
     OP_PROP_SEMVER_GREATER_THAN        = 'PROP_SEMVER_GREATER_THAN'
     OP_IN_SEG                          = 'IN_SEG'
     OP_NOT_IN_SEG                      = 'NOT_IN_SEG'
+    OP_IS_PRESENT                      = 'IS_PRESENT'
+    OP_IS_NOT_PRESENT                  = 'IS_NOT_PRESENT'
 
     MAGIC_CURRENT_TIME_PROPS = %w[quonfig.current-time prefab.current-time reforge.current-time].freeze
 
@@ -279,6 +281,17 @@ module Quonfig
           end
         end
         false
+
+      when OP_IS_PRESENT, OP_IS_NOT_PRESENT
+        # Presence is type-agnostic: empty string "", 0, and false are all
+        # PRESENT. Only nil / missing key (incl. nested) is NOT present.
+        # `lookup_context` already returns context_exists=true iff the
+        # resolved value is non-nil — exactly the semantic we need. Do not
+        # use ActiveSupport's #present? / #blank? here: they treat "" and
+        # false as blank, which is the wrong behaviour for this operator.
+        return context_exists if operator == OP_IS_PRESENT
+
+        !context_exists
 
       when OP_IN_SEG, OP_NOT_IN_SEG
         if match_value

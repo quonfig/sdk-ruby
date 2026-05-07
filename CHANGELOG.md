@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.13 - 2026-05-07
+
+- **Feat: `IS_PRESENT` and `IS_NOT_PRESENT` targeting operators (qfg-7jnb.6).** Both take only `propertyName` (no `valueToMatch`). `IS_PRESENT` resolves the dotted path against the merged context and returns true iff the value is non-nil. Type-agnostic — empty string `""`, `0`, and `false` all count as **present**; only `nil` / missing keys (including missing nested paths) are absent. `IS_NOT_PRESENT` is the negation. Implemented explicitly without ActiveSupport's `present?` / `blank?`, which would have given the wrong semantics on `""` and `false`. Matches sdk-node, sdk-go, sdk-python, sdk-ruby, sdk-javascript wire behaviour. Closes the integration-test parity gap that left 7 RSpec/Minitest cases red since the operators landed in `integration-test-data`.
+
 ## 0.0.12 - 2026-05-03
 
 - **Feat: pluggable `logger:` kwarg on `Quonfig::Client.new`.** Host apps can now pass `Rails.logger` (or any stdlib `Logger`-compatible instance) and have all SDK warnings/errors flow through it instead of bare stderr / SemanticLogger. Implemented as a class-level `Quonfig::InternalLogger.user_logger` override that all `LOG` constants respect at log-call time, so existing per-class `LOG` constants pick it up automatically. Duck-typed (responds to `debug`/`info`/`warn`/`error`); missing levels degrade gracefully. SemanticLogger auto-detection is unchanged when no logger is supplied. Also routes the two outlier `dev_context.rb` warns (file read / JSON parse failures) through `InternalLogger` so they pick up the host-supplied logger too. (qfg-mol-1qw.3)
