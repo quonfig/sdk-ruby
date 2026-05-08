@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-#
 # AUTO-GENERATED from integration-test-data/tests/eval/get_or_raise.yaml.
 # Regenerate with:
 #   cd integration-test-data/generators && npm run generate -- --target=ruby
@@ -24,7 +23,6 @@ class TestGetOrRaise < Minitest::Test
 
   # get_or_raise returns a default value instead of raising
   def test_get_or_raise_returns_a_default_value_instead_of_raising
-    IntegrationTestHelpers.build_resolver(@store)
     IntegrationTestHelpers.assert_get_with_default(self, @store, 'my-missing-key', {}, 'DEFAULT', 'DEFAULT')
   end
 

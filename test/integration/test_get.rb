@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-#
 # AUTO-GENERATED from integration-test-data/tests/eval/get.yaml.
 # Regenerate with:
 #   cd integration-test-data/generators && npm run generate -- --target=ruby
@@ -29,13 +28,11 @@ class TestGet < Minitest::Test
 
   # get returns a default for a missing value if a default is given
   def test_get_returns_a_default_for_a_missing_value_if_a_default_is_given
-    IntegrationTestHelpers.build_resolver(@store)
     IntegrationTestHelpers.assert_get_with_default(self, @store, 'my-missing-key', {}, 'DEFAULT', 'DEFAULT')
   end
 
   # get ignores a provided default if the key is found
   def test_get_ignores_a_provided_default_if_the_key_is_found
-    IntegrationTestHelpers.build_resolver(@store)
     IntegrationTestHelpers.assert_get_with_default(self, @store, 'my-test-key', {}, 'DEFAULT', 'my-test-value')
   end
 

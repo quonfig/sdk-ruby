@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-#
 # AUTO-GENERATED from integration-test-data/tests/eval/get_feature_flag.yaml.
 # Regenerate with:
 #   cd integration-test-data/generators && npm run generate -- --target=ruby

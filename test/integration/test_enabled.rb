@@ -1,6 +1,5 @@
 # frozen_string_literal: true
 
-#
 # AUTO-GENERATED from integration-test-data/tests/eval/enabled.yaml.
 # Regenerate with:
 #   cd integration-test-data/generators && npm run generate -- --target=ruby
