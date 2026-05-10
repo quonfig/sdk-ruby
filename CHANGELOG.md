@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.14 - 2026-05-10
+
+- **Feat: expose `variant` and `flag_metadata` on `EvaluationDetails` (qfg-9dbl).** OpenFeature's `EvaluationDetails` Ruby return type now carries the variant name and the flag-level metadata hash alongside the resolved value/reason. Brings sdk-ruby to parity with the other SDKs' detail surfaces and lets host apps (incl. the Ruby OpenFeature provider) read variant/metadata without re-fetching the config.
+- **Test: regenerate integration tests from rubocop-clean templates (qfg-vrck).** The integration suite under `test/integration/` is now generated from templates that pass `bundle exec rubocop` on first emit, so future regenerations don't trigger a follow-up autofix commit.
+
 ## 0.0.13 - 2026-05-07
 
 - **Feat: `IS_PRESENT` and `IS_NOT_PRESENT` targeting operators (qfg-7jnb.6).** Both take only `propertyName` (no `valueToMatch`). `IS_PRESENT` resolves the dotted path against the merged context and returns true iff the value is non-nil. Type-agnostic — empty string `""`, `0`, and `false` all count as **present**; only `nil` / missing keys (including missing nested paths) are absent. `IS_NOT_PRESENT` is the negation. Implemented explicitly without ActiveSupport's `present?` / `blank?`, which would have given the wrong semantics on `""` and `false`. Matches sdk-node, sdk-go, sdk-python, sdk-ruby, sdk-javascript wire behaviour. Closes the integration-test parity gap that left 7 RSpec/Minitest cases red since the operators landed in `integration-test-data`.
