@@ -188,6 +188,34 @@ class TestDatadir < Minitest::Test
     assert_equal 'a.config', store.get('a.config')['key']
   end
 
+  # qfg-rrms — schemas/ holds raw JSON Schema documents, not Configs. The
+  # loader must skip the directory entirely so a stray file there can't
+  # produce an envelope row with key=nil. Mirrors api-delivery and sdk-java.
+  def test_load_envelope_skips_schemas_subdir
+    schema_doc = { '$schema' => 'http://json-schema.org/draft-07/schema#', 'type' => 'object', 'properties' => { 'foo' => { 'type' => 'string' } } }
+    File.write(File.join(@tmpdir, 'schemas', 'foo.json'), JSON.generate(schema_doc))
+    write_config('configs', 'a.config.json', sample_config('a.config'))
+
+    envelope = Quonfig::Datadir.load_envelope(@tmpdir, 'Production')
+
+    keys = envelope.configs.map { |c| c['key'] }
+    assert_equal ['a.config'], keys
+    refute(envelope.configs.any? { |c| c['key'].nil? || c['key'].to_s.empty? },
+           'expected no entries with nil/empty key')
+  end
+
+  # qfg-rrms — defence-in-depth: even if a file lands in configs/ that
+  # happens to be missing a `key`, the loader must reject it rather than
+  # silently produce an empty-key stub. Matches api-delivery loader.go:95-97.
+  def test_load_envelope_raises_on_empty_key_config
+    write_config('configs', 'broken.json', { 'type' => 'config', 'valueType' => 'string' })
+
+    err = assert_raises(ArgumentError) do
+      Quonfig::Datadir.load_envelope(@tmpdir, 'Production')
+    end
+    assert_match(/empty key/i, err.message)
+  end
+
   # Verification against the real integration-test-data fixture (path-based).
   # Skips when the sibling repo is not present (e.g. limited CI checkouts).
   def test_load_store_with_integration_test_data_fixture

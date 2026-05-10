@@ -11,14 +11,16 @@ module Quonfig
   #   <datadir>/configs/*.json
   #   <datadir>/feature-flags/*.json
   #   <datadir>/segments/*.json
-  #   <datadir>/schemas/*.json
   #   <datadir>/log-levels/*.json
+  #
+  # schemas/ is intentionally excluded — those files are raw JSON Schema
+  # documents, not Configs, and SDKs do not consume them (qfg-uzsl).
   #
   # Each <type>/*.json file is a WorkspaceConfigDocument. The loader projects
   # it down to the ConfigResponse shape that the SSE/HTTP delivery path emits,
   # so ConfigStore consumes both transports uniformly.
   module Datadir
-    CONFIG_SUBDIRS = %w[configs feature-flags segments schemas log-levels].freeze
+    CONFIG_SUBDIRS = %w[configs feature-flags segments log-levels].freeze
 
     module_function
 
@@ -36,7 +38,10 @@ module Quonfig
            .select { |name| name.end_with?('.json') }
            .sort
            .each do |filename|
-          raw = JSON.parse(File.read(File.join(dir, filename)))
+          path = File.join(dir, filename)
+          raw = JSON.parse(File.read(path))
+          raise ArgumentError, "[quonfig] config has empty key — file is not a Quonfig Config: #{path}" if raw['key'].nil? || raw['key'].to_s.empty?
+
           configs << to_config_response(raw, env_id)
         end
       end
