@@ -239,4 +239,72 @@ class TestDetailsGetters < Minitest::Test
   ensure
     client&.stop
   end
+
+  # ---- variant + flag_metadata (qfg-9dbl) ----------------------------
+
+  def test_variant_static_for_always_true
+    client = fixture_client
+    details = client.get_bool_details('always.true')
+    assert_equal 'static', details.variant
+    md = details.flag_metadata
+    refute_nil md
+    assert_kind_of String, md['config_id']
+    assert_equal 'feature_flag', md['config_type']
+    assert_equal 'Production', md['environment']
+    refute md.key?('rule_index')
+    refute md.key?('weighted_value_index')
+  ensure
+    client&.stop
+  end
+
+  def test_variant_targeting_match_for_of_targeting
+    client = fixture_client
+    details = client.get_bool_details('of.targeting', context: { 'user' => { 'plan' => 'pro' } })
+    assert_equal 'targeting:0', details.variant
+    md = details.flag_metadata
+    assert_equal '18000000000000001', md['config_id']
+    assert_equal 'config', md['config_type']
+    assert_equal 0, md['rule_index']
+    refute md.key?('weighted_value_index')
+  ensure
+    client&.stop
+  end
+
+  def test_variant_split_for_of_weighted
+    client = fixture_client
+    # user-123 lands on a SPLIT outcome. Sweep a few until we find one;
+    # then assert variant string matches weighted_value_index.
+    saw = nil
+    %w[user-1 user-2 user-3 user-4 user-5 user-100 user-123].each do |uid|
+      d = client.get_string_details('of.weighted', context: { 'user' => { 'id' => uid } })
+      next unless d.reason == Details::REASON_SPLIT
+
+      saw = d
+      break
+    end
+    refute_nil saw, 'Expected at least one user id to land on SPLIT'
+    assert_match(/\Asplit:\d+\z/, saw.variant)
+    md = saw.flag_metadata
+    assert_equal '18000000000000002', md['config_id']
+    assert_equal 'config', md['config_type']
+    assert_equal saw.variant.split(':').last.to_i, md['weighted_value_index']
+    assert_kind_of Integer, md['rule_index']
+  ensure
+    client&.stop
+  end
+
+  def test_variant_default_for_flag_not_found
+    client = Quonfig::Client.new(Quonfig::Options.new, store: Quonfig::ConfigStore.new)
+    details = client.get_bool_details('does.not.exist')
+    assert_equal Details::REASON_ERROR, details.reason
+    assert_equal 'default', details.variant
+    refute_nil details.error_message
+  end
+
+  def test_variant_default_for_type_mismatch
+    client = static_client(key: 'bool.miss', value: 'oops', type: 'string')
+    details = client.get_bool_details('bool.miss')
+    assert_equal Details::REASON_ERROR, details.reason
+    assert_equal 'default', details.variant
+  end
 end

@@ -28,13 +28,16 @@ module Quonfig
     ERROR_TYPE_MISMATCH  = 'TYPE_MISMATCH'
     ERROR_GENERAL        = 'GENERAL'
 
-    attr_reader :value, :reason, :error_code, :error_message
+    attr_reader :value, :reason, :error_code, :error_message, :variant, :flag_metadata
 
-    def initialize(value:, reason:, error_code: nil, error_message: nil)
+    def initialize(value:, reason:, error_code: nil, error_message: nil,
+                   variant: nil, flag_metadata: nil)
       @value         = value
       @reason        = reason
       @error_code    = error_code
       @error_message = error_message
+      @variant       = variant
+      @flag_metadata = flag_metadata
     end
 
     def ==(other)
@@ -42,18 +45,22 @@ module Quonfig
         other.value == @value &&
         other.reason == @reason &&
         other.error_code == @error_code &&
-        other.error_message == @error_message
+        other.error_message == @error_message &&
+        other.variant == @variant &&
+        other.flag_metadata == @flag_metadata
     end
     alias eql? ==
 
     def hash
-      [@value, @reason, @error_code, @error_message].hash
+      [@value, @reason, @error_code, @error_message, @variant, @flag_metadata].hash
     end
 
     def inspect
       parts = ["value=#{@value.inspect}", "reason=#{@reason.inspect}"]
       parts << "error_code=#{@error_code.inspect}" if @error_code
       parts << "error_message=#{@error_message.inspect}" if @error_message
+      parts << "variant=#{@variant.inspect}" if @variant
+      parts << "flag_metadata=#{@flag_metadata.inspect}" if @flag_metadata
       "#<Quonfig::EvaluationDetails #{parts.join(' ')}>"
     end
   end

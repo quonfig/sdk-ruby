@@ -547,19 +547,25 @@ module Quonfig
             value: nil,
             reason: Quonfig::EvaluationDetails::REASON_ERROR,
             error_code: Quonfig::EvaluationDetails::ERROR_FLAG_NOT_FOUND,
-            error_message: e.message
+            error_message: e.message,
+            variant: build_variant(Quonfig::EvaluationDetails::REASON_ERROR, nil, nil),
+            flag_metadata: build_flag_metadata(nil, nil, nil, nil, nil)
           )
         end
 
       if result.nil?
         return Quonfig::EvaluationDetails.new(
           value: nil,
-          reason: Quonfig::EvaluationDetails::REASON_DEFAULT
+          reason: Quonfig::EvaluationDetails::REASON_DEFAULT,
+          variant: build_variant(Quonfig::EvaluationDetails::REASON_DEFAULT, nil, nil),
+          flag_metadata: build_flag_metadata(nil, nil, nil, nil, nil)
         )
       end
 
       record_evaluation_for_telemetry(result)
 
+      config_id = result.config&.dig('id') || result.config&.dig(:id)
+      config_type = result.config&.dig('type') || result.config&.dig(:type)
       raw_value = result.unwrapped_value
 
       begin
@@ -569,21 +575,62 @@ module Quonfig
           value: nil,
           reason: Quonfig::EvaluationDetails::REASON_ERROR,
           error_code: Quonfig::EvaluationDetails::ERROR_TYPE_MISMATCH,
-          error_message: e.message
+          error_message: e.message,
+          variant: build_variant(Quonfig::EvaluationDetails::REASON_ERROR, nil, nil),
+          flag_metadata: build_flag_metadata(config_id, config_type, nil, nil, nil)
         )
       end
 
+      reason = result.of_reason
       Quonfig::EvaluationDetails.new(
         value: coerced,
-        reason: result.of_reason
+        reason: reason,
+        variant: build_variant(reason, result.rule_index, result.weighted_value_index),
+        flag_metadata: build_flag_metadata(
+          config_id, config_type, result.rule_index, result.weighted_value_index, reason
+        )
       )
     rescue StandardError => e
       Quonfig::EvaluationDetails.new(
         value: nil,
         reason: Quonfig::EvaluationDetails::REASON_ERROR,
         error_code: Quonfig::EvaluationDetails::ERROR_GENERAL,
-        error_message: e.message
+        error_message: e.message,
+        variant: build_variant(Quonfig::EvaluationDetails::REASON_ERROR, nil, nil),
+        flag_metadata: build_flag_metadata(nil, nil, nil, nil, nil)
       )
+    end
+
+    # Build the variant string per the cross-SDK spec
+    # (project/plans/openfeature-resolution-details.md §2).
+    def build_variant(reason, rule_index, weighted_value_index)
+      case reason
+      when Quonfig::EvaluationDetails::REASON_STATIC
+        'static'
+      when Quonfig::EvaluationDetails::REASON_TARGETING_MATCH
+        "targeting:#{rule_index || 0}"
+      when Quonfig::EvaluationDetails::REASON_SPLIT
+        "split:#{weighted_value_index || 0}"
+      else
+        'default'
+      end
+    end
+
+    # Build the flag_metadata hash per the cross-SDK spec
+    # (project/plans/openfeature-resolution-details.md §3) using Ruby's
+    # snake_case keys and the wire's snake_case config_type values.
+    def build_flag_metadata(config_id, config_type, rule_index, weighted_value_index, reason)
+      md = {}
+      md['config_id'] = config_id if config_id
+      md['config_type'] = config_type if config_type
+      env = @options.environment
+      md['environment'] = env if env && !env.empty?
+      if rule_index && rule_index >= 0 &&
+         [Quonfig::EvaluationDetails::REASON_TARGETING_MATCH, Quonfig::EvaluationDetails::REASON_SPLIT].include?(reason)
+        md['rule_index'] = rule_index
+      end
+      md['weighted_value_index'] = weighted_value_index if weighted_value_index && reason == Quonfig::EvaluationDetails::REASON_SPLIT
+      md
     end
 
     def typed_get(key, expected_type, default:, context:)
