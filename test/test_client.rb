@@ -237,6 +237,13 @@ class TestClient < Minitest::Test
     pass
   end
 
+  def test_worker_restart_total_starts_at_zero
+    # qfg-47c2.9: surface the supervisor's counter on the public Client API
+    # so chaos scenarios and operators can observe restart behavior.
+    client = client_with(Quonfig::ConfigStore.new)
+    assert_equal 0, client.worker_restart_total
+  end
+
   def test_inspect_includes_environment
     client = client_with(Quonfig::ConfigStore.new, environment: 'Production')
     assert_match(/environment="Production"/, client.inspect)

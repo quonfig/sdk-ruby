@@ -6,6 +6,13 @@ require 'ostruct'
 require 'json'
 
 class TestSSEConfigClient < Minitest::Test
+  def test_default_sse_read_timeout_is_90_seconds
+    # qfg-47c2.9: Layer 1 retune — read deadline 300s -> 90s so a silent SSE
+    # stall trips within 3x the 30s server heartbeat instead of after 5 minutes.
+    opts = Quonfig::SSEConfigClient::Options.new
+    assert_equal 90, opts.sse_read_timeout
+  end
+
   def test_connect_url_is_api_v2_sse_config
     prefab_options = OpenStruct.new(sse_api_urls: ['https://stream.example.com'], sdk_key: 'test')
     config_loader = OpenStruct.new(highwater_mark: 0)

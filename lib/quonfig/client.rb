@@ -40,7 +40,7 @@ module Quonfig
       @resolver = Quonfig::Resolver.new(@store, @evaluator)
       @semantic_logger_filters = {}
       @sse_client = nil
-      @poll_thread = nil
+      @poll_supervisor = nil
       @stopped = false
       @telemetry_reporter = nil
 
@@ -266,9 +266,12 @@ module Quonfig
       end
       @sse_client = nil
 
-      thread = @poll_thread
-      @poll_thread = nil
-      thread&.kill
+      begin
+        @poll_supervisor&.stop
+      rescue StandardError => e
+        LOG.debug "Error stopping poll supervisor: #{e.message}"
+      end
+      @poll_supervisor = nil
 
       begin
         @telemetry_reporter&.stop
@@ -276,6 +279,15 @@ module Quonfig
         LOG.debug "Error stopping telemetry reporter: #{e.message}"
       end
       @telemetry_reporter = nil
+    end
+
+    # quonfig_sdk_worker_restart_total counter (Tier 1 supervisor contract).
+    # Layer 2 (HTTP polling fallback) is wired through Quonfig::WorkerSupervisor
+    # today. Layer 1 (SSE) still uses Quonfig::SSEConfigClient's in-house
+    # retry loop — its migration to the same supervisor is tracked separately.
+    # Returns an integer total across all supervised workers.
+    def worker_restart_total
+      @poll_supervisor&.worker_restart_total || 0
     end
 
     def fork
@@ -451,22 +463,24 @@ module Quonfig
       poll_interval = @options.respond_to?(:poll_interval) && @options.poll_interval ? @options.poll_interval : 60
       return if poll_interval <= 0
 
-      @poll_thread = Thread.new do
-        Thread.current.name = 'quonfig-poller'
+      stopped_ref = -> { @stopped }
+      worker = lambda do |notify_delivered|
         loop do
-          break if @stopped
+          break if stopped_ref.call
 
           sleep poll_interval
-          break if @stopped
+          break if stopped_ref.call
 
-          begin
-            @config_loader.fetch!
-            @on_update&.call
-          rescue StandardError => e
-            LOG.warn "[quonfig] Polling error: #{e.message}"
-          end
+          @config_loader.fetch!
+          notify_delivered.call
+          @on_update&.call
         end
       end
+
+      @poll_supervisor = Quonfig::WorkerSupervisor.new(
+        name: 'poll', layer: '2', worker: worker
+      )
+      @poll_supervisor.start
     end
 
     def build_context(jit_context)

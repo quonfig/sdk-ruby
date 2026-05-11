@@ -10,7 +10,11 @@ module Quonfig
                   :sse_default_reconnect_time, :sleep_delay_for_new_connection_check,
                   :errors_to_close_connection
 
-      def initialize(sse_read_timeout: 300,
+      # sse_read_timeout: 90s = 3x the 30s server heartbeat. A silent socket
+      # stall trips the read deadline within one missed-heartbeat window
+      # rather than the previous 5-minute idle. See plan
+      # `project/plans/sdk-hardening-and-verification.md` Layer 1.
+      def initialize(sse_read_timeout: 90,
                      seconds_between_new_connection: 5,
                      sleep_delay_for_new_connection_check: 1,
                      sse_default_reconnect_time: SSE::Client::DEFAULT_RECONNECT_TIME,
