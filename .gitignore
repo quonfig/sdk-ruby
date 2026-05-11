@@ -68,3 +68,6 @@ lib/tes*
 
 # macOS
 .DS_Store
+
+# Chaos harness — built api-delivery binary written by scripts/run-chaos.sh
+.chaos-api-delivery
