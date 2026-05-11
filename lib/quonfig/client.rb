@@ -43,6 +43,9 @@ module Quonfig
       @poll_supervisor = nil
       @stopped = false
       @telemetry_reporter = nil
+      @state_mutex = Mutex.new
+      @last_successful_refresh = nil
+      @sse_state = :idle
 
       # If the caller injected a store, we're in test/bootstrap mode; skip I/O.
       return if store
@@ -290,6 +293,48 @@ module Quonfig
       @poll_supervisor&.worker_restart_total || 0
     end
 
+    # Wall-clock time of the last installed envelope (any source: datadir,
+    # initial HTTP fetch, SSE, or polling fallback). +nil+ before the first
+    # install. Preserved after +stop+.
+    #
+    # **Diagnostic only.** Do NOT wire this into a Kubernetes liveness probe
+    # — a transient network blip will trip any freshness threshold and cause
+    # a rolling restart cascade. See the README "Diagnostic health signals"
+    # section.
+    #
+    # Contract: integration-test-data/chaos/supervisor-test-contract.md (Test 6).
+    def last_successful_refresh
+      @state_mutex.synchronize { @last_successful_refresh }
+    end
+
+    # Aggregate connection state. Returns one of:
+    #
+    # - +:initializing+ — no envelope has been installed and SSE is not yet
+    #   connected.
+    # - +:connected+ — SSE is live, or the SDK is delivering configs from a
+    #   loaded envelope (datadir mode or post-initial-fetch with no SSE).
+    # - +:disconnected+ — +stop+ was called, or SSE errored and no fallback
+    #   poller is active.
+    # - +:falling_back+ — the Layer 2 HTTP polling supervisor is alive and
+    #   serving as the active update channel.
+    #
+    # **Diagnostic only.** Do NOT wire this into a Kubernetes liveness probe
+    # — see the README "Diagnostic health signals" section.
+    #
+    # Contract: integration-test-data/chaos/supervisor-test-contract.md (Test 6).
+    def connection_state
+      @state_mutex.synchronize do
+        next :disconnected if @stopped
+        next :falling_back if @poll_supervisor&.alive?
+        next :connected if @sse_state == :connected
+        next :disconnected if @sse_state == :error
+
+        # No SSE state change yet: state is driven by whether any envelope
+        # has been installed (datadir / initial fetch).
+        @last_successful_refresh.nil? ? :initializing : :connected
+      end
+    end
+
     def fork
       self.class.new(@options.for_fork)
     end
@@ -299,6 +344,20 @@ module Quonfig
     end
 
     private
+
+    # Stamp +last_successful_refresh+ at install time. Called by every code
+    # path that hands an envelope to the cache: datadir load, initial HTTP
+    # fetch, SSE event apply, and polling worker fetch.
+    def record_refresh!
+      @state_mutex.synchronize { @last_successful_refresh = Time.now.utc }
+    end
+
+    # Drive the SSE-side of the connection_state machine. The SSE client
+    # invokes this on connect/error edges; tests call it directly via +send+.
+    # Documented values: :idle, :connecting, :connected, :error.
+    def handle_sse_state_change(new_state)
+      @state_mutex.synchronize { @sse_state = new_state.to_sym }
+    end
 
     # Construct and start the telemetry reporter if the options permit it.
     # The reporter runs on a background thread and periodically POSTs
@@ -390,6 +449,7 @@ module Quonfig
     def load_datadir_into_store
       envelope = Quonfig::Datadir.load_envelope(@options.datadir, @options.environment)
       envelope.configs.each { |cfg| @store.set(cfg['key'], cfg) }
+      record_refresh!
     end
 
     # Initialize network mode: sync HTTP fetch (bounded by
@@ -424,7 +484,11 @@ module Quonfig
         return
       end
 
-      handle_init_failure(RuntimeError.new('Config fetch failed against all api_urls')) if result == :failed
+      if result == :failed
+        handle_init_failure(RuntimeError.new('Config fetch failed against all api_urls'))
+      else
+        record_refresh!
+      end
     end
 
     def handle_init_failure(err)
@@ -447,6 +511,8 @@ module Quonfig
 
         begin
           @config_loader.apply_envelope(envelope)
+          handle_sse_state_change(:connected)
+          record_refresh!
           @on_update&.call
         rescue StandardError => e
           LOG.warn "[quonfig] Error applying SSE envelope: #{e.message}"
@@ -456,6 +522,7 @@ module Quonfig
     rescue StandardError => e
       LOG.warn "[quonfig] SSE start failed: #{e.message}"
       @sse_client = nil
+      handle_sse_state_change(:error)
       false
     end
 
@@ -472,6 +539,7 @@ module Quonfig
           break if stopped_ref.call
 
           @config_loader.fetch!
+          record_refresh!
           notify_delivered.call
           @on_update&.call
         end

@@ -333,6 +333,24 @@ converge once the envelope finishes applying.
 `Quonfig.fork` is the only safe way to "carry" a client across `Process.fork`
 — do not reuse the parent's client in a child process.
 
+## Diagnostic health signals
+
+`Quonfig::Client` exposes two read-only getters for monitoring SDK liveness:
+
+- `client.last_successful_refresh` — a `Time` (UTC) marking the most recent
+  envelope install (any source: datadir, initial HTTP fetch, SSE, or fallback
+  polling). Returns `nil` before the first install. Preserved across `stop`.
+- `client.connection_state` — a `Symbol` describing the aggregate state:
+  `:initializing`, `:connected`, `:disconnected`, or `:falling_back`.
+
+> Do not wire `last_successful_refresh` or `connection_state` directly into a Kubernetes liveness probe. These signals are diagnostic, not pass/fail. A liveness probe based on SDK freshness will amplify transient network blips into restart cascades.
+
+Compose your own threshold from the two getters if you need a dashboard signal
+— but route alerts through a metrics pipeline, not a probe that restarts the
+process.
+
+There is intentionally no `client.healthy?` primitive.
+
 ## Documentation
 
 Full documentation, including SPEC, SDK reference, and operational guides, is
