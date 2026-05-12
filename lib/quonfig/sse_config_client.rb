@@ -29,12 +29,18 @@ module Quonfig
 
     LOG = Quonfig::InternalLogger.new(self)
 
-    def initialize(prefab_options, config_loader, options = nil, logger = nil)
+    # +on_error+: optional callable invoked on every SSE error edge. Parent
+    # Quonfig::Client wires this to drive @sse_state -> :error so that
+    # +connection_state+ reflects the disconnect (qfg-47c2.27). Without it
+    # the SDK's public health primitive would lie about its own state during
+    # a mid-run socket drop.
+    def initialize(prefab_options, config_loader, options = nil, logger = nil, on_error: nil)
       @prefab_options = prefab_options
       @options = options || Options.new
       @config_loader = config_loader
       @connected = false
       @logger = logger || LOG
+      @on_error = on_error
     end
 
     def close
@@ -108,6 +114,18 @@ module Quonfig
             @logger.debug "SSE Streaming: Connection closed (expected timeout) for url #{url}"
           else
             @logger.error "SSE Streaming Error: #{error.inspect} for url #{url}"
+          end
+
+          # Notify the parent client BEFORE deciding whether to close — every
+          # error edge is a disconnect signal as far as @sse_state goes, even
+          # if we let the underlying SSE library handle reconnect itself.
+          # qfg-47c2.27
+          if @on_error
+            begin
+              @on_error.call(error)
+            rescue StandardError => e
+              @logger.error "SSE on_error callback raised: #{e.inspect}"
+            end
           end
 
           if @options.errors_to_close_connection.any? { |klass| error.is_a?(klass) }

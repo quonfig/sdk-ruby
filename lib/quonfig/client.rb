@@ -369,6 +369,19 @@ module Quonfig
     #   grace timer; the timer engages if SSE has not recovered by then.
     #   Mirrors sdk-python's `_handle_sse_state_change` and sdk-node's
     #   `fallbackPollerActive` engagement behavior. (qfg-47c2.26)
+    # Stable callable handed to Quonfig::SSEConfigClient so its +on_error+
+    # block can drive @sse_state -> :error on a mid-run socket drop. Without
+    # this wiring, +connection_state+ would stay +:connected+ after a
+    # disconnect and customers composing staleness checks would see stale
+    # data. (qfg-47c2.27)
+    def sse_error_callback
+      @sse_error_callback ||= ->(error) { handle_sse_error(error) }
+    end
+
+    def handle_sse_error(_error)
+      handle_sse_state_change(:error)
+    end
+
     def handle_sse_state_change(new_state)
       state = new_state.to_sym
       ever_connected = @state_mutex.synchronize do
@@ -588,7 +601,13 @@ module Quonfig
     def start_sse
       return false if @options.sse_api_urls.nil? || @options.sse_api_urls.empty?
 
-      @sse_client = Quonfig::SSEConfigClient.new(@options, @config_loader)
+      @sse_client = Quonfig::SSEConfigClient.new(
+        @options,
+        @config_loader,
+        nil,
+        nil,
+        on_error: sse_error_callback
+      )
       @sse_client.start do |envelope, _event, _source|
         next if @stopped
 

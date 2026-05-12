@@ -324,6 +324,28 @@ class TestHealthPrimitives < Minitest::Test
     client&.stop
   end
 
+  # qfg-47c2.27: end-to-end wiring — the SSEConfigClient's on_error path
+  # must transition the parent client's @sse_state. Tested by invoking the
+  # registered on_error callback the way SSEConfigClient does internally.
+  def test_sse_on_error_transitions_connection_state_to_disconnected
+    client = make_client(poll_interval: 0)
+    # Simulate a successful connect first, then drive an error edge through
+    # the wired callback. The bug was: there was no wired callback at all,
+    # so connection_state stayed :connected forever after a socket drop.
+    client.send(:handle_sse_state_change, :connected)
+    assert_equal :connected, client.connection_state
+
+    callback = client.send(:sse_error_callback)
+    refute_nil callback, 'client must expose an SSE-error callback for SSEConfigClient'
+
+    callback.call(HTTP::ConnectionError.new('socket dropped'))
+
+    assert_equal :disconnected, client.connection_state,
+                 'on_error must drive @sse_state to :error so connection_state reports :disconnected'
+  ensure
+    client&.stop
+  end
+
   def test_fallback_does_not_engage_when_polling_disabled
     client = make_client(poll_interval: 0.05, enable_polling: false)
     stub_config_loader!(client)
