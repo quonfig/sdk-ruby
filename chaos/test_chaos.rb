@@ -224,9 +224,13 @@ class ChaosProbe
   def log(level, msg)
     line = "level=#{level.to_s.downcase} #{msg}"
     @log_lock.synchronize { @logs << line }
-    # Mirror sdk-python: an onConfigUpdate callback throw counts as a Layer 1
-    # restart for chaos scenario 10. Match case-insensitively.
-    if msg.to_s =~ /onConfigUpdate callback threw|callback threw|Error applying SSE envelope/i
+    # Mirror sdk-python/sdk-go: an onConfigUpdate callback throw counts as a
+    # Layer 1 restart for chaos scenario 10. Match the user-callback recovery
+    # log lines case-insensitively. The current sdk-ruby log line is
+    # "onConfigUpdate callback raised" (qfg-47c2.30); historical phrasing
+    # ("callback threw", "Error applying SSE envelope") is kept for back-compat
+    # with older SDK builds run against this harness.
+    if msg.to_s =~ /onConfigUpdate callback (raised|threw|panicked)|callback (raised|threw|panicked)|Error applying SSE envelope/i
       @lock.synchronize { @restart_layer1 += 1 }
     end
   end

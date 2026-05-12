@@ -615,10 +615,11 @@ module Quonfig
           @config_loader.apply_envelope(envelope)
           handle_sse_state_change(:connected)
           record_refresh!
-          @on_update&.call
         rescue StandardError => e
           LOG.warn "[quonfig] Error applying SSE envelope: #{e.message}"
+          next
         end
+        notify_on_update_callback
       end
       true
     rescue StandardError => e
@@ -646,7 +647,7 @@ module Quonfig
           @config_loader.fetch!
           record_refresh!
           notify_delivered.call
-          @on_update&.call
+          notify_on_update_callback
         end
       end
 
@@ -655,6 +656,24 @@ module Quonfig
       )
       @state_mutex.synchronize { @poll_supervisor = supervisor }
       supervisor.start
+    end
+
+    # Invoke the customer-supplied on_update callback under a rescue. A raise
+    # here is the customer's bug, but it must NOT take down the SSE listener
+    # or polling supervisor. Log at ERROR with a message containing
+    # "onConfigUpdate callback" so chaos scenario 10's
+    # sdkLog('error', /callback|onConfigUpdate/i) assertion matches and so
+    # the message is distinguishable from internal envelope-apply errors
+    # (qfg-47c2.30).
+    def notify_on_update_callback
+      cb = @on_update
+      return unless cb
+
+      begin
+        cb.call
+      rescue StandardError => e
+        LOG.error "[quonfig] onConfigUpdate callback raised: #{e.class}: #{e.message}"
+      end
     end
 
     def build_context(jit_context)
