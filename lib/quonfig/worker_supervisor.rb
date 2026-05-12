@@ -65,7 +65,19 @@ module Quonfig
         return self if @thread&.alive?
 
         @stop_requested = false
-        @thread = Thread.new { run_loop }
+        ready = Queue.new
+        @thread = Thread.new do
+          # Set report_on_exception + signal "ready" BEFORE entering
+          # run_loop. start() blocks on the ready queue so a racing stop()
+          # can never raise into a thread that hasn't yet installed its
+          # Shutdown rescue.
+          Thread.current.report_on_exception = false
+          ready << true
+          run_loop
+        rescue Quonfig::Shutdown
+          # cooperative shutdown raced with thread startup; swallowed
+        end
+        ready.pop
       end
       self
     end
