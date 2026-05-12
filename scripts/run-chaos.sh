@@ -29,6 +29,12 @@ if [[ ! -d "$HARNESS_DIR" ]]; then
   exit 1
 fi
 
+# Identify ourselves to the shared chaos lock (qfg-47c2.32). Owner PID is THIS
+# wrapper's pid so the lock survives the lifetime of the chaos run, not just
+# the short-lived start-chaos.sh subprocess.
+export QUONFIG_CHAOS_SESSION="${QUONFIG_CHAOS_SESSION:-sdk-ruby-$$-$(date +%s)}"
+export QUONFIG_CHAOS_OWNER_PID=$$
+
 API_PORT="${CHAOS_API_DELIVERY_PORT:-6550}"
 
 cleanup_done=0
