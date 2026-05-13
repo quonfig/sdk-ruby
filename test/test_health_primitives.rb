@@ -223,4 +223,139 @@ class TestHealthPrimitives < Minitest::Test
                       "connection_state returned #{state.inspect}, not in #{documented}"
     end
   end
+
+  # ------------------------------------------------------------------
+  # Layer 2 fallback poller — engage/disengage on SSE state edges
+  # (qfg-47c2.26). Mirrors sdk-python `_handle_sse_state_change` in
+  # quonfig/client.py.
+  # ------------------------------------------------------------------
+
+  # The fallback worker calls @config_loader.fetch! after each sleep. Tests
+  # never want a real fetch — install a no-op double so the supervisor stays
+  # alive without raising.
+  def stub_config_loader!(client)
+    fake = Object.new
+    def fake.fetch! = nil
+    client.instance_variable_set(:@config_loader, fake)
+  end
+
+  def test_fallback_engages_immediately_on_initial_sse_error
+    # No prior :connected — the SDK never reached SSE, so the fallback
+    # engages now (initial-fail path, same as initialize_network_mode's
+    # explicit start_polling when start_sse returns false).
+    client = make_client(poll_interval: 60)
+    stub_config_loader!(client)
+
+    client.send(:handle_sse_state_change, :error)
+
+    assert_equal :falling_back, client.connection_state,
+                 'initial :error must engage Layer 2 immediately'
+  ensure
+    client&.stop
+  end
+
+  def test_fallback_engages_after_grace_on_post_connect_sse_error
+    # Connected -> error edge schedules a 2*poll_interval grace timer. The
+    # supervisor must NOT be alive immediately after the edge, but must
+    # become alive once the grace elapses. Use a tiny poll_interval so the
+    # test waits ~0.1s, not 120s.
+    client = make_client(poll_interval: 0.05)
+    stub_config_loader!(client)
+
+    client.send(:handle_sse_state_change, :connected)
+    client.send(:handle_sse_state_change, :error)
+
+    # Immediately after error — grace timer pending, fallback not active.
+    assert_equal :disconnected, client.connection_state,
+                 'must NOT engage immediately on post-connect :error'
+
+    sleep 0.3 # > 2*poll_interval (0.1s)
+
+    assert_equal :falling_back, client.connection_state,
+                 'grace elapsed: Layer 2 must engage'
+  ensure
+    client&.stop
+  end
+
+  def test_fallback_disengages_on_sse_recovery
+    # Once the fallback poller is active, a recovered SSE :connected edge
+    # MUST stop the supervisor — otherwise the SDK would keep two update
+    # channels live.
+    client = make_client(poll_interval: 0.05)
+    stub_config_loader!(client)
+
+    client.send(:handle_sse_state_change, :connected)
+    client.send(:handle_sse_state_change, :error)
+    sleep 0.3 # let grace fire
+    assert_equal :falling_back, client.connection_state
+
+    client.send(:handle_sse_state_change, :connected)
+
+    # Disengagement is synchronous (we call supervisor.stop in-line).
+    assert_equal :connected, client.connection_state,
+                 'recovery edge must disengage the fallback poller'
+    assert_nil client.instance_variable_get(:@poll_supervisor),
+               'poll_supervisor reference must be cleared after disengage'
+  ensure
+    client&.stop
+  end
+
+  def test_pending_grace_timer_canceled_on_sse_recovery
+    # SSE recovers before the grace timer fires — fallback must never
+    # engage at all.
+    client = make_client(poll_interval: 0.1)
+    stub_config_loader!(client)
+
+    client.send(:handle_sse_state_change, :connected)
+    client.send(:handle_sse_state_change, :error)
+    # Recovery within the grace window (2*0.1 = 0.2s).
+    sleep 0.05
+    client.send(:handle_sse_state_change, :connected)
+
+    # Wait past where the original timer would have fired.
+    sleep 0.3
+
+    assert_equal :connected, client.connection_state,
+                 'canceled grace must not fire after recovery'
+    supervisor = client.instance_variable_get(:@poll_supervisor)
+    refute supervisor && supervisor.alive?,
+           'no supervisor should be alive after canceled-grace recovery'
+  ensure
+    client&.stop
+  end
+
+  # qfg-47c2.27: end-to-end wiring — the SSEConfigClient's on_error path
+  # must transition the parent client's @sse_state. Tested by invoking the
+  # registered on_error callback the way SSEConfigClient does internally.
+  def test_sse_on_error_transitions_connection_state_to_disconnected
+    client = make_client(poll_interval: 0)
+    # Simulate a successful connect first, then drive an error edge through
+    # the wired callback. The bug was: there was no wired callback at all,
+    # so connection_state stayed :connected forever after a socket drop.
+    client.send(:handle_sse_state_change, :connected)
+    assert_equal :connected, client.connection_state
+
+    callback = client.send(:sse_error_callback)
+    refute_nil callback, 'client must expose an SSE-error callback for SSEConfigClient'
+
+    callback.call(HTTP::ConnectionError.new('socket dropped'))
+
+    assert_equal :disconnected, client.connection_state,
+                 'on_error must drive @sse_state to :error so connection_state reports :disconnected'
+  ensure
+    client&.stop
+  end
+
+  def test_fallback_does_not_engage_when_polling_disabled
+    client = make_client(poll_interval: 0.05, enable_polling: false)
+    stub_config_loader!(client)
+
+    client.send(:handle_sse_state_change, :error)
+    sleep 0.2
+
+    assert_equal :disconnected, client.connection_state,
+                 'enable_polling=false must keep Layer 2 dormant'
+  ensure
+    client&.stop
+  end
 end

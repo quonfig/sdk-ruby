@@ -46,6 +46,8 @@ module Quonfig
       @state_mutex = Mutex.new
       @last_successful_refresh = nil
       @sse_state = :idle
+      @sse_ever_connected = false
+      @fallback_engage_timer = nil
 
       # If the caller injected a store, we're in test/bootstrap mode; skip I/O.
       return if store
@@ -269,6 +271,8 @@ module Quonfig
       end
       @sse_client = nil
 
+      cancel_fallback_engage_timer
+
       begin
         @poll_supervisor&.stop
       rescue StandardError => e
@@ -355,8 +359,100 @@ module Quonfig
     # Drive the SSE-side of the connection_state machine. The SSE client
     # invokes this on connect/error edges; tests call it directly via +send+.
     # Documented values: :idle, :connecting, :connected, :error.
+    #
+    # Also drives the Layer 2 fallback poller's engage/disengage:
+    # - :connected clears any pending engage timer and stops an active
+    #   fallback poller (SSE recovered, drop the second channel).
+    # - :error before any successful connect engages immediately
+    #   (initial-fail path).
+    # - :error after a successful connect schedules a 2x-poll-interval
+    #   grace timer; the timer engages if SSE has not recovered by then.
+    #   Mirrors sdk-python's `_handle_sse_state_change` and sdk-node's
+    #   `fallbackPollerActive` engagement behavior. (qfg-47c2.26)
+    # Stable callable handed to Quonfig::SSEConfigClient so its +on_error+
+    # block can drive @sse_state -> :error on a mid-run socket drop. Without
+    # this wiring, +connection_state+ would stay +:connected+ after a
+    # disconnect and customers composing staleness checks would see stale
+    # data. (qfg-47c2.27)
+    def sse_error_callback
+      @sse_error_callback ||= ->(error) { handle_sse_error(error) }
+    end
+
+    def handle_sse_error(_error)
+      handle_sse_state_change(:error)
+    end
+
     def handle_sse_state_change(new_state)
-      @state_mutex.synchronize { @sse_state = new_state.to_sym }
+      state = new_state.to_sym
+      ever_connected = @state_mutex.synchronize do
+        @sse_state = state
+        @sse_ever_connected = true if state == :connected
+        @sse_ever_connected
+      end
+
+      return unless @options.respond_to?(:enable_polling) && @options.enable_polling
+      return if @stopped
+
+      case state
+      when :connected
+        cancel_fallback_engage_timer
+        stop_fallback_poller('sse-recovered')
+      when :error
+        if ever_connected
+          schedule_fallback_engage
+        else
+          start_polling
+        end
+      end
+    end
+
+    def cancel_fallback_engage_timer
+      timer = @state_mutex.synchronize do
+        t = @fallback_engage_timer
+        @fallback_engage_timer = nil
+        t
+      end
+      timer&.kill if timer&.alive?
+    end
+
+    def stop_fallback_poller(reason)
+      supervisor = @state_mutex.synchronize do
+        s = @poll_supervisor
+        @poll_supervisor = nil
+        s
+      end
+      return if supervisor.nil?
+
+      begin
+        supervisor.stop
+        LOG.debug "[quonfig] Layer 2 fallback poller stopped (reason=#{reason})"
+      rescue StandardError => e
+        LOG.debug "Error stopping fallback poller: #{e.message}"
+      end
+    end
+
+    # Schedule a 2*poll_interval grace timer after a connected->error edge.
+    # If SSE recovers before the timer fires, +cancel_fallback_engage_timer+
+    # tears it down. Idempotent — does nothing if a timer is already pending
+    # or the supervisor is already alive.
+    def schedule_fallback_engage
+      poll_interval = @options.respond_to?(:poll_interval) && @options.poll_interval ? @options.poll_interval : 60
+      return if poll_interval <= 0
+
+      grace_seconds = poll_interval * 2.0
+
+      @state_mutex.synchronize do
+        return if @fallback_engage_timer&.alive?
+        return if @poll_supervisor&.alive?
+        return if @stopped
+
+        @fallback_engage_timer = Thread.new do
+          Thread.current.report_on_exception = false
+          sleep grace_seconds
+          @state_mutex.synchronize { @fallback_engage_timer = nil }
+          start_polling unless @stopped
+        end
+      end
     end
 
     # Construct and start the telemetry reporter if the options permit it.
@@ -505,7 +601,13 @@ module Quonfig
     def start_sse
       return false if @options.sse_api_urls.nil? || @options.sse_api_urls.empty?
 
-      @sse_client = Quonfig::SSEConfigClient.new(@options, @config_loader)
+      @sse_client = Quonfig::SSEConfigClient.new(
+        @options,
+        @config_loader,
+        nil,
+        nil,
+        on_error: sse_error_callback
+      )
       @sse_client.start do |envelope, _event, _source|
         next if @stopped
 
@@ -513,10 +615,11 @@ module Quonfig
           @config_loader.apply_envelope(envelope)
           handle_sse_state_change(:connected)
           record_refresh!
-          @on_update&.call
         rescue StandardError => e
           LOG.warn "[quonfig] Error applying SSE envelope: #{e.message}"
+          next
         end
+        notify_on_update_callback
       end
       true
     rescue StandardError => e
@@ -527,6 +630,9 @@ module Quonfig
     end
 
     def start_polling
+      return if @stopped
+      return if @poll_supervisor&.alive?
+
       poll_interval = @options.respond_to?(:poll_interval) && @options.poll_interval ? @options.poll_interval : 60
       return if poll_interval <= 0
 
@@ -541,14 +647,33 @@ module Quonfig
           @config_loader.fetch!
           record_refresh!
           notify_delivered.call
-          @on_update&.call
+          notify_on_update_callback
         end
       end
 
-      @poll_supervisor = Quonfig::WorkerSupervisor.new(
+      supervisor = Quonfig::WorkerSupervisor.new(
         name: 'poll', layer: '2', worker: worker
       )
-      @poll_supervisor.start
+      @state_mutex.synchronize { @poll_supervisor = supervisor }
+      supervisor.start
+    end
+
+    # Invoke the customer-supplied on_update callback under a rescue. A raise
+    # here is the customer's bug, but it must NOT take down the SSE listener
+    # or polling supervisor. Log at ERROR with a message containing
+    # "onConfigUpdate callback" so chaos scenario 10's
+    # sdkLog('error', /callback|onConfigUpdate/i) assertion matches and so
+    # the message is distinguishable from internal envelope-apply errors
+    # (qfg-47c2.30).
+    def notify_on_update_callback
+      cb = @on_update
+      return unless cb
+
+      begin
+        cb.call
+      rescue StandardError => e
+        LOG.error "[quonfig] onConfigUpdate callback raised: #{e.class}: #{e.message}"
+      end
     end
 
     def build_context(jit_context)
