@@ -28,7 +28,6 @@ require 'uri'
 require 'json'
 require 'yaml'
 require 'logger'
-require 'thread'
 require 'minitest/autorun'
 
 require 'quonfig'
@@ -43,7 +42,7 @@ CHAOS_SCENARIOS  = File.join(CHAOS_REPO_ROOT, 'integration-test-data', 'chaos', 
 # ----- env knobs -----
 
 def chaos_env(key, default)
-  v = ENV[key]
+  v = ENV.fetch(key, nil)
   v && !v.empty? ? v : default
 end
 
@@ -57,8 +56,8 @@ TOXIPROXY_URL    = chaos_env('TOXIPROXY_URL', 'http://127.0.0.1:8474').freeze
 CHAOS_SSE_PORT   = chaos_env('CHAOS_SSE_PORT', '18550').to_i
 CHAOS_HTTP_PORT  = chaos_env('CHAOS_HTTP_PORT', '18551').to_i
 CHAOS_POLL_MS    = chaos_env('CHAOS_POLL_MS', '250').to_i
-CHAOS_ONLY       = chaos_csv(ENV['CHAOS_ONLY']).freeze
-CHAOS_SKIP       = chaos_csv(ENV['CHAOS_SKIP']).freeze
+CHAOS_ONLY       = chaos_csv(ENV.fetch('CHAOS_ONLY', nil)).freeze
+CHAOS_SKIP       = chaos_csv(ENV.fetch('CHAOS_SKIP', nil)).freeze
 CHAOS_UPSTREAM   = chaos_env('CHAOS_UPSTREAM_HOST', 'host.docker.internal').freeze
 
 # ----- toxiproxy admin client -----
@@ -90,7 +89,11 @@ class Toxiproxy
     resp = get("/proxies/#{proxy}/toxics")
     return unless resp.is_a?(Net::HTTPSuccess)
 
-    list = JSON.parse(resp.body) rescue []
+    list = begin
+      JSON.parse(resp.body)
+    rescue StandardError
+      []
+    end
     list.each do |t|
       delete("/proxies/#{proxy}/toxics/#{t['name']}")
     end
@@ -129,7 +132,10 @@ class Toxiproxy
 
   def http_for(path)
     uri = URI.parse("#{@base}#{path}")
-    [uri, Net::HTTP.new(uri.host, uri.port).tap { |h| h.open_timeout = 5; h.read_timeout = 5 }]
+    [uri, Net::HTTP.new(uri.host, uri.port).tap do |h|
+      h.open_timeout = 5
+      h.read_timeout = 5
+    end]
   end
 
   def get(path)
@@ -168,7 +174,7 @@ class ChaosProbe
     @restart_layer2 = 0
     @fallback_active = false
     @process_crashed = false
-    @logs           = []
+    @logs = []
   end
 
   attr_accessor :process_crashed
@@ -230,9 +236,9 @@ class ChaosProbe
     # "onConfigUpdate callback raised" (qfg-47c2.30); historical phrasing
     # ("callback threw", "Error applying SSE envelope") is kept for back-compat
     # with older SDK builds run against this harness.
-    if msg.to_s =~ /onConfigUpdate callback (raised|threw|panicked)|callback (raised|threw|panicked)|Error applying SSE envelope/i
-      @lock.synchronize { @restart_layer1 += 1 }
-    end
+    return unless msg.to_s =~ /onConfigUpdate callback (raised|threw|panicked)|callback (raised|threw|panicked)|Error applying SSE envelope/i
+
+    @lock.synchronize { @restart_layer1 += 1 }
   end
 
   def snapshot
@@ -270,6 +276,7 @@ class ChaosProbe
       n = 0
       @logs.each do |line|
         next if level && !level.empty? && !line.downcase.include?("level=#{level.downcase}")
+
         n += 1 if regex.match?(line)
       end
       n
@@ -351,9 +358,7 @@ end
 def chaos_clear_inject(tp, st)
   return if st.nil? || st.empty?
 
-  if st['toxic'] && st['proxy']
-    tp.remove_toxic(st['proxy'], st['toxic'])
-  end
+  tp.remove_toxic(st['proxy'], st['toxic']) if st['toxic'] && st['proxy']
   (st['enable'] || []).each { |p| tp.set_enabled(p, true) }
 end
 
@@ -374,13 +379,13 @@ end
 
 # ----- expression evaluator -----
 
-RE_CONN_STATE_EQ = /\Aclient\.connectionState\(\)\s*(==|!=)\s*'([^']+)'\z/.freeze
-RE_FALLBACK_EQ   = /\Aclient\.fallbackPollerActive\(\)\s*==\s*(true|false)\z/.freeze
-RE_PROC_ALIVE_EQ = /\Aclient\.processStillAlive\(\)\s*==\s*(true|false)\z/.freeze
-RE_LAST_REFRESH  = /\Aclient\.lastSuccessfulRefresh\(\)\s*(>=|>|<=|<|==)\s*\(now\(\)\s*-\s*(\d+)\)\z/.freeze
-RE_SDK_METRIC    = /\Aclient\.sdkMetric\(\s*'([^']+)'\s*(?:,\s*layer=\s*'([^']+)'\s*)?\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/.freeze
-RE_SERVER_METRIC = /\Aserver_metric\(\s*'([^']+)'\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/.freeze
-RE_SDK_LOG       = %r{\Aclient\.sdkLog\(\s*'([^']+)'\s*,\s*/(.+)/i\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z}.freeze
+RE_CONN_STATE_EQ = /\Aclient\.connectionState\(\)\s*(==|!=)\s*'([^']+)'\z/
+RE_FALLBACK_EQ   = /\Aclient\.fallbackPollerActive\(\)\s*==\s*(true|false)\z/
+RE_PROC_ALIVE_EQ = /\Aclient\.processStillAlive\(\)\s*==\s*(true|false)\z/
+RE_LAST_REFRESH  = /\Aclient\.lastSuccessfulRefresh\(\)\s*(>=|>|<=|<|==)\s*\(now\(\)\s*-\s*(\d+)\)\z/
+RE_SDK_METRIC    = /\Aclient\.sdkMetric\(\s*'([^']+)'\s*(?:,\s*layer=\s*'([^']+)'\s*)?\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/
+RE_SERVER_METRIC = /\Aserver_metric\(\s*'([^']+)'\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/
+RE_SDK_LOG       = %r{\Aclient\.sdkLog\(\s*'([^']+)'\s*,\s*/(.+)/i\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z}
 
 def chaos_split_outside_quotes(expr, sep)
   out = []
@@ -422,7 +427,8 @@ end
 def chaos_eval_leaf(expr, probe, server_metric)
   expr = expr.strip
   if (m = RE_CONN_STATE_EQ.match(expr))
-    op = m[1]; want = m[2]
+    op = m[1]
+    want = m[2]
     snap = probe.snapshot
     got = snap[:conn_state]
     ok = op == '==' ? got == want : got != want
@@ -447,20 +453,28 @@ def chaos_eval_leaf(expr, probe, server_metric)
     return [ok, "lastSuccessfulRefresh=#{last} #{op} (now()-#{ago})=#{threshold}"]
   end
   if (m = RE_SDK_METRIC.match(expr))
-    metric = m[1]; layer = m[2]; op = m[3]; want = m[4].to_f
+    metric = m[1]
+    layer = m[2]
+    op = m[3]
+    want = m[4].to_f
     labels = layer ? { 'layer' => layer } : {}
     got = probe.sdk_metric(metric, labels)
     ok = chaos_compare(op, got, want)
     return [ok, "sdkMetric(#{metric},layer=#{layer || ''})=#{got} #{op} #{want}"]
   end
   if (m = RE_SERVER_METRIC.match(expr))
-    name = m[1]; op = m[2]; want = m[3].to_f
+    name = m[1]
+    op = m[2]
+    want = m[3].to_f
     got = server_metric.call(name)
     ok = chaos_compare(op, got, want)
     return [ok, "server_metric(#{name})=#{got} #{op} #{want}"]
   end
   if (m = RE_SDK_LOG.match(expr))
-    level = m[1]; pattern = m[2]; op = m[3]; want = m[4].to_f
+    level = m[1]
+    pattern = m[2]
+    op = m[3]
+    want = m[4].to_f
     regex = Regexp.new(pattern, Regexp::IGNORECASE)
     got = probe.log_matches(level, regex).to_f
     ok = chaos_compare(op, got, want)
@@ -669,9 +683,7 @@ def chaos_run_scenario(tp, run)
             s[:hit_at] = elapsed
           end
           hold_for = (s[:exp]['must_hold_for_ms'] || 0).to_i
-          if hold_for <= 0 || ((Time.now.to_f * 1000).to_i - s[:held_since]) >= hold_for
-            s[:passed] = true
-          end
+          s[:passed] = true if hold_for <= 0 || ((Time.now.to_f * 1000).to_i - s[:held_since]) >= hold_for
         else
           s[:held_since] = nil
         end
@@ -709,8 +721,16 @@ def chaos_run_scenario(tp, run)
     [passed, failed, details]
   ensure
     stop_flag.set!
-    scheduled_threads.each { |t| t.join(1.0) rescue nil }
-    poller&.join(2.0) rescue nil
+    scheduled_threads.each do |t|
+      t.join(1.0)
+    rescue StandardError
+      nil
+    end
+    begin
+      poller&.join(2.0)
+    rescue StandardError
+      nil
+    end
     begin
       client&.stop
     rescue StandardError
@@ -725,7 +745,7 @@ end
 def chaos_scenario_files
   return [] unless Dir.exist?(CHAOS_SCENARIOS)
 
-  Dir.glob(File.join(CHAOS_SCENARIOS, '*.yaml')).sort
+  Dir.glob(File.join(CHAOS_SCENARIOS, '*.yaml'))
 end
 
 def chaos_scenario_number(path)
@@ -749,7 +769,7 @@ def chaos_load_runs
     next if CHAOS_SKIP.include?(num)
 
     begin
-      doc = YAML.safe_load(File.read(f), aliases: true)
+      doc = YAML.safe_load_file(f, aliases: true)
     rescue StandardError => e
       warn "chaos: failed to parse #{f}: #{e.class}: #{e.message}"
       next
@@ -786,7 +806,7 @@ module ChaosShared
         return if @setup_done
 
         @setup_done = true
-        api_url = ENV['CHAOS_API_DELIVERY_URL']
+        api_url = ENV.fetch('CHAOS_API_DELIVERY_URL', nil)
         if api_url.nil? || api_url.empty?
           @setup_error = 'CHAOS_API_DELIVERY_URL not set — run scripts/run-chaos.sh to boot the harness'
           return
@@ -817,9 +837,9 @@ class ChaosTest < Minitest::Test
   # generated at load time; one method per scenario test entry
 end
 
-_RUNS = chaos_load_runs
+runs = chaos_load_runs
 
-_RUNS.each do |scenario_path, run|
+runs.each do |scenario_path, run|
   num    = chaos_scenario_number(scenario_path)
   slug   = chaos_slug(run['name'] || File.basename(scenario_path, '.yaml'))
   method = "test_chaos_#{num}_#{slug}"
