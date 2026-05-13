@@ -12,8 +12,44 @@ name: Release gem
       - 'v*'
 
 jobs:
+  test:
+    name: Test (Ruby ${{ matrix.ruby-version }}) on tagged commit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby-version: ['3.2', '3.3', '3.4']
+    steps:
+      - name: Checkout sdk-ruby at tag
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          path: sdk-ruby
+
+      - name: Checkout integration-test-data
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          repository: quonfig/integration-test-data
+          path: integration-test-data
+          ref: main
+
+      - name: Set up Ruby ${{ matrix.ruby-version }}
+        uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f  # v1.306.0
+        with:
+          ruby-version: ${{ matrix.ruby-version }}
+          bundler-cache: true
+          working-directory: sdk-ruby
+
+      - name: Run tests
+        working-directory: sdk-ruby
+        run: bundle exec rake test
+
+      - name: Rubocop
+        working-directory: sdk-ruby
+        run: bundle exec rubocop --no-color
+
   release:
     runs-on: ubuntu-latest
+    needs: test
     environment: release
 
     permissions:
@@ -41,10 +77,11 @@ jobs:
             exit 1
           fi
 
-      # No test step here on purpose. The Ruby workflow runs the full matrix
-      # on every push to main / PR; by the time you tag, that commit is
-      # already green. Release's job is to verify the artifact (tag ==
-      # version, gem builds, smoke check passes), not re-test the code.
+      # Tests run in the `test` job above against the tagged commit; the
+      # `needs: test` dependency on this job blocks publish if any matrix
+      # entry fails. We deliberately skip bundler-audit and brakeman here —
+      # those run on the test.yaml matrix on every push and would only add
+      # tag-time noise without further protecting the artifact.
 
       - name: Build gem
         id: build
