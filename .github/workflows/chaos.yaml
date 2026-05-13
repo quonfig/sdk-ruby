@@ -1,0 +1,106 @@
+name: Chaos
+
+# Runs the cross-SDK chaos harness (toxiproxy + scenarios from
+# integration-test-data/chaos) against sdk-ruby. Boots api-delivery in
+# fixture mode and drives every scenario in scenarios/*.yaml through it.
+#
+# Two modes:
+#   - smoke   : skips 11-null-hypothesis (the 30-minute idle scenario);
+#               runs on every push to main + every PR (~18 min wall clock).
+#   - full    : every scenario; runs on workflow_dispatch (~48 min).
+#
+# NOTE: release.yml in this repo is intentionally not modified here.
+# A separate PR is fixing the release-gate problem in sdk-ruby's
+# release.yml (it currently has a deliberate "no test step" stance —
+# see comment in release.yml). This workflow exposes itself via
+# workflow_call so that follow-up PR can wire chaos as a `needs:` on
+# the release job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+    inputs:
+      mode:
+        description: "smoke (skip 11) or full"
+        required: false
+        type: string
+        default: smoke
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "smoke (skip 11) or full"
+        required: false
+        type: choice
+        options: [smoke, full]
+        default: smoke
+
+jobs:
+  chaos:
+    name: Chaos (${{ inputs.mode || 'smoke' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Checkout sdk-ruby
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          path: sdk-ruby
+
+      - name: Checkout integration-test-data
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          repository: quonfig/integration-test-data
+          path: integration-test-data
+          # Pinned per the 2026-05-13 reliability audit so the chaos
+          # gate moves only when the scenarios are deliberately
+          # rev'd. Bump alongside the matching SDK change.
+          ref: v2026.05.13
+
+      - name: Checkout api-delivery
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          # api-delivery is private; the default GITHUB_TOKEN cannot
+          # read it. A PAT or fine-grained token with read access to
+          # quonfig/api-delivery must be configured as the repo secret
+          # QUONFIG_REPO_TOKEN. Without it this step fails fast and
+          # the chaos gate is red — by design, until the secret is
+          # provisioned.
+          repository: quonfig/api-delivery
+          path: api-delivery
+          ref: main
+          token: ${{ secrets.QUONFIG_REPO_TOKEN }}
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: api-delivery/go.sum
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f  # v1.306.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: sdk-ruby
+
+      - name: Verify docker compose available
+        run: docker compose version
+
+      - name: Run chaos harness
+        working-directory: sdk-ruby
+        env:
+          # Smoke skips 11-null-hypothesis (30 min idle). Full suite
+          # runs everything. The wrapper honors CHAOS_SKIP.
+          CHAOS_SKIP: ${{ inputs.mode == 'full' && '' || '11' }}
+        run: ./scripts/run-chaos.sh
+
+      - name: Upload chaos logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: chaos-logs-${{ github.run_id }}
+          path: |
+            sdk-ruby/.chaos-api-delivery
+            sdk-ruby/chaos-*.log
+          if-no-files-found: ignore
+          retention-days: 7
