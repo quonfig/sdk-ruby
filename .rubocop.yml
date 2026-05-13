@@ -5,6 +5,15 @@ AllCops:
     - lib/prefab_pb.rb
     - vendor/**/*
 
+# Chaos harness intentionally consolidates multiple cooperating classes
+# (ChaosProbe, ChaosLoggerTap, ChaosStopFlag, ChaosShared, ChaosTest) in
+# one file because they share private helpers and are loaded by a single
+# entrypoint (`ruby -I chaos -I lib chaos/test_chaos.rb`).
+Style/OneClassPerFile:
+  Exclude:
+    - 'chaos/**/*'
+    - 'test/test_internal_logger.rb'
+
 # Complexity / size cops are advisory. This SDK is a port of working
 # production code from Prefab; the evaluator and resolver have intrinsic
 # complexity that is fine to keep as-is. Re-enable selectively if a method
