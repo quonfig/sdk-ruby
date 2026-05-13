@@ -342,6 +342,47 @@ class TestSSEConfigClient < Minitest::Test
     assert_logged([/SSE Streaming Error.*StandardError.*unexpected/])
   end
 
+  # qfg-ll6r: chaos scenario 09 requires the SDK to surface a Layer 1 (SSE)
+  # worker_restart_total counter so kill-storm scenarios can be measured. Each
+  # error edge from ld-eventsource represents a disconnect that the supervisor
+  # contract counts as a "restart".
+  def test_restart_total_starts_at_zero
+    prefab_options = OpenStruct.new(sse_api_urls: ['https://stream.example.com'], sdk_key: 'test')
+    config_loader = OpenStruct.new(highwater_mark: 0)
+    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
+    assert_equal 0, client.restart_total
+  end
+
+  def test_restart_total_increments_per_error_edge
+    prefab_options = OpenStruct.new(sse_api_urls: ['https://stream.example.com'], sdk_key: 'test')
+    config_loader = OpenStruct.new(highwater_mark: 0)
+    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
+
+    error_handler = nil
+    fake = Object.new
+    fake.define_singleton_method(:on_event) { |&_b| }
+    fake.define_singleton_method(:on_error) { |&block| error_handler = block }
+    fake.define_singleton_method(:close) {}
+    fake.define_singleton_method(:closed?) { false }
+
+    SSE::Client.stub :new, lambda { |*_args, **_kwargs, &block|
+      block&.call(fake)
+      fake
+    } do
+      client.connect { |_e, _ev, _s| }
+    end
+
+    refute_nil error_handler
+
+    3.times { |i| error_handler.call(StandardError.new("err-#{i}")) }
+    error_handler.call(HTTP::ConnectionError.new('connreset'))
+
+    assert_equal 4, client.restart_total,
+                 'each on_error edge must bump the SSE Layer 1 restart_total counter'
+
+    assert_logged([/SSE Streaming Error/])
+  end
+
   def test_last_event_id_initialization
     # Test with positive highwater_mark
     config_loader = OpenStruct.new(highwater_mark: 42)

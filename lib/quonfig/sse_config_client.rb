@@ -41,6 +41,18 @@ module Quonfig
       @connected = false
       @logger = logger || LOG
       @on_error = on_error
+      @restart_total = 0
+      @restart_mutex = Mutex.new
+    end
+
+    # qfg-ll6r: Layer 1 (SSE) restart counter — surfaces every disconnect edge
+    # that ld-eventsource reports through on_error. The chaos harness pulls
+    # this via Client#worker_restart_total(layer: '1') so kill-storm scenarios
+    # (e.g. scenario 09 — proxy killed 5x in 30s) can assert restart_total >= 5
+    # without depending on polled connection_state edges that may race past the
+    # 50ms probe poller.
+    def restart_total
+      @restart_mutex.synchronize { @restart_total }
     end
 
     def close
@@ -115,6 +127,14 @@ module Quonfig
           else
             @logger.error "SSE Streaming Error: #{error.inspect} for url #{url}"
           end
+
+          # qfg-ll6r: bump Layer 1 restart_total on every error edge — chaos
+          # scenario 09 (proxy killed 5x in 30s) asserts >= 5 restarts. Counted
+          # here, not in the reconnect retry loop, because ld-eventsource
+          # auto-reconnects most errors internally without ever flipping
+          # `closed?` to true — and the error edge IS the disconnect, which is
+          # what the supervisor contract counts.
+          @restart_mutex.synchronize { @restart_total += 1 }
 
           # Notify the parent client BEFORE deciding whether to close — every
           # error edge is a disconnect signal as far as @sse_state goes, even

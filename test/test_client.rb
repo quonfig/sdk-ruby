@@ -244,6 +244,39 @@ class TestClient < Minitest::Test
     assert_equal 0, client.worker_restart_total
   end
 
+  # qfg-ll6r: chaos scenario 09 reads `worker_restart_total(layer: '1')` so the
+  # SSE supervisor's Layer 1 restart count is visible separately from the
+  # Layer 2 polling supervisor.
+  def test_worker_restart_total_layer_1_reads_from_sse_client
+    client = client_with(Quonfig::ConfigStore.new)
+    fake_sse = Object.new
+    fake_sse.define_singleton_method(:restart_total) { 3 }
+    client.instance_variable_set(:@sse_client, fake_sse)
+
+    assert_equal 3, client.worker_restart_total(layer: '1')
+  end
+
+  def test_worker_restart_total_layer_2_reads_from_poll_supervisor
+    client = client_with(Quonfig::ConfigStore.new)
+    fake_poll = Object.new
+    fake_poll.define_singleton_method(:worker_restart_total) { 5 }
+    client.instance_variable_set(:@poll_supervisor, fake_poll)
+
+    assert_equal 5, client.worker_restart_total(layer: '2')
+  end
+
+  def test_worker_restart_total_with_no_layer_sums_both_layers
+    client = client_with(Quonfig::ConfigStore.new)
+    fake_sse = Object.new
+    fake_sse.define_singleton_method(:restart_total) { 3 }
+    fake_poll = Object.new
+    fake_poll.define_singleton_method(:worker_restart_total) { 5 }
+    client.instance_variable_set(:@sse_client, fake_sse)
+    client.instance_variable_set(:@poll_supervisor, fake_poll)
+
+    assert_equal 8, client.worker_restart_total
+  end
+
   def test_inspect_includes_environment
     client = client_with(Quonfig::ConfigStore.new, environment: 'Production')
     assert_match(/environment="Production"/, client.inspect)

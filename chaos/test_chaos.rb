@@ -181,16 +181,22 @@ class ChaosProbe
 
   # Synthesize a state edge based on the SDK's :connection_state symbol.
   # Mirrors sdk-python's ChaosProbe.on_sse_state semantics:
-  #   :connected      -> 'connected', conn_attempts++
+  #   :connected      -> 'connected', conn_attempts++ ON EDGE ONLY
   #   :falling_back   -> 'falling_back', fallback_active = true
   #   :disconnected   -> 'disconnected'
   #   :initializing   -> 'initializing'
+  #
+  # qfg-ll6r: @conn_attempts must increment only on the not-connected ->
+  # connected EDGE. The poller fires every 50ms; a steady connected state
+  # otherwise inflates conn_attempts by ~20/sec and trips chaos scenario 09's
+  # `quonfig_sse_connect_attempts_total < 100` guard. (Bug surfaced as a
+  # reported 1792 attempts over a 90s window — exactly the poll count.)
   def absorb_sdk_state(sdk_state)
     @lock.synchronize do
       case sdk_state
       when :connected
+        @conn_attempts += 1 unless @conn_state == 'connected'
         @conn_state = 'connected'
-        @conn_attempts += 1
       when :falling_back
         # transition into fallback: if we were previously connected, that's a
         # Layer 1 restart edge.
@@ -221,6 +227,10 @@ class ChaosProbe
     @lock.synchronize do
       @last_refresh_ms = (Time.now.to_f * 1000).to_i
     end
+  end
+
+  def bump_restart_layer1(by = 1)
+    @lock.synchronize { @restart_layer1 += by }
   end
 
   def bump_restart_layer2(by = 1)
@@ -539,21 +549,37 @@ def chaos_build_client(probe, _setup)
 end
 
 # Poller thread: bridges client.connection_state into the probe and watches
-# worker_restart_total deltas for Layer 2 attribution. Source of truth for
-# the probe's state machine.
+# worker_restart_total deltas for layer attribution.
+#
+# qfg-ll6r: prefer the SDK's own per-layer counters via
+# `client.worker_restart_total(layer: '1'|'2')` so a kill storm that flaps the
+# socket faster than the 50ms state poll still registers — the
+# state-edge-based bumps in `absorb_sdk_state` are kept as a fallback for
+# older builds without the layer kwarg.
 def chaos_spawn_poller(client, probe, stop_flag)
   Thread.new do
     Thread.current.name = 'chaos-poller' if Thread.current.respond_to?(:name=)
-    prev_l2 = client.worker_restart_total
+    supports_layer_kwarg = client.method(:worker_restart_total).arity != 0
+    prev_l1 = supports_layer_kwarg ? client.worker_restart_total(layer: '1') : 0
+    prev_l2 = supports_layer_kwarg ? client.worker_restart_total(layer: '2') : client.worker_restart_total
     until stop_flag.set?
       begin
         state = client.connection_state
         probe.absorb_sdk_state(state)
 
-        cur = client.worker_restart_total
-        if cur > prev_l2
-          probe.bump_restart_layer2(cur - prev_l2)
-          prev_l2 = cur
+        if supports_layer_kwarg
+          cur_l1 = client.worker_restart_total(layer: '1')
+          if cur_l1 > prev_l1
+            probe.bump_restart_layer1(cur_l1 - prev_l1)
+            prev_l1 = cur_l1
+          end
+          cur_l2 = client.worker_restart_total(layer: '2')
+        else
+          cur_l2 = client.worker_restart_total
+        end
+        if cur_l2 > prev_l2
+          probe.bump_restart_layer2(cur_l2 - prev_l2)
+          prev_l2 = cur_l2
         end
       rescue StandardError => e
         # never let the poller die — log and keep going

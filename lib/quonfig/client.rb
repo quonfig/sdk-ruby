@@ -289,12 +289,20 @@ module Quonfig
     end
 
     # quonfig_sdk_worker_restart_total counter (Tier 1 supervisor contract).
-    # Layer 2 (HTTP polling fallback) is wired through Quonfig::WorkerSupervisor
-    # today. Layer 1 (SSE) still uses Quonfig::SSEConfigClient's in-house
-    # retry loop — its migration to the same supervisor is tracked separately.
-    # Returns an integer total across all supervised workers.
-    def worker_restart_total
-      @poll_supervisor&.worker_restart_total || 0
+    # Layer 1 (SSE) is tracked on Quonfig::SSEConfigClient#restart_total —
+    # incremented on every on_error edge from ld-eventsource (qfg-ll6r).
+    # Layer 2 (HTTP polling fallback) is wired through Quonfig::WorkerSupervisor.
+    #
+    # Pass +layer:+ ('1' or '2') to read a single layer; default returns the
+    # sum across both layers so the chaos harness (and operators) can pull
+    # per-layer values explicitly while preserving the previous single-number
+    # diagnostic surface.
+    def worker_restart_total(layer: nil)
+      case layer&.to_s
+      when '1' then sse_restart_total
+      when '2' then poll_restart_total
+      else          sse_restart_total + poll_restart_total
+      end
     end
 
     # Wall-clock time of the last installed envelope (any source: datadir,
@@ -354,6 +362,22 @@ module Quonfig
     # fetch, SSE event apply, and polling worker fetch.
     def record_refresh!
       @state_mutex.synchronize { @last_successful_refresh = Time.now.utc }
+    end
+
+    def sse_restart_total
+      sse = @sse_client
+      return 0 if sse.nil?
+      return 0 unless sse.respond_to?(:restart_total)
+
+      sse.restart_total.to_i
+    end
+
+    def poll_restart_total
+      sup = @poll_supervisor
+      return 0 if sup.nil?
+      return 0 unless sup.respond_to?(:worker_restart_total)
+
+      sup.worker_restart_total.to_i
     end
 
     # Drive the SSE-side of the connection_state machine. The SSE client
