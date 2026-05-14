@@ -29,12 +29,30 @@ module Quonfig
 
     LOG = Quonfig::InternalLogger.new(self)
 
-    def initialize(prefab_options, config_loader, options = nil, logger = nil)
+    # +on_error+: optional callable invoked on every SSE error edge. Parent
+    # Quonfig::Client wires this to drive @sse_state -> :error so that
+    # +connection_state+ reflects the disconnect (qfg-47c2.27). Without it
+    # the SDK's public health primitive would lie about its own state during
+    # a mid-run socket drop.
+    def initialize(prefab_options, config_loader, options = nil, logger = nil, on_error: nil)
       @prefab_options = prefab_options
       @options = options || Options.new
       @config_loader = config_loader
       @connected = false
       @logger = logger || LOG
+      @on_error = on_error
+      @restart_total = 0
+      @restart_mutex = Mutex.new
+    end
+
+    # qfg-ll6r: Layer 1 (SSE) restart counter — surfaces every disconnect edge
+    # that ld-eventsource reports through on_error. The chaos harness pulls
+    # this via Client#worker_restart_total(layer: '1') so kill-storm scenarios
+    # (e.g. scenario 09 — proxy killed 5x in 30s) can assert restart_total >= 5
+    # without depending on polled connection_state edges that may race past the
+    # 50ms probe poller.
+    def restart_total
+      @restart_mutex.synchronize { @restart_total }
     end
 
     def close
@@ -108,6 +126,26 @@ module Quonfig
             @logger.debug "SSE Streaming: Connection closed (expected timeout) for url #{url}"
           else
             @logger.error "SSE Streaming Error: #{error.inspect} for url #{url}"
+          end
+
+          # qfg-ll6r: bump Layer 1 restart_total on every error edge — chaos
+          # scenario 09 (proxy killed 5x in 30s) asserts >= 5 restarts. Counted
+          # here, not in the reconnect retry loop, because ld-eventsource
+          # auto-reconnects most errors internally without ever flipping
+          # `closed?` to true — and the error edge IS the disconnect, which is
+          # what the supervisor contract counts.
+          @restart_mutex.synchronize { @restart_total += 1 }
+
+          # Notify the parent client BEFORE deciding whether to close — every
+          # error edge is a disconnect signal as far as @sse_state goes, even
+          # if we let the underlying SSE library handle reconnect itself.
+          # qfg-47c2.27
+          if @on_error
+            begin
+              @on_error.call(error)
+            rescue StandardError => e
+              @logger.error "SSE on_error callback raised: #{e.inspect}"
+            end
           end
 
           if @options.errors_to_close_connection.any? { |klass| error.is_a?(klass) }

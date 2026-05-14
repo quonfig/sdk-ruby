@@ -71,3 +71,7 @@ lib/tes*
 
 # Chaos harness — built api-delivery binary written by scripts/run-chaos.sh
 .chaos-api-delivery
+
+# Daily digests live in the monorepo ROOT digests/, not per-sub-repo —
+# a digests/ dir here is a stray artifact from an agent in the wrong cwd.
+digests/

@@ -26,7 +26,10 @@ jobs:
         with:
           repository: quonfig/integration-test-data
           path: integration-test-data
-          ref: main
+          # Pinned to a tag (not main) so a typo in shared YAML can't
+          # break every SDK's CI at once. Bump to a newer tag when
+          # adopting new test cases. See integration-test-data/RELEASING.md.
+          ref: v2026.05.13
 
       - name: Set up Ruby ${{ matrix.ruby-version }}
         uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f  # v1.306.0
