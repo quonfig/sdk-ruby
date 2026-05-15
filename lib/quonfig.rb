@@ -17,7 +17,7 @@ require 'concurrent/atomics'
 require 'concurrent'
 require 'faraday'
 require 'openssl'
-require 'ld-eventsource'
+require 'net/http'
 
 require 'quonfig/internal_logger'
 require 'quonfig/time_helpers'

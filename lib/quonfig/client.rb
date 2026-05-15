@@ -290,8 +290,9 @@ module Quonfig
 
     # quonfig_sdk_worker_restart_total counter (Tier 1 supervisor contract).
     # Layer 1 (SSE) is tracked on Quonfig::SSEConfigClient#restart_total —
-    # incremented on every on_error edge from ld-eventsource (qfg-ll6r).
-    # Layer 2 (HTTP polling fallback) is wired through Quonfig::WorkerSupervisor.
+    # incremented once per reconnect attempt by the SDK-owned reconnect
+    # loop (qfg-35sm). Layer 2 (HTTP polling fallback) is wired through
+    # Quonfig::WorkerSupervisor.
     #
     # Pass +layer:+ ('1' or '2') to read a single layer; default returns the
     # sum across both layers so the chaos harness (and operators) can pull

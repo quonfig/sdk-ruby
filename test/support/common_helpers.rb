@@ -27,14 +27,7 @@ module CommonHelpers
     end
 
     # NOTE: this skips the output check in environments like rubymine that hijack the output
-    if $stderr != $oldstderr && $stderr.respond_to?(:string) && !$stderr.string.empty? && !RUBY_VERSION.start_with?('2.')
-      # Filter out ld-eventsource frozen string literal warnings in Ruby 3.4+
-      stderr_lines = $stderr.string.split("\n").reject do |line|
-        line.include?('ld-eventsource') && line.include?('literal string will be frozen in the future')
-      end
-
-      raise "Unexpected stderr. Handle stderr with assert_stderr\n\n#{stderr_lines.join("\n")}" unless stderr_lines.empty?
-    end
+    raise "Unexpected stderr. Handle stderr with assert_stderr\n\n#{$stderr.string}" if $stderr != $oldstderr && $stderr.respond_to?(:string) && !$stderr.string.empty? && !RUBY_VERSION.start_with?('2.')
 
     $stderr = $oldstderr if $oldstderr
 

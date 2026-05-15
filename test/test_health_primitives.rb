@@ -338,7 +338,7 @@ class TestHealthPrimitives < Minitest::Test
     callback = client.send(:sse_error_callback)
     refute_nil callback, 'client must expose an SSE-error callback for SSEConfigClient'
 
-    callback.call(HTTP::ConnectionError.new('socket dropped'))
+    callback.call(StandardError.new('socket dropped'))
 
     assert_equal :disconnected, client.connection_state,
                  'on_error must drive @sse_state to :error so connection_state reports :disconnected'

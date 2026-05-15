@@ -31,5 +31,4 @@ Gem::Specification.new do |s|
   s.add_dependency 'activesupport', '>= 4'
   s.add_dependency 'concurrent-ruby', '~> 1.0', '>= 1.0.5'
   s.add_dependency 'faraday', '>= 1.0'
-  s.add_dependency 'ld-eventsource', '>= 2.0'
 end
