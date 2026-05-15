@@ -542,4 +542,59 @@ class TestSSEConfigClient < Minitest::Test
       client.connect { |_configs, _event, _source| }
     end
   end
+
+  # qfg-cf52: ld-eventsource calls the logger we hand it from inside its
+  # bare-Thread `run_stream` loop, and several of those call sites
+  # (`connect`, `log_and_dispatch_error`, `build_uri_with_query_params`) are
+  # NOT wrapped in a rescue. If our ReconnectCountingLogger ever raises, the
+  # exception escapes `run_stream`, the worker thread dies, and `@stopped`
+  # stays false forever — `closed?` never flips true so the SDK's
+  # @retry_thread never reconnects. The logger wrapper must therefore be
+  # raise-proof: a throwing wrapped logger, a throwing message block, or a
+  # throwing on_reconnect callback must never propagate out.
+  Reconnect = Quonfig::SSEConfigClient::ReconnectCountingLogger
+
+  def test_reconnect_counting_logger_swallows_wrapped_logger_exceptions
+    boom = Object.new
+    Reconnect::LEVELS.each do |lvl|
+      boom.define_singleton_method(lvl) { |*_a, &_b| raise 'wrapped logger blew up' }
+    end
+    boom.define_singleton_method(:respond_to?) { |*_a| true }
+
+    logger = Reconnect.new(boom) { nil }
+
+    Reconnect::LEVELS.each do |lvl|
+      logger.public_send(lvl, 'hello')
+      logger.public_send(lvl) { 'lazy message' }
+    end
+  end
+
+  def test_reconnect_counting_logger_swallows_on_reconnect_exceptions
+    logger = Reconnect.new(nil) { raise 'on_reconnect blew up' }
+
+    # The reconnect signal at info level is what triggers @on_reconnect.
+    logger.info('Will retry connection after 1.000 seconds')
+  end
+
+  def test_reconnect_counting_logger_swallows_message_block_exceptions
+    logger = Reconnect.new(nil) { nil }
+
+    logger.info { raise 'message block blew up' }
+  end
+
+  def test_reconnect_counting_logger_still_counts_when_wrapped_logger_raises
+    boom = Object.new
+    Reconnect::LEVELS.each do |lvl|
+      boom.define_singleton_method(lvl) { |*_a, &_b| raise 'wrapped logger blew up' }
+    end
+    boom.define_singleton_method(:respond_to?) { |*_a| true }
+
+    count = 0
+    logger = Reconnect.new(boom) { count += 1 }
+
+    logger.info('Will retry connection after 1.000 seconds')
+
+    assert_equal 1, count,
+                 'a throwing wrapped logger must not stop the reconnect counter from firing'
+  end
 end

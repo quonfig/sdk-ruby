@@ -24,11 +24,37 @@ module Quonfig
         @on_reconnect = on_reconnect
       end
 
+      # Crash-safe by construction: ld-eventsource calls this logger from
+      # inside its bare-Thread +run_stream+ loop, and several of those call
+      # sites (+connect+, +log_and_dispatch_error+, query-param building) are
+      # NOT wrapped in a rescue. Any exception that escapes a logger call kills
+      # the worker thread with +@stopped+ still false, so +closed?+ never flips
+      # true and the SDK's @retry_thread never reconnects — the SSE stream is
+      # silently wedged forever (qfg-cf52, the chaos scenario 05 flake). Every
+      # step here is therefore independently guarded: a throwing message block,
+      # a throwing on_reconnect callback, or a throwing wrapped logger can
+      # never propagate out of this method.
       LEVELS.each do |level|
         define_method(level) do |message = nil, &block|
-          message = block.call if message.nil? && block
-          @on_reconnect.call if level == :info && message.to_s.include?(RECONNECT_SIGNAL)
-          @wrapped&.public_send(level, message) if @wrapped.respond_to?(level)
+          begin
+            message = block.call if message.nil? && block
+          rescue StandardError
+            message = nil
+          end
+
+          if level == :info && message.to_s.include?(RECONNECT_SIGNAL)
+            begin
+              @on_reconnect.call
+            rescue StandardError
+              nil
+            end
+          end
+
+          begin
+            @wrapped.public_send(level, message) if @wrapped.respond_to?(level)
+          rescue StandardError
+            nil
+          end
         end
       end
 
