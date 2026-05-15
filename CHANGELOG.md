@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.0.15 - 2026-05-15
+
+- **Fix (SSE): count ld-eventsource internal reconnects (qfg-ie49).** ld-eventsource auto-reconnects on a clean socket FIN *internally* and never fires `on_error`, so the qfg-ll6r on_error-based `restart_total` counter sat at 0 under flapping outages (chaos scenario 09 — proxy killed 5x in 30s). `restart_total` now counts actual reconnects from two mutually-exclusive sources: ld-eventsource internal reconnects (observed via a pass-through logger wrapper that watches the per-reconnect `"Will retry connection after"` info line — the only hook the library exposes) and SDK-driven reconnects in `@retry_thread`. `on_error` is no longer a counting source.
+- **Fix (SSE): backoff reset interval (qfg-ie49).** New `sse_reconnect_reset_interval` option, default `1s`. ld-eventsource's 60s default lets the backoff run away under flapping — the SDK is mid-sleep when later kills land and never observes them. 1s mirrors sdk-python's reset-on-every-successful-connect behavior. Sustained outages still back off exponentially (`mark_success` is never called, so the reset never triggers).
+- **Fix (SSE): make `ReconnectCountingLogger` raise-proof (qfg-cf52).** ld-eventsource calls the logger from inside a bare-`Thread` `run_stream` loop with several call sites unguarded by `rescue`. A throwing wrapper would kill the worker with `@stopped=false`, leaving `closed?` false forever — silently wedging the SSE stream (the intermittent chaos scenario 05 flake). Every wrapper step is now independently rescued.
+
 ## 0.0.14 - 2026-05-10
 
 - **Feat: expose `variant` and `flag_metadata` on `EvaluationDetails` (qfg-9dbl).** OpenFeature's `EvaluationDetails` Ruby return type now carries the variant name and the flag-level metadata hash alongside the resolved value/reason. Brings sdk-ruby to parity with the other SDKs' detail surfaces and lets host apps (incl. the Ruby OpenFeature provider) read variant/metadata without re-fetching the config.
