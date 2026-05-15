@@ -16,6 +16,7 @@ group :development do
   # parallel 2.x requires Ruby >= 3.3 — pin to 1.x while the matrix
   # still includes 3.2 (rubocop pulls parallel transitively).
   gem 'parallel', '< 2.0'
+  gem 'rake'
   gem 'rdoc'
   gem 'rubocop'
   gem 'simplecov', '>= 0'
