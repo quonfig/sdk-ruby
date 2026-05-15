@@ -24,7 +24,11 @@ module Quonfig
     # Client is tracked here so the hook can fan out before_fork_in_parent /
     # after_fork_in_child across all of them without the customer needing to
     # name a specific instance. ObjectSpace::WeakMap means a Client that goes
-    # out of scope is GC'd without leaking through this registry.
+    # out of scope is GC'd without leaking through this registry. Stopped
+    # Clients stay in the registry until GC; both fork hooks early-return on
+    # +@stopped+ so a stopped instance is effectively a no-op. (We don't use
+    # WeakMap#delete because it was added in Ruby 3.3 and the matrix still
+    # includes 3.2.)
     @instances = ObjectSpace::WeakMap.new
     @instances_mutex = Mutex.new
 
@@ -36,10 +40,6 @@ module Quonfig
 
       def register_instance(client)
         @instances_mutex.synchronize { @instances[client] = true }
-      end
-
-      def unregister_instance(client)
-        @instances_mutex.synchronize { @instances.delete(client) }
       end
     end
 
@@ -293,7 +293,6 @@ module Quonfig
     def stop
       @stopped = true
       tear_down_threaded_components!
-      self.class.unregister_instance(self)
     end
 
     # qfg-ryov: pre-fork hook. Close the SSE worker, polling supervisor,
@@ -306,6 +305,8 @@ module Quonfig
     # same fd and corrupt each other's bytes. Closing in the parent before
     # fork is the only safe shape.
     def before_fork_in_parent
+      return if @stopped
+
       tear_down_threaded_components!
     end
 
