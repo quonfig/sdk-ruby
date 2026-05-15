@@ -311,6 +311,77 @@ class TestSSEConfigClient < Minitest::Test
     assert_logged([/SSE Streaming Error.*SSEReadDeadlineExceeded/])
   end
 
+  # qfg-tj18: ReadDeadlineWatchdog uses Thread#raise to interrupt the worker.
+  # The watchdog mutex covers the *decision* to fire, but once raise returns,
+  # the exception is queued and Ruby delivers it at the worker's next
+  # interrupt checkpoint. Under a race, that checkpoint can be in the
+  # post-rescue stretch of run_loop (the `delay = …` line, the `until`
+  # check) or inside interruptible_sleep — neither of which is wrapped by
+  # the inner `rescue StandardError` around stream_once. A single late raise
+  # there kills the worker Thread.new block and SSE silently stops
+  # reconnecting for the lifetime of this client.
+  #
+  # The fix is Thread.handle_interrupt(SSEReadDeadlineExceeded => :on_blocking)
+  # around the run_loop body, plus a paranoid outer rescue. This test stubs
+  # stream_once so the worker spends almost all its time in
+  # interruptible_sleep, then hammers it with raises — every one of them
+  # would escape the Thread block under the old code.
+  def test_worker_survives_late_landing_read_deadline_raise
+    fake_client_class = Class.new(Quonfig::SSEConfigClient) do
+      attr_reader :stream_calls
+
+      def initialize(*args, **kwargs)
+        super
+        @stream_calls = 0
+      end
+
+      private
+
+      def stream_once
+        @stream_calls += 1
+        envelope = Quonfig::ConfigEnvelope.new(configs: [], meta: {})
+        yield Quonfig::StreamEvent.new(envelope, @stream_calls.to_s, '{}')
+        # Simulate clean FIN — return immediately, no blocking IO so the
+        # only blocking call in run_loop is the inter-iteration sleep.
+      end
+    end
+
+    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:0'], sdk_key: 'k')
+    config_loader = OpenStruct.new(highwater_mark: 0)
+    sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
+    client = fake_client_class.new(prefab_options, config_loader, sse_options)
+
+    client.start { |_e, _ev, _s| nil }
+
+    begin
+      wait_for -> { client.stream_calls >= 1 }
+      worker = client.instance_variable_get(:@worker)
+
+      50.times do
+        break unless worker.alive?
+
+        worker.raise(Quonfig::SSEConfigClient::SSEReadDeadlineExceeded.new('late raise'))
+        sleep 0.005
+      end
+
+      sleep 0.2
+
+      assert worker.alive?,
+             "worker must survive late-landing SSEReadDeadlineExceeded (alive=#{worker.alive?}, stream_calls=#{client.stream_calls})"
+
+      before = client.stream_calls
+      wait_for -> { client.stream_calls > before }
+      assert client.stream_calls > before,
+             "worker must keep reconnecting after contained late raise (#{before} -> #{client.stream_calls})"
+    ensure
+      client&.close
+    end
+
+    # Late-landing raises are expected to be logged as SSE Streaming Error
+    # (when caught by the inner rescue) or as the paranoid-rescue line.
+    assert_logged([/SSE.*(Streaming Error|late-raise contained|read deadline)/])
+  end
+
   def test_close_interrupts_in_flight_stream
     server, = start_webrick_server(4572, SlowEndpoint)
     nil

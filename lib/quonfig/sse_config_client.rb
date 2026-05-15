@@ -148,40 +148,63 @@ module Quonfig
     # restart_total *before* every retry — so the counter answers "how many
     # times have we reconnected after a drop" rather than "how many connect
     # attempts have occurred." The first attempt is not a restart.
+    #
+    # qfg-tj18: the body is wrapped in
+    # +Thread.handle_interrupt(SSEReadDeadlineExceeded => :on_blocking)+ so a
+    # watchdog raise that's already been queued (the watchdog's mutex covers
+    # the *decision* to fire but cannot un-queue a delivered raise) lands
+    # only at a blocking-IO checkpoint. Inside stream_once we explicitly
+    # re-enable +:immediate+ around the +read_body+ block where we *do*
+    # want the raise to wake the read. A per-iteration paranoid rescue
+    # catches any late-landing raise that escapes the inner +rescue
+    # StandardError+ (e.g. lands inside +interruptible_sleep+ between
+    # iterations) so the worker thread never silently dies.
     def run_loop(&on_envelope)
-      delay = @options.sse_initial_reconnect_delay
-      first_attempt = true
+      Thread.handle_interrupt(SSEReadDeadlineExceeded => :on_blocking) do
+        delay = @options.sse_initial_reconnect_delay
+        first_attempt = true
 
-      until @stopped.value
-        unless first_attempt
-          increment_restart!
-          interruptible_sleep(jittered(delay))
-          break if @stopped.value
-        end
-        first_attempt = false
+        until @stopped.value
+          begin
+            unless first_attempt
+              increment_restart!
+              interruptible_sleep(jittered(delay))
+              break if @stopped.value
+            end
+            first_attempt = false
 
-        connected_at_least_once = false
-        begin
-          stream_once do |event|
-            connected_at_least_once = true
-            # Persist the most recent id so the next reconnect resumes from
-            # there via Last-Event-Id.
-            @last_event_id = event.id if event.id
-            on_envelope.call(event.envelope, event, :sse)
-            # A connection healthy enough to deliver a real envelope earns a
-            # reset of the backoff. Sustained outages never reach this branch
-            # (no event ever delivered) so the exponential growth still holds.
-            delay = @options.sse_initial_reconnect_delay
+            connected_at_least_once = false
+            begin
+              stream_once do |event|
+                connected_at_least_once = true
+                # Persist the most recent id so the next reconnect resumes
+                # from there via Last-Event-Id.
+                @last_event_id = event.id if event.id
+                on_envelope.call(event.envelope, event, :sse)
+                # A connection healthy enough to deliver a real envelope
+                # earns a reset of the backoff. Sustained outages never
+                # reach this branch (no event ever delivered) so the
+                # exponential growth still holds.
+                delay = @options.sse_initial_reconnect_delay
+              end
+            rescue StandardError => e
+              handle_error(e) unless @stopped.value
+            end
+
+            # Backoff only grows on failed connect attempts. A server-
+            # initiated clean FIN after a healthy session (normal LB
+            # recycling) reuses the same delay — punishing it would make
+            # us look broken under benign rolling restarts. Matches
+            # sdk-go's `connectedOK` distinction.
+            delay = [delay * 2, @options.sse_max_reconnect_delay].min unless connected_at_least_once
+          rescue SSEReadDeadlineExceeded => e
+            # Paranoid backstop (qfg-tj18). A watchdog raise that landed
+            # outside +stream_once+ — typically in +interruptible_sleep+
+            # — must not kill the worker thread. We log loudly and let the
+            # +until+ loop carry on.
+            @logger.error "SSE watchdog late-raise contained: #{e.inspect}; resuming loop"
           end
-        rescue StandardError => e
-          handle_error(e) unless @stopped.value
         end
-
-        # Backoff only grows on failed connect attempts. A server-initiated
-        # clean FIN after a healthy session (normal LB recycling) reuses the
-        # same delay — punishing it would make us look broken under benign
-        # rolling restarts. Matches sdk-go's `connectedOK` distinction.
-        delay = [delay * 2, @options.sse_max_reconnect_delay].min unless connected_at_least_once
       end
     ensure
       register_active(nil)
@@ -233,11 +256,17 @@ module Quonfig
           end
 
           parser = EventParser.new
-          resp.read_body do |chunk|
-            watchdog.reset!
-            break if @stopped.value
+          # qfg-tj18: run_loop wraps the body in +:on_blocking+ which
+          # *would* still deliver during read_body (read_body is a
+          # blocking IO call), but be explicit: we want the watchdog raise
+          # to land here without ambiguity.
+          Thread.handle_interrupt(SSEReadDeadlineExceeded => :immediate) do
+            resp.read_body do |chunk|
+              watchdog.reset!
+              break if @stopped.value
 
-            parser.feed(chunk, &block)
+              parser.feed(chunk, &block)
+            end
           end
           # read_body returned cleanly — either a server-initiated FIN, or
           # the watchdog closed the socket on a silent stall. Either way,
