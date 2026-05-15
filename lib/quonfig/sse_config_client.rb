@@ -65,6 +65,9 @@ module Quonfig
       @restart_total = 0
       @restart_mutex = Mutex.new
 
+      @on_envelope_error_total = 0
+      @on_envelope_error_mutex = Mutex.new
+
       @conn_mutex = Mutex.new
       @active_http = nil
 
@@ -78,6 +81,15 @@ module Quonfig
     # scenario 09 (>= 5 after 5 proxy flaps in 30s).
     def restart_total
       @restart_mutex.synchronize { @restart_total }
+    end
+
+    # qfg-m3lk: count of user-supplied on_envelope callback invocations that
+    # raised. Surfaced for operator visibility — a non-zero value here with
+    # restart_total stable means a caller-side listener bug, not a transport
+    # problem. (Pre-fix, those raises propagated into run_loop's rescue and
+    # masqueraded as transport errors, causing reconnect storms.)
+    def on_envelope_error_total
+      @on_envelope_error_mutex.synchronize { @on_envelope_error_total }
     end
 
     def start(&on_envelope)
@@ -178,9 +190,15 @@ module Quonfig
               stream_once do |event|
                 connected_at_least_once = true
                 # Persist the most recent id so the next reconnect resumes
-                # from there via Last-Event-Id.
+                # from there via Last-Event-Id. Updated *before* the user
+                # callback runs so a raising listener still advances the
+                # cursor — the event was delivered to us, the bug is on the
+                # caller side.
                 @last_event_id = event.id if event.id
-                on_envelope.call(event.envelope, event, :sse)
+                # qfg-m3lk: callback exceptions are isolated. A buggy
+                # listener must not look like a transport error and trigger
+                # a reconnect.
+                invoke_on_envelope_safely(on_envelope, event)
                 # A connection healthy enough to deliver a real envelope
                 # earns a reset of the backoff. Sustained outages never
                 # reach this branch (no event ever delivered) so the
@@ -298,6 +316,18 @@ module Quonfig
     def handle_error(error)
       @logger.error "SSE Streaming Error: #{error.inspect}"
       invoke_on_error(error)
+    end
+
+    # qfg-m3lk: rescue StandardError (NOT Exception) so SystemExit /
+    # Interrupt / SignalException still escape — Ctrl-C inside a customer
+    # callback must still kill the process. StandardError is the right
+    # boundary for "the caller's listener has a bug".
+    def invoke_on_envelope_safely(on_envelope, event)
+      on_envelope.call(event.envelope, event, :sse)
+    rescue StandardError => e
+      @on_envelope_error_mutex.synchronize { @on_envelope_error_total += 1 }
+      bt = (e.backtrace || []).first(5).join("\n  ")
+      @logger.error "SSE on_envelope callback raised: #{e.class}: #{e.message}\n  #{bt}"
     end
 
     def invoke_on_error(error)

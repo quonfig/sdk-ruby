@@ -382,6 +382,119 @@ class TestSSEConfigClient < Minitest::Test
     assert_logged([/SSE.*(Streaming Error|late-raise contained|read deadline)/])
   end
 
+  # qfg-m3lk: a buggy on_envelope listener must not look like a transport
+  # error. If the user-supplied callback raises, it must be isolated inside
+  # stream_once's block so the exception never reaches run_loop's rescue and
+  # therefore never bumps restart_total. The connection keeps consuming the
+  # stream — one bad callback does not cost a reconnect.
+  class FakeStreamingClient < Quonfig::SSEConfigClient
+    attr_reader :stream_calls
+
+    def initialize(*args, event_count: 100, **kwargs)
+      super(*args, **kwargs)
+      @stream_calls = 0
+      @event_count = event_count
+    end
+
+    private
+
+    def stream_once
+      @stream_calls += 1
+      @event_count.times do |i|
+        envelope = Quonfig::ConfigEnvelope.new(configs: [], meta: {})
+        yield Quonfig::StreamEvent.new(envelope, (i + 1).to_s, '{}')
+      end
+      # Long sleep so the test can assert without racing the reconnect loop.
+      # interruptible_sleep on close() will wake us.
+      sleep 5
+    end
+  end
+
+  def test_on_envelope_exception_does_not_trigger_reconnect
+    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:0'], sdk_key: 'k')
+    config_loader = OpenStruct.new(highwater_mark: 0)
+    sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
+    client = FakeStreamingClient.new(prefab_options, config_loader, sse_options)
+
+    attempts = 0
+    client.start do |_envelope, _event, _source|
+      attempts += 1
+      raise StandardError, 'boom'
+    end
+
+    begin
+      wait_for -> { attempts >= 100 }
+      sleep 0.05
+
+      assert_equal 0, client.restart_total,
+                   'callback exceptions must not look like transport errors'
+      assert_equal 100, attempts,
+                   'all 100 callbacks must be attempted even though each raises'
+
+      worker = client.instance_variable_get(:@worker)
+      assert worker.alive?, 'worker thread must survive a raising callback'
+
+      assert_equal 100, client.on_envelope_error_total,
+                   'every raise must be counted in on_envelope_error_total'
+    ensure
+      client&.close
+    end
+
+    assert_logged([/SSE on_envelope callback raised.*StandardError.*boom/])
+  end
+
+  def test_on_envelope_intermittent_raises_still_process_other_events
+    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:0'], sdk_key: 'k')
+    config_loader = OpenStruct.new(highwater_mark: 0)
+    sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
+    client = FakeStreamingClient.new(prefab_options, config_loader, sse_options,
+                                     event_count: 30)
+
+    delivered = []
+    client.start do |_envelope, event, _source|
+      id = event.id.to_i
+      raise ArgumentError, 'bad event' if (id % 3).zero?
+
+      delivered << id
+    end
+
+    begin
+      wait_for -> { delivered.size >= 20 }
+      sleep 0.05
+
+      assert_equal 0, client.restart_total
+      assert_equal 20, delivered.size,
+                   "two-thirds of events should be delivered without raising (got #{delivered.size})"
+      delivered.each { |id| refute_equal 0, id % 3, "id #{id} should not be a multiple of 3" }
+      assert_equal '30', client.instance_variable_get(:@last_event_id),
+                   'last_event_id must advance even across raising callbacks'
+    ensure
+      client&.close
+    end
+
+    assert_logged([/SSE on_envelope callback raised.*ArgumentError.*bad event/])
+  end
+
+  def test_on_envelope_does_not_swallow_non_standard_error
+    # Exception / SystemExit / Interrupt must propagate — otherwise Ctrl-C
+    # mid-callback is unkillable. We test this at the unit level (no worker
+    # thread) by calling the safe helper directly.
+    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:0'], sdk_key: 'k')
+    config_loader = OpenStruct.new(highwater_mark: 0)
+    client = Quonfig::SSEConfigClient.new(prefab_options, config_loader)
+
+    envelope = Quonfig::ConfigEnvelope.new(configs: [], meta: {})
+    event = Quonfig::StreamEvent.new(envelope, '1', '{}')
+
+    raising = ->(_e, _ev, _s) { raise Interrupt }
+
+    assert_raises(Interrupt) do
+      client.send(:invoke_on_envelope_safely, raising, event)
+    end
+    assert_equal 0, client.on_envelope_error_total,
+                 'non-StandardError must NOT be counted as a callback error'
+  end
+
   def test_close_interrupts_in_flight_stream
     server, = start_webrick_server(4572, SlowEndpoint)
     nil
