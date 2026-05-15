@@ -358,4 +358,48 @@ class TestHealthPrimitives < Minitest::Test
   ensure
     client&.stop
   end
+
+  # qfg-i5xv: a terminal SSE classification (HTTP 401/403/404) MUST NOT engage
+  # the Layer 2 fallback poller. The same SDK key that 401'd over SSE will
+  # 401 over HTTP polling — engaging polling just moves the auth-failure
+  # storm from sse-restart to http-poll. The fallback poller is for transient
+  # disruption, not for "the customer's key is bad".
+  def test_terminal_sse_error_does_not_engage_polling_fallback
+    client = make_client(poll_interval: 0.05)
+    stub_config_loader!(client)
+
+    callback = client.send(:sse_error_callback)
+    terminal_err = Quonfig::SSEConfigClient::SSEHTTPTerminalError.new(401)
+    callback.call(terminal_err)
+
+    # Initial-fail path normally engages polling immediately; with a terminal
+    # classification that engagement must be suppressed.
+    sleep 0.05
+    assert_equal :disconnected, client.connection_state,
+                 'terminal SSE error must NOT trigger polling fallback'
+    refute client.instance_variable_get(:@poll_supervisor),
+           'no Layer 2 supervisor should be alive after terminal SSE error'
+
+    assert client.terminal_failure?,
+           'client must expose terminal_failure? to operators after a terminal SSE error'
+  ensure
+    client&.stop
+  end
+
+  def test_terminal_failure_predicate_false_until_terminal_error
+    client = make_client(poll_interval: 0.05)
+    stub_config_loader!(client)
+
+    refute client.terminal_failure?, 'terminal_failure? must default to false'
+
+    client.send(:handle_sse_state_change, :connected)
+    refute client.terminal_failure?, 'terminal_failure? must remain false while connected'
+
+    # Transient (non-terminal) error must NOT flip the predicate.
+    callback = client.send(:sse_error_callback)
+    callback.call(Quonfig::SSEConfigClient::SSEHTTPStatusError.new(503))
+    refute client.terminal_failure?, 'a 503 (transient) must not be classified terminal'
+  ensure
+    client&.stop
+  end
 end

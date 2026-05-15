@@ -48,6 +48,7 @@ module Quonfig
       @sse_state = :idle
       @sse_ever_connected = false
       @fallback_engage_timer = nil
+      @sse_terminal_failure = false
 
       # If the caller injected a store, we're in test/bootstrap mode; skip I/O.
       return if store
@@ -403,20 +404,31 @@ module Quonfig
       @sse_error_callback ||= ->(error) { handle_sse_error(error) }
     end
 
-    def handle_sse_error(_error)
+    def handle_sse_error(error)
+      # qfg-i5xv: classify terminal HTTP failures (401/403/404). The same SDK
+      # key that won't auth over SSE won't auth over HTTP polling either, so
+      # we must NOT engage the Layer 2 fallback — that just moves the
+      # auth-failure storm from one endpoint to another. Once flipped,
+      # @sse_terminal_failure latches: a buggy customer retry loop cannot
+      # un-classify the failure by driving the state machine.
+      @state_mutex.synchronize { @sse_terminal_failure = true } if error.is_a?(Quonfig::SSEConfigClient::SSEHTTPTerminalError)
       handle_sse_state_change(:error)
     end
 
     def handle_sse_state_change(new_state)
       state = new_state.to_sym
-      ever_connected = @state_mutex.synchronize do
+      ever_connected, terminal = @state_mutex.synchronize do
         @sse_state = state
         @sse_ever_connected = true if state == :connected
-        @sse_ever_connected
+        [@sse_ever_connected, @sse_terminal_failure]
       end
 
       return unless @options.respond_to?(:enable_polling) && @options.enable_polling
       return if @stopped
+      # qfg-i5xv: a terminal SSE classification suppresses polling engage in
+      # every branch — the customer's key is bad and HTTP polling will fail
+      # identically. Operators surface this via #terminal_failure?.
+      return if terminal
 
       case state
       when :connected
@@ -430,6 +442,21 @@ module Quonfig
         end
       end
     end
+
+    public
+
+    # qfg-i5xv: true once the SSE layer has classified an HTTP response as
+    # terminal (401/403/404) — bad SDK key, revoked workspace permission,
+    # or wrong endpoint. The classification latches: the SDK will not
+    # auto-recover, and a customer-supplied retry must rebuild the client.
+    # Surfaced for operator alerting; `connection_state` still reports
+    # `:disconnected` to honor the documented connection_state vocabulary
+    # (supervisor-test-contract.md §"connectionState()" — values fixed).
+    def terminal_failure?
+      @state_mutex.synchronize { @sse_terminal_failure }
+    end
+
+    private
 
     def cancel_fallback_engage_timer
       timer = @state_mutex.synchronize do

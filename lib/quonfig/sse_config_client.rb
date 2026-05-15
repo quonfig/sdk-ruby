@@ -51,6 +51,11 @@ module Quonfig
 
     LOG = Quonfig::InternalLogger.new(self)
 
+    # qfg-i5xv: HTTP status codes the SDK classifies as terminal — these will
+    # not heal by retrying (bad key, revoked permission, missing endpoint).
+    # Anything else (5xx, 429, network errors) stays on the transient path.
+    TERMINAL_HTTP_CODES = [401, 403, 404].freeze
+
     # +on_error+: optional callable invoked on every SSE error edge. Parent
     # Quonfig::Client wires this to drive @sse_state -> :error so that
     # +connection_state+ reflects the disconnect (qfg-47c2.27).
@@ -266,6 +271,19 @@ module Quonfig
       begin
         http.request(req) do |resp|
           code = resp.code.to_i
+          if TERMINAL_HTTP_CODES.include?(code)
+            # qfg-i5xv: 401/403/404 will not heal by retrying — bad key,
+            # revoked permission, or wrong endpoint. Mark stopped *before*
+            # invoking on_error so the loop's terminal-error branch is
+            # already locked in if the parent callback inspects state, and
+            # so the inner rescue's `handle_error(e) unless @stopped.value`
+            # guard suppresses a second on_error edge.
+            err = SSEHTTPTerminalError.new(code)
+            @logger.error "SSE Streaming Terminal Error: HTTP #{code} for url #{url}; will not retry"
+            @stopped.make_true
+            invoke_on_error(err)
+            raise err
+          end
           if code != 200
             err = SSEHTTPStatusError.new(code)
             @logger.error "SSE Streaming Error: HTTP #{code} for url #{url}"
@@ -380,6 +398,14 @@ module Quonfig
         super("HTTP #{status_code}")
       end
     end
+
+    # qfg-i5xv: terminal HTTP failures the SDK will not retry. 401 = bad key,
+    # 403 = revoked workspace permission, 404 = wrong endpoint / missing
+    # workspace. A subclass of SSEHTTPStatusError so existing on_error
+    # callbacks that only check `is_a?(SSEHTTPStatusError)` keep working,
+    # while customers that want to distinguish (alerting, OpenFeature
+    # provider error events) can dispatch on the subclass.
+    class SSEHTTPTerminalError < SSEHTTPStatusError; end
 
     # Raised by the watchdog into the worker thread when the per-chunk
     # read deadline elapses. Caught by run_loop's rescue, indistinguishable

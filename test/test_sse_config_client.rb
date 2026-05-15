@@ -222,6 +222,153 @@ class TestSSEConfigClient < Minitest::Test
     assert_logged([/SSE Streaming Error.*HTTP 500/])
   end
 
+  # qfg-i5xv: 401/403/404 are not recoverable by retrying — bad keys,
+  # revoked permissions, and missing workspaces will not heal on a reconnect.
+  # The SDK must classify these as terminal: invoke on_error with a
+  # SSEHTTPTerminalError sentinel, mark the client stopped, exit the loop,
+  # and DO NOT bump restart_total. At launch scale a single misconfigured
+  # customer key could otherwise hold an indefinite ~2 rpm reconnect attempt
+  # against api-delivery-sse — see bead description.
+  def assert_terminal_status_behavior(status_code, port)
+    TerminalStatusEndpoint.status_code = status_code
+    TerminalStatusEndpoint.hits = 0
+
+    server, = start_webrick_server(port, TerminalStatusEndpoint)
+    errors = []
+    client = nil
+
+    begin
+      Thread.new { server.start }
+
+      prefab_options = OpenStruct.new(sse_api_urls: ["http://localhost:#{port}"], sdk_key: 'k')
+      config_loader = OpenStruct.new(highwater_mark: 0)
+      sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
+      client = Quonfig::SSEConfigClient.new(
+        prefab_options, config_loader, sse_options, nil,
+        on_error: ->(e) { errors << e }
+      )
+
+      client.start { |_e, _ev, _s| }
+
+      # Give the loop more than enough time to retry many times if it
+      # was going to. With 0.05s initial reconnect delay and ~5s wall
+      # clock, a non-terminal classification would produce dozens of hits.
+      sleep 1.0
+      wait_for(-> { !client.instance_variable_get(:@worker).alive? }, max_wait: 3)
+    ensure
+      client&.close
+      server.stop
+    end
+
+    worker = client.instance_variable_get(:@worker)
+    refute worker&.alive?, "worker thread must exit cleanly on terminal HTTP #{status_code}"
+    assert_equal 1, TerminalStatusEndpoint.hits,
+                 "terminal HTTP #{status_code} must produce exactly one connect attempt (got #{TerminalStatusEndpoint.hits})"
+    assert_equal 0, client.restart_total,
+                 "terminal HTTP #{status_code} must NOT bump restart_total (got #{client.restart_total})"
+    assert_equal 1, errors.size,
+                 "on_error must fire exactly once for terminal HTTP #{status_code} (got #{errors.size})"
+    assert errors.first.is_a?(Quonfig::SSEConfigClient::SSEHTTPTerminalError),
+           "expected SSEHTTPTerminalError, got #{errors.first.class}"
+    assert_equal status_code, errors.first.status_code
+
+    assert_logged([/SSE.*Terminal.*HTTP #{status_code}/])
+  end
+
+  def test_terminal_classification_401_unauthorized
+    assert_terminal_status_behavior(401, 4574)
+  end
+
+  def test_terminal_classification_403_forbidden
+    assert_terminal_status_behavior(403, 4575)
+  end
+
+  def test_terminal_classification_404_not_found
+    assert_terminal_status_behavior(404, 4576)
+  end
+
+  # qfg-i5xv: a 503 (or any 5xx) is transient — the SDK must keep retrying,
+  # bump restart_total per reconnect, and NOT invoke a terminal-error
+  # callback. This guards against an over-broad fix that classifies every
+  # non-200 as terminal.
+  def test_500_is_not_terminal
+    server, = start_webrick_server(4577, AlwaysErroringEndpoint)
+    errors = []
+    client = nil
+
+    begin
+      Thread.new { server.start }
+
+      prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4577'], sdk_key: 'k')
+      config_loader = OpenStruct.new(highwater_mark: 0)
+      sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
+      client = Quonfig::SSEConfigClient.new(
+        prefab_options, config_loader, sse_options, nil,
+        on_error: ->(e) { errors << e }
+      )
+
+      client.start { |_e, _ev, _s| }
+      wait_for -> { client.restart_total >= 2 }
+    ensure
+      client&.close
+      server.stop
+    end
+
+    worker = client.instance_variable_get(:@worker)
+    refute worker&.alive?, 'worker should be stopped after client.close'
+    assert client.restart_total >= 2,
+           "transient 500 must keep retrying (restart_total=#{client.restart_total})"
+    refute errors.any?(Quonfig::SSEConfigClient::SSEHTTPTerminalError),
+           "transient 500 must NOT produce SSEHTTPTerminalError, got #{errors.map(&:class).uniq.inspect}"
+
+    assert_logged([/SSE Streaming Error.*HTTP 500/])
+  end
+
+  # qfg-i5xv: a healthy session followed by a 401 on reconnect must still
+  # deliver the healthy events normally, then stop cleanly when the terminal
+  # classification fires. Regression guard against a fix that short-circuits
+  # too early (e.g. checking the code before the read_body loop runs).
+  def test_terminal_classification_after_healthy_session
+    HealthyThenTerminalEndpoint.counter = 0
+    HealthyThenTerminalEndpoint.healthy_hits = 0
+    HealthyThenTerminalEndpoint.terminal_hits = 0
+    HealthyThenTerminalEndpoint.healthy_count = 1
+    HealthyThenTerminalEndpoint.terminal_status = 401
+
+    server, = start_webrick_server(4578, HealthyThenTerminalEndpoint)
+    errors = []
+    seen = []
+    client = nil
+
+    begin
+      Thread.new { server.start }
+
+      prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4578'], sdk_key: 'k')
+      config_loader = OpenStruct.new(highwater_mark: 0)
+      sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
+      client = Quonfig::SSEConfigClient.new(
+        prefab_options, config_loader, sse_options, nil,
+        on_error: ->(e) { errors << e }
+      )
+
+      client.start { |_envelope, event, _source| seen << event.id }
+      wait_for(-> { !client.instance_variable_get(:@worker).alive? }, max_wait: 5)
+    ensure
+      client&.close
+      server.stop
+    end
+
+    assert_equal 5, seen.size,
+                 "5 healthy events must be delivered before terminal classification fires (got #{seen.size})"
+    assert_equal 1, HealthyThenTerminalEndpoint.terminal_hits,
+                 "exactly one terminal hit (got #{HealthyThenTerminalEndpoint.terminal_hits})"
+    terminal_err = errors.find { |e| e.is_a?(Quonfig::SSEConfigClient::SSEHTTPTerminalError) }
+    refute_nil terminal_err, "expected terminal error, got #{errors.map(&:class).inspect}"
+    assert_equal 401, terminal_err.status_code
+
+    assert_logged([/SSE.*Terminal.*HTTP 401/])
+  end
+
   def test_last_event_id_sent_on_reconnect
     LastEventIdEndpoint.received_ids.clear
     server, = start_webrick_server(4571, LastEventIdEndpoint)
@@ -709,6 +856,60 @@ class TestSSEConfigClient < Minitest::Test
       # not wait for the server to ever send anything else.
       body = "id: 1\ndata: #{TestSSEConfigClient::SAMPLE_JSON_PAYLOAD}\n\n"
       response.body = body
+    end
+  end
+
+  # qfg-i5xv: returns a configurable HTTP status code on every request.
+  # Used to drive 401/403/404 terminal-classification tests and to ensure
+  # the worker stops after exactly one connect attempt.
+  class TerminalStatusEndpoint < WEBrick::HTTPServlet::AbstractServlet
+    @status_code = 401
+    @hits = 0
+    class << self
+      attr_accessor :status_code, :hits
+    end
+
+    def do_GET(_request, response)
+      self.class.hits += 1
+      response.status = self.class.status_code
+      response['Content-Type'] = 'text/plain'
+      response.body = "auth error #{self.class.status_code}"
+    end
+  end
+
+  # qfg-i5xv: serves N healthy SSE envelopes, then on subsequent reconnects
+  # returns a configurable terminal status code. Lets us verify that a healthy
+  # session followed by a terminal classification still processes the healthy
+  # events and then stops cleanly.
+  class HealthyThenTerminalEndpoint < WEBrick::HTTPServlet::AbstractServlet
+    @counter = 0
+    @healthy_hits = 0
+    @terminal_hits = 0
+    @healthy_count = 1
+    @terminal_status = 401
+    class << self
+      attr_accessor :counter, :healthy_hits, :terminal_hits, :healthy_count, :terminal_status
+    end
+
+    def do_GET(_request, response)
+      if self.class.healthy_hits < self.class.healthy_count
+        self.class.healthy_hits += 1
+        response.status = 200
+        response['Content-Type'] = 'text/event-stream'
+        response['Cache-Control'] = 'no-cache'
+        response.chunked = false
+        body = +''
+        5.times do
+          self.class.counter += 1
+          body << "id: #{self.class.counter}\ndata: #{TestSSEConfigClient::SAMPLE_JSON_PAYLOAD}\n\n"
+        end
+        response.body = body
+      else
+        self.class.terminal_hits += 1
+        response.status = self.class.terminal_status
+        response['Content-Type'] = 'text/plain'
+        response.body = "auth error #{self.class.terminal_status}"
+      end
     end
   end
 end
