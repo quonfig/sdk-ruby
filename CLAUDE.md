@@ -28,6 +28,31 @@ integration suite cannot resolve its YAML specs.
 - `QUONFIG_ENVIRONMENT` — which environment to evaluate (`production`, `staging`, `development`)
 - `QUONFIG_DOMAIN` — base domain used to derive api/sse/telemetry URLs (default `quonfig.com`). Setting `QUONFIG_DOMAIN=quonfig-staging.com` derives `https://primary.quonfig-staging.com`, `https://stream.primary.quonfig-staging.com`, and `https://telemetry.quonfig-staging.com` automatically. Explicit `api_urls:` / `telemetry_url:` kwargs override this.
 
+## Fork model (Ruby 3.1+)
+
+The SDK installs a `Process._fork` hook (`Quonfig::ForkSafety` in
+`lib/quonfig/client.rb`) at load time. Every `Quonfig::Client` instance is
+tracked in an `ObjectSpace::WeakMap` on the class; on fork the hook fans out:
+
+- **In the parent, before the syscall:** close SSE worker, polling
+  supervisor, telemetry reporter. `@stopped` is NOT set — the client object
+  stays usable, just thread-less.
+- **In the child, after the syscall:** rebuild SSE, polling, and telemetry
+  on the same `Client` object. Skipped if `stop` was called or the client is
+  in datadir mode.
+
+Coverage and limits:
+
+- Covers any path that goes through `Process._fork` (Ruby's `Process.fork`,
+  `Kernel#fork`). Does NOT cover `Process.spawn` or `system("...")` — those
+  exec a new program, so in-process SDK state does not carry across.
+- Ruby 3.0 lacks `Process._fork`; on 3.0 customers must wire Puma's
+  `before_fork` / `on_worker_boot` manually (see README "Rails integration").
+- The parent's threads stay closed after fork (mirrors the Puma master case,
+  where the master no longer serves requests). If a topology needs the
+  parent to keep streaming, customers can call
+  `Quonfig.instance.after_fork_in_child` manually in the parent.
+
 ## Local development
 
 Two ways to point the SDK at a local stack:

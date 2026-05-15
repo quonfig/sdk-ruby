@@ -20,6 +20,29 @@ module Quonfig
   class Client
     LOG = Quonfig::InternalLogger.new(self)
 
+    # qfg-ryov: instance registry for the Process._fork hook. Every live
+    # Client is tracked here so the hook can fan out before_fork_in_parent /
+    # after_fork_in_child across all of them without the customer needing to
+    # name a specific instance. ObjectSpace::WeakMap means a Client that goes
+    # out of scope is GC'd without leaking through this registry.
+    @instances = ObjectSpace::WeakMap.new
+    @instances_mutex = Mutex.new
+
+    class << self
+      # Iterate live Client instances. Used by Quonfig::ForkSafety.
+      def each_instance(&block)
+        @instances_mutex.synchronize { @instances.keys }.each(&block)
+      end
+
+      def register_instance(client)
+        @instances_mutex.synchronize { @instances[client] = true }
+      end
+
+      def unregister_instance(client)
+        @instances_mutex.synchronize { @instances.delete(client) }
+      end
+    end
+
     attr_reader :options, :resolver, :store, :evaluator, :instance_hash,
                 :config_loader, :telemetry_reporter
 
@@ -60,6 +83,10 @@ module Quonfig
       end
 
       initialize_telemetry
+
+      # Register only for non-store-injected clients (a caller-supplied store
+      # is the test/bootstrap path; the fork hook does not apply there).
+      self.class.register_instance(self) unless store
     end
 
     # ---- Lookup --------------------------------------------------------
@@ -265,28 +292,44 @@ module Quonfig
 
     def stop
       @stopped = true
-      begin
-        @sse_client&.close
-      rescue StandardError => e
-        LOG.debug "Error closing SSE client: #{e.message}"
-      end
-      @sse_client = nil
+      tear_down_threaded_components!
+      self.class.unregister_instance(self)
+    end
 
-      cancel_fallback_engage_timer
+    # qfg-ryov: pre-fork hook. Close the SSE worker, polling supervisor,
+    # telemetry reporter, and any fallback-engage timer. Idempotent — calling
+    # twice is safe. Does NOT set @stopped: the client is still expected to
+    # be usable post-fork via after_fork_in_child.
+    #
+    # Why this matters: Ruby threads do not survive fork(2). If we let the
+    # child inherit a live Net::HTTP socket, both processes read from the
+    # same fd and corrupt each other's bytes. Closing in the parent before
+    # fork is the only safe shape.
+    def before_fork_in_parent
+      tear_down_threaded_components!
+    end
 
-      begin
-        @poll_supervisor&.stop
-      rescue StandardError => e
-        LOG.debug "Error stopping poll supervisor: #{e.message}"
-      end
-      @poll_supervisor = nil
+    # qfg-ryov: post-fork (in child) hook. Re-establish whatever threaded
+    # components the client had pre-fork. No-op if the client was already
+    # stopped (the customer asked for it to be dead — do not resurrect),
+    # or if the client is in datadir mode (no threaded components to start).
+    def after_fork_in_child
+      return if @stopped
+      return if @options.datadir
+      return if @config_loader.nil? # never finished network init (e.g. invalid key)
 
-      begin
-        @telemetry_reporter&.stop
-      rescue StandardError => e
-        LOG.debug "Error stopping telemetry reporter: #{e.message}"
+      # SSE state machine carries flags that no longer apply in the child
+      # (the parent had connected, the parent had errored, etc.). Reset.
+      @state_mutex.synchronize do
+        @sse_state = :idle
+        @sse_ever_connected = false
+        @sse_terminal_failure = false
       end
-      @telemetry_reporter = nil
+
+      sse_started = @options.enable_sse && start_sse
+      start_polling if @options.enable_polling && !sse_started
+
+      restart_telemetry_in_child
     end
 
     # quonfig_sdk_worker_restart_total counter (Tier 1 supervisor contract).
@@ -358,6 +401,41 @@ module Quonfig
     end
 
     private
+
+    # Close every threaded component and drop its reference. Used by both
+    # +stop+ (where @stopped is also flipped) and +before_fork_in_parent+
+    # (where @stopped is left alone so the child can restart).
+    def tear_down_threaded_components!
+      begin
+        @sse_client&.close
+      rescue StandardError => e
+        LOG.debug "Error closing SSE client: #{e.message}"
+      end
+      @sse_client = nil
+
+      cancel_fallback_engage_timer
+
+      begin
+        @poll_supervisor&.stop
+      rescue StandardError => e
+        LOG.debug "Error stopping poll supervisor: #{e.message}"
+      end
+      @poll_supervisor = nil
+
+      begin
+        @telemetry_reporter&.stop
+      rescue StandardError => e
+        LOG.debug "Error stopping telemetry reporter: #{e.message}"
+      end
+      @telemetry_reporter = nil
+    end
+
+    # Rebuild the telemetry reporter in the child after fork. Mirrors the
+    # original initialize_telemetry path — fresh aggregators, fresh reporter.
+    def restart_telemetry_in_child
+      @telemetry_reporter = nil
+      initialize_telemetry
+    end
 
     # Stamp +last_successful_refresh+ at install time. Called by every code
     # path that hands an envelope to the cache: datadir load, initial HTTP
@@ -932,4 +1010,42 @@ module Quonfig
       end
     end
   end
+
+  # qfg-ryov: hook into Process._fork so customers using Puma's clustered
+  # mode (or any preload/fork-worker server) don't have to wire
+  # +before_fork+/+on_worker_boot+ manually. Ruby 3.1+ routes every
+  # +Kernel#fork+/+Process.fork+ call through +Process._fork+, so a single
+  # prepend covers them all.
+  #
+  # Process._fork's contract:
+  #   - Called in the parent process before the fork syscall.
+  #   - Returns 0 in the child, child's pid in the parent.
+  #   - +super+ performs the actual fork.
+  #
+  # The parent's view: SSE/polling/telemetry threads are torn down before
+  # the syscall so the child does not inherit a live Net::HTTP socket fd
+  # (which would corrupt both sides). The parent does NOT auto-restart —
+  # that mirrors the Puma master use case where the master process no
+  # longer serves requests after spawning workers.
+  module ForkSafety
+    def _fork
+      Quonfig::Client.each_instance(&:before_fork_in_parent)
+      pid = super
+      Quonfig::Client.each_instance(&:after_fork_in_child) if pid.zero?
+      pid
+    rescue StandardError => e
+      # Fork-hook failures must never break the customer's fork. Worst case
+      # the child inherits dead SSE threads (the pre-qfg-ryov behavior) —
+      # bad, but recoverable. Crashing the fork itself is not.
+      Quonfig::Client::LOG.error "Quonfig fork hook error: #{e.class}: #{e.message}"
+      raise if pid.nil? # super never returned — propagate fork failures
+
+      pid
+    end
+  end
+
+  # Ruby 3.0 lacks Process._fork. There's no hookable choke point on 3.0, so
+  # customers must keep wiring their own Puma before_fork / on_worker_boot
+  # (see README "Rails integration"). On 3.1+ we install the hook globally.
+  Process.singleton_class.prepend(ForkSafety) if Process.respond_to?(:_fork)
 end

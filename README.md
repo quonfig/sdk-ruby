@@ -247,15 +247,41 @@ not want to inherit across a `fork(2)`. Forked threads in the child process
 are dead — the SSE socket is held open by a thread that no longer exists, and
 the child silently stops receiving live updates.
 
-Use `Quonfig::Client#fork` (or `Quonfig.fork` if you use the module-level
-singleton) in any process that fork-spawns workers. It returns a fresh client
-configured for the child: a new `ConfigStore`, a new SSE subscription, and
-suppressed telemetry double-counting (`Options#is_fork` is set to `true`).
+**On Ruby 3.1+ the SDK installs a `Process._fork` hook at load time** that
+automatically tears down threaded components in the parent and restarts them
+in the child. This covers any `Process.fork` / `Kernel#fork` path — Puma's
+clustered mode, Unicorn, Sidekiq's parent-forks-workers model, Spring, and
+manual `fork { ... }` calls. **No customer wiring is required.**
+
+Caveats:
+
+- Ruby 3.0 has no hookable choke point — fall back to manual wiring (below).
+- `system("fork-and-exec ...")` and `Process.spawn` are not covered (they do
+  not go through `Process._fork`), but those execute a new program, so the
+  in-process SSE state is moot.
+- The hook tears down the SSE/polling/telemetry threads in the parent before
+  fork (so the child does not inherit a live socket fd) and does **not**
+  auto-restart the parent. This mirrors the Puma master case: the master no
+  longer serves requests, so it does not need a live SSE connection. If you
+  have a non-Puma topology where the parent must keep streaming after fork,
+  call `Quonfig.instance.after_fork_in_child` manually in the parent after
+  the fork returns.
 
 ### Puma (clustered mode)
 
+With the automatic fork hook, the typical Puma config needs **no Quonfig
+lifecycle wiring** — initialize in your Rails initializer and let the hook
+handle the rest:
+
 ```ruby
-# config/puma.rb
+# config/initializers/quonfig.rb
+Quonfig.init(Quonfig::Options.new(sdk_key: ENV.fetch('QUONFIG_BACKEND_SDK_KEY')))
+```
+
+If you're on Ruby 3.0 (no `Process._fork`), wire the legacy hooks manually:
+
+```ruby
+# config/puma.rb (Ruby 3.0 only)
 before_fork do
   Quonfig.instance.stop          # close the master's SSE before forking
 end
@@ -265,18 +291,18 @@ on_worker_boot do
 end
 ```
 
-If you initialize Quonfig lazily (in a Rails initializer) and run Puma in
-single mode (no clustering), no fork hook is needed.
-
 ### Sidekiq
 
-Sidekiq's parent process forks workers. Wire the same lifecycle:
+On Ruby 3.1+ the automatic fork hook covers Sidekiq workers too — no
+`configure_server` wiring required.
+
+On Ruby 3.0:
 
 ```ruby
 # config/initializers/quonfig.rb
 Quonfig.init(Quonfig::Options.new(sdk_key: ENV.fetch('QUONFIG_BACKEND_SDK_KEY')))
 
-# config/initializers/sidekiq.rb
+# config/initializers/sidekiq.rb (Ruby 3.0 only)
 Sidekiq.configure_server do |config|
   config.on(:startup)  { Quonfig.fork if Process.ppid != 1 }
   config.on(:shutdown) { Quonfig.instance.stop rescue nil }
@@ -284,7 +310,7 @@ end
 ```
 
 For Sidekiq web/CLI processes that don't fork (default `concurrency: 1`),
-`Quonfig.init` in the initializer is sufficient.
+`Quonfig.init` in the initializer is sufficient on any Ruby version.
 
 ### Spring / Bootsnap preloaders
 
