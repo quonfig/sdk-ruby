@@ -78,6 +78,7 @@ module Quonfig
 
       if @options.datadir
         load_datadir_into_store
+        start_datadir_watcher if @options.data_dir_auto_reload
       else
         initialize_network_mode
       end
@@ -316,7 +317,12 @@ module Quonfig
     # or if the client is in datadir mode (no threaded components to start).
     def after_fork_in_child
       return if @stopped
-      return if @options.datadir
+
+      if @options.datadir
+        start_datadir_watcher if @options.data_dir_auto_reload
+        return
+      end
+
       return if @config_loader.nil? # never finished network init (e.g. invalid key)
 
       # SSE state machine carries flags that no longer apply in the child
@@ -429,6 +435,13 @@ module Quonfig
         LOG.debug "Error stopping telemetry reporter: #{e.message}"
       end
       @telemetry_reporter = nil
+
+      begin
+        @datadir_watcher&.stop
+      rescue StandardError => e
+        LOG.debug "Error stopping datadir watcher: #{e.message}"
+      end
+      @datadir_watcher = nil
     end
 
     # Rebuild the telemetry reporter in the child after fork. Mirrors the
@@ -675,8 +688,58 @@ module Quonfig
 
     def load_datadir_into_store
       envelope = Quonfig::Datadir.load_envelope(@options.datadir, @options.environment)
+      apply_datadir_envelope(envelope)
+    end
+
+    # Apply a freshly loaded datadir envelope to the store. Keys that were
+    # present before but missing now are deleted, so a `rm configs/foo.json`
+    # propagates through the auto-reload path. Records a refresh timestamp.
+    # Caller is responsible for firing on_update.
+    def apply_datadir_envelope(envelope)
+      new_keys = envelope.configs.map { |cfg| cfg['key'] }.compact.to_set
+      old_keys = @store.keys.to_set
+      (old_keys - new_keys).each { |k| @store.delete(k) }
       envelope.configs.each { |cfg| @store.set(cfg['key'], cfg) }
       record_refresh!
+    end
+
+    # qfg-mol-2da: start the filesystem watcher for datadir auto-reload.
+    # On listen-registration failure (read-only fs, missing native backend),
+    # log and continue without watching — the SDK keeps serving the envelope
+    # captured at init.
+    def start_datadir_watcher
+      return unless @options.datadir
+
+      watcher = Quonfig::DatadirWatcher.new(
+        datadir: @options.datadir,
+        debounce_ms: @options.data_dir_auto_reload_debounce_ms,
+        on_change: -> { reload_datadir! },
+        on_error: ->(err) { LOG.warn "[quonfig] datadir watcher error: #{err.class}: #{err.message}" }
+      )
+      unless watcher.start
+        LOG.warn '[quonfig] data_dir_auto_reload requested but watcher registration failed; continuing without auto-reload'
+        return
+      end
+      @datadir_watcher = watcher
+    end
+
+    # Re-read the datadir into a fresh envelope and atomically install it.
+    # Parse errors (mid-write JSON, garbage file) are logged and swallowed:
+    # the previous envelope stays in the store and on_update does NOT fire.
+    # qfg-mol-2da.
+    def reload_datadir!
+      return if @stopped
+      return unless @options.datadir
+
+      begin
+        envelope = Quonfig::Datadir.load_envelope(@options.datadir, @options.environment)
+      rescue StandardError => e
+        LOG.warn "[quonfig] datadir reload failed; keeping previous envelope: #{e.class}: #{e.message}"
+        return
+      end
+
+      apply_datadir_envelope(envelope)
+      notify_on_update_callback
     end
 
     # Initialize network mode: sync HTTP fetch (bounded by

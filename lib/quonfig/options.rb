@@ -6,7 +6,8 @@ module Quonfig
   # Options passed to Quonfig::Client at construction time.
   class Options
     attr_reader :sdk_key, :environment, :api_urls, :sse_api_urls, :telemetry_destination, :config_api_urls,
-                :on_no_default, :initialization_timeout_sec, :on_init_failure, :collect_sync_interval, :datadir, :enable_sse, :enable_polling, :poll_interval, :global_context, :logger_key, :logger, :enable_quonfig_user_context
+                :on_no_default, :initialization_timeout_sec, :on_init_failure, :collect_sync_interval, :datadir, :enable_sse, :enable_polling, :poll_interval, :global_context, :logger_key, :logger, :enable_quonfig_user_context,
+                :data_dir_auto_reload, :data_dir_auto_reload_debounce_ms
     attr_accessor :is_fork
 
     module ON_INITIALIZATION_FAILURE
@@ -141,7 +142,9 @@ module Quonfig
       global_context: {},
       logger_key: nil,
       logger: nil,
-      enable_quonfig_user_context: false
+      enable_quonfig_user_context: false,
+      data_dir_auto_reload: false,
+      data_dir_auto_reload_debounce_ms: 200
     )
       @sdk_key = sdk_key
       @environment = environment
@@ -163,6 +166,8 @@ module Quonfig
       @logger_key = logger_key
       @logger = logger
       @enable_quonfig_user_context = enable_quonfig_user_context
+      @data_dir_auto_reload = data_dir_auto_reload
+      @data_dir_auto_reload_debounce_ms = data_dir_auto_reload_debounce_ms
 
       # defaults that may be overridden by context_upload_mode
       @collect_shapes = false
