@@ -35,8 +35,8 @@ class TestDatadirAutoReload < Minitest::Test
 
       if File.symlink?(path)
         File.unlink(path)
-      elsif Dir.exist?(path)
-        FileUtils.remove_entry(path)
+      else
+        FileUtils.rm_rf(path)
       end
     end
     super

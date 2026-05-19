@@ -120,6 +120,24 @@ module Quonfig
 
     private
 
+    # @!method initialize(options = {})
+    #   @option options [Boolean] :data_dir_auto_reload (false)
+    #     Datadir mode only. When +true+, the SDK watches the workspace
+    #     directory and re-reads the envelope whenever files inside it
+    #     change. Parse-then-swap: a failed parse keeps the previous
+    #     envelope. Default debounce window is 200 ms; tune via
+    #     +:data_dir_auto_reload_debounce_ms+. Listen-registration failure
+    #     (read-only fs, missing native backend) is logged and the SDK
+    #     continues serving the envelope captured at init.
+    #
+    #     On Ruby 3.1+ the SDK's +Process._fork+ hook tears the watcher
+    #     down in the parent before fork and rebuilds it in each child;
+    #     no customer wiring is required for Puma cluster / Unicorn /
+    #     Sidekiq / Resque. See README "Fork safety".
+    #   @option options [Integer] :data_dir_auto_reload_debounce_ms (200)
+    #     Debounce window in milliseconds. Filesystem events arriving
+    #     inside the window are coalesced into a single re-read. Ignored
+    #     when +:data_dir_auto_reload+ is +false+.
     def init(
       api_urls: nil,
       telemetry_url: nil,

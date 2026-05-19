@@ -107,6 +107,107 @@ export QUONFIG_ENVIRONMENT=production
 client = Quonfig::Client.new  # reads QUONFIG_DIR + QUONFIG_ENVIRONMENT
 ```
 
+## Datadir mode: auto-reload on file changes
+
+In datadir mode the SDK loads the workspace once at construction time and then
+serves config purely from memory. Opt in to `data_dir_auto_reload: true` to
+have the SDK watch the directory and re-read the envelope whenever files
+change — an editor save, a `git pull`, or a build step that rewrites the
+workspace.
+
+```ruby
+client = Quonfig::Client.new(
+  datadir:              '/path/to/workspace',
+  environment:          'development',
+  data_dir_auto_reload: true # off by default — must be opted in
+)
+
+client.on_update do
+  puts 'Quonfig configs reloaded from disk'
+end
+
+# Edit a file under /path/to/workspace and on_update fires within ~200ms.
+
+# On shutdown, stop stops the watcher and cancels any pending debounce.
+client.stop
+```
+
+### When to enable
+
+- Local development with the datadir checked out from git.
+- Self-hosted servers that `git pull` the datadir on a schedule.
+- CI jobs that mutate the datadir between assertions.
+
+### When NOT to enable
+
+- **Read-only / immutable filesystems** (some containers, scratch images,
+  AWS Lambda). Watch registration may fail; the SDK degrades gracefully
+  (logs the error and continues serving the envelope it loaded at init time)
+  but you're paying for nothing.
+- **Build-time-embedded workflows** where the datadir is bundled into the
+  artifact and never changes at runtime. Watching wastes a thread and a
+  native-backend handle.
+- **Production paths where reload timing matters** — e.g. you'd rather pin
+  the envelope you shipped with and roll forward through a redeploy than
+  have it shift under traffic.
+
+Default is `false`; datadir mode is silent until you opt in.
+
+### Behavior contract
+
+- **Parse-then-swap.** If the new envelope fails to parse (truncated write,
+  mid-`git pull` state, invalid JSON), the SDK logs the error and **keeps
+  serving the previous envelope**. `on_update` is _not_ fired on parse
+  failure — only on a successful swap.
+- **Debounced.** Bursts of filesystem events (atomic-rename editor saves,
+  `git pull` touching dozens of files) coalesce into a single re-read.
+  Default window: **200ms** — long enough to absorb the 3–5 events a typical
+  editor emits in <50ms, short enough that interactive edits feel immediate.
+  Tune via `data_dir_auto_reload_debounce_ms` if you need a different
+  window.
+- **Graceful degrade.** If watch registration fails (read-only fs, immutable
+  container, missing native backend), the SDK logs and continues without
+  watching — it does **not** raise from the constructor.
+- **Symlinks.** The watcher resolves `datadir` to its real path at start
+  time. Editing the file the symlink points at _is_ detected; atomic flips
+  that retarget the link itself are **not**.
+- **Shutdown.** `client.stop` stops the watcher and cancels any pending
+  debounce. There is no separate handle to manage — the watcher lifecycle
+  is tied to the client.
+
+### Fork safety (Puma cluster, Unicorn, Resque, Sidekiq)
+
+The auto-reload watcher uses a background thread, which — like any Ruby
+thread — does not survive `fork(2)`. **You do not need to wire this up
+manually on Ruby 3.1+.** The SDK's `Process._fork` hook (see [Rails
+integration](#rails-integration) below) stops the watcher in the parent
+before fork and restarts a fresh watcher in each child after fork. This
+covers Puma clustered mode, Unicorn, Sidekiq's parent-forks-workers model,
+Resque, Spring, and manual `fork { ... }` calls.
+
+On Ruby 3.0 (no `Process._fork`), follow the manual `before_fork` /
+`on_worker_boot` pattern in the [Rails integration](#rails-integration)
+section — `Quonfig.fork` rebuilds the full client, including the datadir
+watcher, in the child.
+
+### Tuning the debounce window
+
+```ruby
+Quonfig::Client.new(
+  datadir:                          '/path/to/workspace',
+  data_dir_auto_reload:             true,
+  data_dir_auto_reload_debounce_ms: 1000 # wait a full second after the last event
+)
+```
+
+The default (200 ms) is tuned for interactive editing. Raise it if you have
+a noisy producer (continuously regenerating files) and you'd rather see one
+reload per second than per save. Lower it only if you've measured that 200 ms
+is meaningfully too slow for your use case.
+
+See the [open-source / local how-to](https://docs.quonfig.com/docs/how-tos/open-source-local)
+for the cross-SDK story (sdk-node, sdk-go, sdk-ruby, sdk-python, sdk-java).
+
 ## Environment variables
 
 | Variable                    | Purpose                                                                                  |
@@ -130,7 +231,9 @@ Quonfig::Client.new(
   on_no_default:   :error,
   global_context:  {},
   datadir:         '/path/to/workspace',
-  environment:     'production'
+  environment:     'production',
+  data_dir_auto_reload:             false,
+  data_dir_auto_reload_debounce_ms: 200
 )
 ```
 
@@ -147,6 +250,8 @@ Quonfig::Client.new(
 | `global_context`  | `Hash`                     | `{}`                                                                | Context applied to every evaluation.                                                              |
 | `datadir`         | `String`                   | `ENV['QUONFIG_DIR']`                                                | Path to a local workspace. When set, the SDK runs offline from disk.                              |
 | `environment`     | `String`                   | `ENV['QUONFIG_ENVIRONMENT']`                                        | Environment to evaluate in datadir mode. Required when `datadir` is set.                          |
+| `data_dir_auto_reload`              | `Boolean`         | `false`                                                             | Datadir mode only. When `true`, the SDK watches the datadir and re-reads the envelope when files change. See [Datadir mode: auto-reload on file changes](#datadir-mode-auto-reload-on-file-changes). |
+| `data_dir_auto_reload_debounce_ms`  | `Integer` (ms)    | `200`                                                               | Debounce window for the auto-reload watcher — events arriving inside the window are coalesced into a single re-read. Ignored when `data_dir_auto_reload` is `false`. |
 | `logger`          | Logger-like object         | `nil`                                                               | Optional host-app logger (e.g. `Rails.logger`). Must respond to `debug`/`info`/`warn`/`error`. When set, all SDK warnings/errors flow through this logger instead of the default stderr / SemanticLogger backend. |
 
 ## Typed getters
