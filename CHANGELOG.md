@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Fix (datadir): coerce int/double config values to numbers at load time (qfg-38sf.8).** Config files store `int`/`double` Value fields as JSON strings (`{"type":"int","value":"123"}`). api-delivery normalizes these to real numbers at config-load time (`Value.UnmarshalJSON`), so every HTTP/SSE envelope already carries JSON numbers — but the datadir loader read the files directly and passed the strings through verbatim. `Quonfig::Datadir` now runs a generic recursive `coerce_numeric_values` walk over each parsed config document before projecting it to a `ConfigResponse`: any Value node (`type` of `"int"`/`"double"` with a String `value`) is coerced via `Integer(value, 10)` / `Float(value)`, covering `default.rules[].value`, environment rules, `criteria[].valueToMatch`, weighted-value arms, and variants. An unparseable numeric string is left untouched (passthrough — never raises). Brings the datadir loader in line with sdk-go and api-delivery so the loaded envelope always carries real numbers regardless of who consumes it.
+
 ## 0.0.17 - 2026-05-19
 
 - **Feat (datadir): opt-in `data_dir_auto_reload` (qfg-mol-2da).** Datadir mode previously loaded the workspace once at construction and served purely from memory. Set `data_dir_auto_reload: true` to have the SDK watch the configured `datadir`, re-read `Quonfig::Datadir.load_envelope`, and fire the existing `on_update` callback whenever files change. Adds `listen ~> 3.8` (FSEvents on macOS, inotify on Linux, polling fallback on Windows) as a runtime dep. Behavior: parse-then-swap (a failed parse keeps the previous envelope and skips the callback), debounced (`data_dir_auto_reload_debounce_ms`, default 200 ms — bursts coalesce to one reload), and gracefully downgrades when watch registration fails (read-only fs, immutable container, missing native backend). Symlinked datadirs are resolved to their real path before watching. Default is `false`; opt-in only.

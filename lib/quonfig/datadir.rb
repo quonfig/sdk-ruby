@@ -42,6 +42,7 @@ module Quonfig
           raw = JSON.parse(File.read(path))
           raise ArgumentError, "[quonfig] config has empty key — file is not a Quonfig Config: #{path}" if raw['key'].nil? || raw['key'].to_s.empty?
 
+          coerce_numeric_values(raw)
           configs << to_config_response(raw, env_id)
         end
       end
@@ -93,6 +94,43 @@ module Quonfig
       return true if type == 'feature_flag'
 
       raw || false
+    end
+
+    # Config files store int/double Value fields as JSON strings
+    # (`{"type":"int","value":"123"}`). api-delivery normalizes these to real
+    # numbers at config-load time (`Value.UnmarshalJSON`), so every envelope it
+    # emits over HTTP/SSE already carries JSON numbers. In datadir mode we read
+    # the files directly, so we must coerce here to match.
+    #
+    # Walks the parsed config document in place, coercing every Value node — any
+    # Hash with a `type` of `"int"`/`"double"` and a String `value` — to a real
+    # number. A generic recursive walk covers `default.rules[].value`,
+    # environment rules, `criteria[].valueToMatch`, weighted-value arms, and
+    # variants without enumerating each location. On parse failure the original
+    # string is left in place (passthrough — never raise).
+    def coerce_numeric_values(node)
+      case node
+      when Hash
+        coerce_numeric_value_field(node)
+        node.each_value { |child| coerce_numeric_values(child) }
+      when Array
+        node.each { |child| coerce_numeric_values(child) }
+      end
+      node
+    end
+
+    def coerce_numeric_value_field(hash)
+      value = hash['value']
+      return unless value.is_a?(String)
+
+      case hash['type']
+      when 'int'
+        hash['value'] = Integer(value, 10)
+      when 'double'
+        hash['value'] = Float(value)
+      end
+    rescue ArgumentError, TypeError
+      # Unparseable numeric string — leave the original value untouched.
     end
   end
 end
