@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.0.18 - 2026-05-21
 
+- **Fix (SSE): give Net `read_timeout` headroom over the watchdog deadline (qfg-6y44).** `stream_once` armed two read deadlines at the identical `sse_read_timeout` value: `Net::HTTP#read_timeout` and the `ReadDeadlineWatchdog`. On the body read both were live, and the watchdog carries up to `POLL_INTERVAL` (0.25 s) of polling latency on top of its deadline — so when Net's (unreliable on the `read_body` path) stdlib timeout did fire, it could beat the watchdog and surface a `Net::ReadTimeout` instead of the `SSEReadDeadlineExceeded` the SDK is instrumented around. A new `READ_TIMEOUT_HEADROOM` (30 s) keeps Net's `read_timeout` as a redundant backstop while guaranteeing the watchdog fires first.
 - **Fix (datadir): coerce int/double config values to numbers at load time (qfg-38sf.8).** Config files store `int`/`double` Value fields as JSON strings (`{"type":"int","value":"123"}`). api-delivery normalizes these to real numbers at config-load time (`Value.UnmarshalJSON`), so every HTTP/SSE envelope already carries JSON numbers — but the datadir loader read the files directly and passed the strings through verbatim. `Quonfig::Datadir` now runs a generic recursive `coerce_numeric_values` walk over each parsed config document before projecting it to a `ConfigResponse`: any Value node (`type` of `"int"`/`"double"` with a String `value`) is coerced via `Integer(value, 10)` / `Float(value)`, covering `default.rules[].value`, environment rules, `criteria[].valueToMatch`, weighted-value arms, and variants. An unparseable numeric string is left untouched (passthrough — never raises). Brings the datadir loader in line with sdk-go and api-delivery so the loaded envelope always carries real numbers regardless of who consumes it.
+- **CI: pin `integration-test-data` to v2026.05.20 and guard against stale generated tests (#12).** The integration suite now resolves its YAML specs from a pinned tag, and a guard fails the build if the generated tests drift from the templates.
+- **CI: skip the Chaos workflow on Dependabot PRs and de-flake the datadir-reload test (8f60d9c).**
+- **Dependency bumps (CI actions):** `actions/setup-go` 5.6.0 → 6.4.0 (#7), `actions/checkout` 4.3.1 → 6.0.2 (#8), `actions/upload-artifact` 4.6.2 → 7.0.1 (#9), `ruby/setup-ruby` 1.306.0 → 1.310.0 (#10).
 
 ## 0.0.17 - 2026-05-19
 
