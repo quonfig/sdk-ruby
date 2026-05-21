@@ -56,6 +56,17 @@ module Quonfig
     # Anything else (5xx, 429, network errors) stays on the transient path.
     TERMINAL_HTTP_CODES = [401, 403, 404].freeze
 
+    # qfg-6y44: headroom added to +sse_read_timeout+ when configuring
+    # Net::HTTP#read_timeout. The ReadDeadlineWatchdog already covers both the
+    # header and body reads at exactly +sse_read_timeout+; Net's own
+    # read_timeout is only a redundant backstop. Arming it at the *same* value
+    # as the watchdog makes the two race — and on the body path Net's
+    # (unreliable) timeout can fire first, surfacing a Net::ReadTimeout instead
+    # of the SSEReadDeadlineExceeded the SDK is instrumented around. Giving
+    # Net's read_timeout this much headroom keeps it a backstop without ever
+    # letting it win the race.
+    READ_TIMEOUT_HEADROOM = 30
+
     # +on_error+: optional callable invoked on every SSE error edge. Parent
     # Quonfig::Client wires this to drive @sse_state -> :error so that
     # +connection_state+ reflects the disconnect (qfg-47c2.27).
@@ -254,8 +265,11 @@ module Quonfig
       http.use_ssl = (uri.scheme == 'https')
       http.open_timeout = @options.sse_connect_timeout
       # Keep Net::HTTP's read_timeout as a backstop for the header read
-      # (where it does apply reliably). The watchdog covers the body path.
-      http.read_timeout = @options.sse_read_timeout
+      # (where it does apply reliably). The watchdog covers the body path —
+      # so read_timeout gets READ_TIMEOUT_HEADROOM over the watchdog deadline
+      # to guarantee the watchdog fires first and we get a deterministic
+      # SSEReadDeadlineExceeded rather than a racy Net::ReadTimeout (qfg-6y44).
+      http.read_timeout = @options.sse_read_timeout + READ_TIMEOUT_HEADROOM
 
       req = Net::HTTP::Get.new(uri.request_uri, headers)
 
