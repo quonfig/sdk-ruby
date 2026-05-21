@@ -61,7 +61,21 @@ class TestDatadirAutoReload < Minitest::Test
       },
       'environments' => []
     }
-    File.write(File.join(dir, 'configs', "#{key}.json"), JSON.generate(body))
+    # Write atomically (temp file + rename) so the watcher never observes a
+    # truncated, partially-written file. A bare File.write truncates then
+    # streams content; the FSEvents/inotify watcher can fire in that window
+    # and hand load_envelope an empty file, raising
+    # JSON::ParserError: unexpected end of input. That surfaced as a flaky
+    # "Unexpected logs" teardown failure in
+    # test_burst_of_writes_coalesces (the burst does 5 rapid rewrites). An
+    # atomic rename means the watcher only ever sees the complete file.
+    write_json_atomic(File.join(dir, 'configs', "#{key}.json"), JSON.generate(body))
+  end
+
+  def write_json_atomic(path, content)
+    tmp = "#{path}.tmp.#{Process.pid}.#{rand(1 << 30)}"
+    File.write(tmp, content)
+    File.rename(tmp, path)
   end
 
   def build_client(opts = {})

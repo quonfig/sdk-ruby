@@ -39,6 +39,14 @@ on:
 jobs:
   chaos:
     name: Chaos (${{ inputs.mode || 'smoke' }})
+    # The "Checkout api-delivery" step needs secrets.QUONFIG_REPO_TOKEN to
+    # read the private api-delivery repo. GitHub does NOT expose Actions
+    # secrets to pull_request runs triggered by Dependabot, so the token
+    # input resolves to an empty string and checkout fails fast with
+    # "Input required and not supplied: token". Skip the job on Dependabot
+    # PRs — it is a release gate and still runs in full on every push to
+    # main after merge, and a human rebase/re-run gets the secret normally.
+    if: github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:
