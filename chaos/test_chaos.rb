@@ -31,6 +31,7 @@ require 'logger'
 require 'minitest/autorun'
 
 require 'quonfig'
+require_relative 'scheduler'
 
 # ----- paths -----
 
@@ -590,33 +591,9 @@ def chaos_spawn_poller(client, probe, stop_flag)
   end
 end
 
-# Tiny stop-event so threads can wait with a timeout.
-class ChaosStopFlag
-  def initialize
-    @m = Mutex.new
-    @c = ConditionVariable.new
-    @set = false
-  end
-
-  def set?
-    @m.synchronize { @set }
-  end
-
-  def set!
-    @m.synchronize do
-      @set = true
-      @c.broadcast
-    end
-  end
-
-  def wait(seconds)
-    @m.synchronize do
-      return if @set
-
-      @c.wait(@m, seconds)
-    end
-  end
-end
+# Stop-event lives in chaos/scheduler.rb so the cancellation behavior can be
+# unit-tested without booting toxiproxy (qfg-p35y).
+ChaosStopFlag = Quonfig::Chaos::StopFlag
 
 def chaos_run_scenario(tp, run)
   tp.clear_toxics('sse')
@@ -659,27 +636,30 @@ def chaos_run_scenario(tp, run)
 
     baseline_ms = (Time.now.to_f * 1000).to_i
 
-    # Schedule chaos events.
+    # Schedule chaos events. The scheduler uses stop_flag.wait under the
+    # hood so the ensure block's `stop_flag.set!` cancels any pending event
+    # — without that, a deferred "clear" from a scenario that ended early
+    # would fire DURING the next scenario and corrupt its toxiproxy state
+    # (qfg-p35y: scenario 07's clear half_open leaked into scenario 05,
+    # re-enabling SSE 16s into the 180s outage and preventing falling_back
+    # from engaging).
     (run['chaos'] || []).each do |ev|
       at = (ev['at_ms'] || 0).to_i
-      scheduled_threads << Thread.new do
-        sleep(at / 1000.0)
-        begin
-          if ev['inject']
-            st = chaos_apply_inject(tp, ev['inject'])
-            injection_states[ev['inject']['name']] = st if ev['inject']['name']
-            puts "[#{at}ms] inject #{ev['inject'].inspect}"
-          elsif ev['clear']
-            chaos_clear_inject(tp, injection_states[ev['clear']])
-            injection_states.delete(ev['clear'])
-            puts "[#{at}ms] clear #{ev['clear']}"
-          elsif ev['process']
-            chaos_apply_process(tp, ev['process'])
-            puts "[#{at}ms] process #{ev['process'].inspect}"
-          end
-        rescue StandardError => e
-          puts "[#{at}ms] chaos event failed: #{e.class}: #{e.message}"
+      scheduled_threads << Quonfig::Chaos.schedule_event(stop_flag, at) do
+        if ev['inject']
+          st = chaos_apply_inject(tp, ev['inject'])
+          injection_states[ev['inject']['name']] = st if ev['inject']['name']
+          puts "[#{at}ms] inject #{ev['inject'].inspect}"
+        elsif ev['clear']
+          chaos_clear_inject(tp, injection_states[ev['clear']])
+          injection_states.delete(ev['clear'])
+          puts "[#{at}ms] clear #{ev['clear']}"
+        elsif ev['process']
+          chaos_apply_process(tp, ev['process'])
+          puts "[#{at}ms] process #{ev['process'].inspect}"
         end
+      rescue StandardError => e
+        puts "[#{at}ms] chaos event failed: #{e.class}: #{e.message}"
       end
     end
 
