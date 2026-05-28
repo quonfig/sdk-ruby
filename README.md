@@ -221,17 +221,17 @@ for the cross-SDK story (sdk-node, sdk-go, sdk-ruby, sdk-python, sdk-java).
 
 ```ruby
 Quonfig::Client.new(
-  sdk_key:         '...',                          # required unless QUONFIG_BACKEND_SDK_KEY is set
-  api_urls:        ['https://primary.quonfig.com', 'https://secondary.quonfig.com'],
-  telemetry_url:   'https://telemetry.quonfig.com',
-  enable_sse:      true,
-  enable_polling:  false,
-  poll_interval:   60,
-  init_timeout:    10,
-  on_no_default:   :error,
-  global_context:  {},
-  datadir:         '/path/to/workspace',
-  environment:     'production',
+  sdk_key:                   '...',                          # required unless QUONFIG_BACKEND_SDK_KEY is set
+  api_urls:                  ['https://primary.quonfig.com', 'https://secondary.quonfig.com'],
+  telemetry_url:             'https://telemetry.quonfig.com',
+  enable_sse:                true,
+  fallback_poll_enabled:     true,
+  fallback_poll_interval_ms: 60_000,
+  init_timeout:              10,
+  on_no_default:             :error,
+  global_context:            {},
+  datadir:                   '/path/to/workspace',
+  environment:               'production',
   data_dir_auto_reload:             false,
   data_dir_auto_reload_debounce_ms: 200
 )
@@ -242,9 +242,9 @@ Quonfig::Client.new(
 | `sdk_key`         | `String`                   | `ENV['QUONFIG_BACKEND_SDK_KEY']`                                    | SDK key for API authentication.                                                                   |
 | `api_urls`        | `Array<String>`            | `["https://primary.${QUONFIG_DOMAIN}", "https://secondary.${QUONFIG_DOMAIN}"]` | Ordered list of API base URLs to try. SSE stream URLs are derived by prepending `stream.` to each hostname. Defaults derive from `QUONFIG_DOMAIN` (default `quonfig.com`). |
 | `telemetry_url`   | `String`                   | `https://telemetry.${QUONFIG_DOMAIN}`                                          | Base URL for the telemetry service. Default derives from `QUONFIG_DOMAIN`.                        |
-| `enable_sse`      | `Boolean`                  | `true`                                                              | Receive real-time updates over Server-Sent Events.                                                |
-| `enable_polling`  | `Boolean`                  | `false`                                                             | Poll the API on an interval as a fallback.                                                        |
-| `poll_interval`   | `Integer` (seconds)        | `60`                                                                | Polling interval when `enable_polling` is `true`.                                                 |
+| `enable_sse`              | `Boolean`                  | `true`                                                              | Receive real-time updates over Server-Sent Events.                                                |
+| `fallback_poll_enabled`   | `Boolean`                  | `true`                                                              | Engage HTTP polling as a fallback when SSE is unavailable for >= 2x `fallback_poll_interval_ms`. Deprecated alias: `enable_polling`. |
+| `fallback_poll_interval_ms` | `Integer` (ms)           | `60_000`                                                            | Interval between fallback HTTP polls, in milliseconds. Deprecated alias: `poll_interval` (seconds, multiplied by 1000 internally). |
 | `init_timeout`    | `Integer` (seconds)        | `10`                                                                | Maximum time to wait for the initial config load.                                                 |
 | `on_no_default`   | `Symbol`                   | `:error`                                                            | Behavior when a key has no value and no default: `:error`, `:warn`, or `:ignore`.                 |
 | `global_context`  | `Hash`                     | `{}`                                                                | Context applied to every evaluation.                                                              |

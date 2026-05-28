@@ -334,7 +334,7 @@ module Quonfig
       end
 
       sse_started = @options.enable_sse && start_sse
-      start_polling if @options.enable_polling && !sse_started
+      start_polling if @options.fallback_poll_enabled && !sse_started
 
       restart_telemetry_in_child
     end
@@ -515,7 +515,7 @@ module Quonfig
         [@sse_ever_connected, @sse_terminal_failure]
       end
 
-      return unless @options.respond_to?(:enable_polling) && @options.enable_polling
+      return unless @options.respond_to?(:fallback_poll_enabled) && @options.fallback_poll_enabled
       return if @stopped
       # qfg-i5xv: a terminal SSE classification suppresses polling engage in
       # every branch — the customer's key is bad and HTTP polling will fail
@@ -575,15 +575,19 @@ module Quonfig
       end
     end
 
-    # Schedule a 2*poll_interval grace timer after a connected->error edge.
-    # If SSE recovers before the timer fires, +cancel_fallback_engage_timer+
-    # tears it down. Idempotent — does nothing if a timer is already pending
-    # or the supervisor is already alive.
+    # Schedule a 2*fallback_poll_interval grace timer after a connected->error
+    # edge. If SSE recovers before the timer fires,
+    # +cancel_fallback_engage_timer+ tears it down. Idempotent — does nothing
+    # if a timer is already pending or the supervisor is already alive.
     def schedule_fallback_engage
-      poll_interval = @options.respond_to?(:poll_interval) && @options.poll_interval ? @options.poll_interval : 60
-      return if poll_interval <= 0
+      poll_ms = if @options.respond_to?(:fallback_poll_interval_ms) && @options.fallback_poll_interval_ms
+                  @options.fallback_poll_interval_ms
+                else
+                  60_000
+                end
+      return if poll_ms <= 0
 
-      grace_seconds = poll_interval * 2.0
+      grace_seconds = (poll_ms / 1000.0) * 2.0
 
       @state_mutex.synchronize do
         return if @fallback_engage_timer&.alive?
@@ -827,15 +831,20 @@ module Quonfig
       return if @stopped
       return if @poll_supervisor&.alive?
 
-      poll_interval = @options.respond_to?(:poll_interval) && @options.poll_interval ? @options.poll_interval : 60
-      return if poll_interval <= 0
+      poll_ms = if @options.respond_to?(:fallback_poll_interval_ms) && @options.fallback_poll_interval_ms
+                  @options.fallback_poll_interval_ms
+                else
+                  60_000
+                end
+      return if poll_ms <= 0
 
+      poll_seconds = poll_ms / 1000.0
       stopped_ref = -> { @stopped }
       worker = lambda do |notify_delivered|
         loop do
           break if stopped_ref.call
 
-          sleep poll_interval
+          sleep poll_seconds
           break if stopped_ref.call
 
           @config_loader.fetch!

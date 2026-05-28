@@ -82,6 +82,58 @@ class TestOptions < Minitest::Test
     assert_equal false, Quonfig::Options.new(enable_polling: false).enable_polling
   end
 
+  # ---- fallback_poll_* rename (qfg-thsn) ----
+  # The canonical names are `fallback_poll_enabled` and
+  # `fallback_poll_interval_ms` (milliseconds). The legacy `enable_polling`
+  # and `poll_interval` (seconds) kwargs / accessors are kept as deprecated
+  # aliases for one minor cycle and forward transparently.
+
+  def test_fallback_poll_enabled_defaults_true
+    assert_equal true, Quonfig::Options.new.fallback_poll_enabled
+    assert_equal false, Quonfig::Options.new(fallback_poll_enabled: false).fallback_poll_enabled
+  end
+
+  def test_fallback_poll_interval_ms_defaults_60_000
+    assert_equal 60_000, Quonfig::Options.new.fallback_poll_interval_ms
+    assert_equal 30_000,
+                 Quonfig::Options.new(fallback_poll_interval_ms: 30_000).fallback_poll_interval_ms
+  end
+
+  def test_deprecated_enable_polling_kwarg_forwards_to_fallback_poll_enabled
+    options = silence_deprecation_warnings { Quonfig::Options.new(enable_polling: false) }
+    assert_equal false, options.fallback_poll_enabled
+    assert_equal false, options.enable_polling
+  end
+
+  def test_deprecated_poll_interval_kwarg_forwards_with_unit_multiplication
+    # poll_interval (seconds) must multiply *1000 into fallback_poll_interval_ms.
+    options = silence_deprecation_warnings { Quonfig::Options.new(poll_interval: 30) }
+    assert_equal 30_000, options.fallback_poll_interval_ms
+    # The legacy accessor continues to read in seconds.
+    assert_equal 30, options.poll_interval
+  end
+
+  def test_canonical_kwarg_wins_over_deprecated_alias
+    options = silence_deprecation_warnings do
+      Quonfig::Options.new(
+        fallback_poll_enabled: true,
+        enable_polling: false,
+        fallback_poll_interval_ms: 5_000,
+        poll_interval: 30
+      )
+    end
+    assert_equal true, options.fallback_poll_enabled
+    assert_equal 5_000, options.fallback_poll_interval_ms
+  end
+
+  def silence_deprecation_warnings
+    original = $VERBOSE
+    $VERBOSE = nil
+    yield
+  ensure
+    $VERBOSE = original
+  end
+
   def test_datadir_reads_from_quonfig_dir_env
     with_env('QUONFIG_DIR', '/tmp/some/workspace') do
       assert_equal '/tmp/some/workspace', Quonfig::Options.new.datadir

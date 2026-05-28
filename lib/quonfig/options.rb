@@ -6,9 +6,27 @@ module Quonfig
   # Options passed to Quonfig::Client at construction time.
   class Options
     attr_reader :sdk_key, :environment, :api_urls, :sse_api_urls, :telemetry_destination, :config_api_urls,
-                :on_no_default, :initialization_timeout_sec, :on_init_failure, :collect_sync_interval, :datadir, :enable_sse, :enable_polling, :poll_interval, :global_context, :logger_key, :logger, :enable_quonfig_user_context,
+                :on_no_default, :initialization_timeout_sec, :on_init_failure, :collect_sync_interval, :datadir, :enable_sse, :fallback_poll_enabled, :fallback_poll_interval_ms, :global_context, :logger_key, :logger, :enable_quonfig_user_context,
                 :data_dir_auto_reload, :data_dir_auto_reload_debounce_ms
     attr_accessor :is_fork
+
+    # Default fallback poll interval, in milliseconds. The SDK polls api-delivery
+    # at this cadence only when SSE is unavailable for >= 2x this value.
+    DEFAULT_FALLBACK_POLL_INTERVAL_MS = 60_000
+
+    # Deprecated alias for #fallback_poll_enabled. Will be removed in a future
+    # minor release.
+    def enable_polling
+      @fallback_poll_enabled
+    end
+
+    # Deprecated alias for #fallback_poll_interval_ms, in seconds. Reads back the
+    # interval in the legacy unit so existing callers (e.g. internal code that
+    # `sleep`s on this value) keep working. Will be removed in a future minor
+    # release.
+    def poll_interval
+      @fallback_poll_interval_ms / 1000.0
+    end
 
     module ON_INITIALIZATION_FAILURE
       RAISE = :raise
@@ -145,8 +163,10 @@ module Quonfig
       environment: ENV.fetch('QUONFIG_ENVIRONMENT', nil),
       datadir: ENV.fetch('QUONFIG_DIR', nil),
       enable_sse: true,
-      enable_polling: true,
-      poll_interval: 60,
+      fallback_poll_enabled: nil,
+      fallback_poll_interval_ms: nil,
+      enable_polling: nil,
+      poll_interval: nil,
       on_no_default: ON_NO_DEFAULT::RAISE,
       initialization_timeout_sec: 10,
       on_init_failure: ON_INITIALIZATION_FAILURE::RAISE,
@@ -168,8 +188,26 @@ module Quonfig
       @environment = environment
       @datadir = datadir
       @enable_sse = enable_sse
-      @enable_polling = enable_polling
-      @poll_interval = poll_interval
+      # qfg-thsn: canonical names are fallback_poll_enabled and
+      # fallback_poll_interval_ms (matches sdk-node / sdk-python / sdk-java).
+      # The legacy enable_polling / poll_interval (seconds) kwargs are kept
+      # as deprecated aliases for one minor cycle. The canonical kwarg wins
+      # if both are passed; otherwise the legacy value is forwarded (and the
+      # seconds-based interval is multiplied *1000 transparently).
+      @fallback_poll_enabled = if !fallback_poll_enabled.nil?
+                                 fallback_poll_enabled
+                               elsif !enable_polling.nil?
+                                 enable_polling
+                               else
+                                 true
+                               end
+      @fallback_poll_interval_ms = if !fallback_poll_interval_ms.nil?
+                                     fallback_poll_interval_ms
+                                   elsif !poll_interval.nil?
+                                     poll_interval * 1000
+                                   else
+                                     DEFAULT_FALLBACK_POLL_INTERVAL_MS
+                                   end
       @on_no_default = on_no_default
       @initialization_timeout_sec = initialization_timeout_sec
       @on_init_failure = on_init_failure

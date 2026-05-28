@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Feat (options): rename `enable_polling` → `fallback_poll_enabled`, `poll_interval` → `fallback_poll_interval_ms` (qfg-thsn).** The old names predated the SSE+fallback architecture and read as "always poll", but the actual behavior since 0.0.4 has been "poll only when SSE is unavailable for >= 2x the interval". The new names match sdk-node / sdk-python / sdk-java. Defaults are unchanged: `fallback_poll_enabled: true`, `fallback_poll_interval_ms: 60_000` (previously expressed as 60 seconds). The legacy `enable_polling` and `poll_interval` kwargs and accessors are kept as deprecated aliases for one minor cycle; passing `poll_interval:` (seconds) is forwarded transparently as `poll_interval * 1000` into the new ms-based storage, and reading `Options#poll_interval` returns the configured interval in seconds. Will be removed in a future minor release.
+
 ## 0.0.18 - 2026-05-21
 
 - **Fix (SSE): give Net `read_timeout` headroom over the watchdog deadline (qfg-6y44).** `stream_once` armed two read deadlines at the identical `sse_read_timeout` value: `Net::HTTP#read_timeout` and the `ReadDeadlineWatchdog`. On the body read both were live, and the watchdog carries up to `POLL_INTERVAL` (0.25 s) of polling latency on top of its deadline — so when Net's (unreliable on the `read_body` path) stdlib timeout did fire, it could beat the watchdog and surface a `Net::ReadTimeout` instead of the `SSEReadDeadlineExceeded` the SDK is instrumented around. A new `READ_TIMEOUT_HEADROOM` (30 s) keeps Net's `read_timeout` as a redundant backstop while guaranteeing the watchdog fires first.
