@@ -6,13 +6,17 @@ module Quonfig
   # Options passed to Quonfig::Client at construction time.
   class Options
     attr_reader :sdk_key, :environment, :api_urls, :sse_api_urls, :telemetry_destination, :config_api_urls,
-                :on_no_default, :initialization_timeout_sec, :on_init_failure, :collect_sync_interval, :datadir, :enable_sse, :fallback_poll_enabled, :fallback_poll_interval_ms, :global_context, :logger_key, :logger, :enable_quonfig_user_context,
+                :on_no_default, :init_timeout_ms, :on_init_failure, :collect_sync_interval, :datadir, :enable_sse, :fallback_poll_enabled, :fallback_poll_interval_ms, :global_context, :logger_key, :logger, :enable_quonfig_user_context,
                 :data_dir_auto_reload, :data_dir_auto_reload_debounce_ms
     attr_accessor :is_fork
 
     # Default fallback poll interval, in milliseconds. The SDK polls api-delivery
     # at this cadence only when SSE is unavailable for >= 2x this value.
     DEFAULT_FALLBACK_POLL_INTERVAL_MS = 60_000
+
+    # Default initialization timeout, in milliseconds. The SDK waits up to this
+    # long for the initial config fetch before failing per :on_init_failure.
+    DEFAULT_INIT_TIMEOUT_MS = 10_000
 
     # Deprecated alias for #fallback_poll_enabled. Will be removed in a future
     # minor release.
@@ -26,6 +30,15 @@ module Quonfig
     # release.
     def poll_interval
       @fallback_poll_interval_ms / 1000.0
+    end
+
+    # Deprecated alias for #init_timeout_ms, in seconds. Reads back the timeout
+    # in the legacy unit so existing callers (e.g. internal code that passes
+    # this to Timeout.timeout) keep working. Will be removed in a future minor
+    # release.
+    def initialization_timeout_sec
+      ms = @init_timeout_ms.to_f / 1000.0
+      ms == ms.to_i ? ms.to_i : ms
     end
 
     module ON_INITIALIZATION_FAILURE
@@ -168,7 +181,8 @@ module Quonfig
       enable_polling: nil,
       poll_interval: nil,
       on_no_default: ON_NO_DEFAULT::RAISE,
-      initialization_timeout_sec: 10,
+      init_timeout_ms: nil,
+      initialization_timeout_sec: nil,
       on_init_failure: ON_INITIALIZATION_FAILURE::RAISE,
       collect_max_paths: DEFAULT_MAX_PATHS,
       collect_sync_interval: nil,
@@ -209,7 +223,18 @@ module Quonfig
                                      DEFAULT_FALLBACK_POLL_INTERVAL_MS
                                    end
       @on_no_default = on_no_default
-      @initialization_timeout_sec = initialization_timeout_sec
+      # qfg-39za: canonical name is init_timeout_ms. The legacy
+      # initialization_timeout_sec (seconds) kwarg is kept as a deprecated
+      # alias for one minor cycle. The canonical kwarg wins if both are
+      # passed; otherwise the legacy value is forwarded (and the seconds-based
+      # timeout is multiplied *1000 transparently).
+      @init_timeout_ms = if !init_timeout_ms.nil?
+                           init_timeout_ms
+                         elsif !initialization_timeout_sec.nil?
+                           (initialization_timeout_sec * 1000).to_i
+                         else
+                           DEFAULT_INIT_TIMEOUT_MS
+                         end
       @on_init_failure = on_init_failure
 
       @collect_max_paths = collect_max_paths

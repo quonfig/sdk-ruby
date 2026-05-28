@@ -126,6 +126,42 @@ class TestOptions < Minitest::Test
     assert_equal 5_000, options.fallback_poll_interval_ms
   end
 
+  # ---- init_timeout_ms rename (qfg-39za) ----
+  # The canonical name is `init_timeout_ms` (milliseconds). The legacy
+  # `initialization_timeout_sec` (seconds) kwarg / accessor is kept as a
+  # deprecated alias for one minor cycle and forwards transparently.
+
+  def test_init_timeout_ms_defaults_to_10_000
+    assert_equal 10_000, Quonfig::Options.new.init_timeout_ms
+  end
+
+  def test_init_timeout_ms_explicit_kwarg
+    assert_equal 5_000, Quonfig::Options.new(init_timeout_ms: 5_000).init_timeout_ms
+  end
+
+  def test_deprecated_initialization_timeout_sec_kwarg_forwards_with_unit_multiplication
+    options = silence_deprecation_warnings { Quonfig::Options.new(initialization_timeout_sec: 2) }
+    assert_equal 2_000, options.init_timeout_ms
+    # The legacy accessor continues to read in seconds.
+    assert_equal 2, options.initialization_timeout_sec
+  end
+
+  def test_init_timeout_canonical_kwarg_wins_over_deprecated_alias
+    options = silence_deprecation_warnings do
+      Quonfig::Options.new(
+        init_timeout_ms: 7_500,
+        initialization_timeout_sec: 30
+      )
+    end
+    assert_equal 7_500, options.init_timeout_ms
+    assert_equal 7.5, options.initialization_timeout_sec
+  end
+
+  def test_initialization_timeout_sec_default_still_10_seconds
+    # Default 10_000 ms read back via legacy accessor must still be 10 (sec).
+    assert_equal 10, Quonfig::Options.new.initialization_timeout_sec
+  end
+
   def silence_deprecation_warnings
     original = $VERBOSE
     $VERBOSE = nil

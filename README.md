@@ -227,7 +227,7 @@ Quonfig::Client.new(
   enable_sse:                true,
   fallback_poll_enabled:     true,
   fallback_poll_interval_ms: 60_000,
-  init_timeout:              10,
+  init_timeout_ms:           10_000,
   on_no_default:             :error,
   global_context:            {},
   datadir:                   '/path/to/workspace',
@@ -245,7 +245,7 @@ Quonfig::Client.new(
 | `enable_sse`              | `Boolean`                  | `true`                                                              | Receive real-time updates over Server-Sent Events.                                                |
 | `fallback_poll_enabled`   | `Boolean`                  | `true`                                                              | Engage HTTP polling as a fallback when SSE is unavailable for >= 2x `fallback_poll_interval_ms`. Deprecated alias: `enable_polling`. |
 | `fallback_poll_interval_ms` | `Integer` (ms)           | `60_000`                                                            | Interval between fallback HTTP polls, in milliseconds. Deprecated alias: `poll_interval` (seconds, multiplied by 1000 internally). |
-| `init_timeout`    | `Integer` (seconds)        | `10`                                                                | Maximum time to wait for the initial config load.                                                 |
+| `init_timeout_ms` | `Integer` (ms)             | `10_000`                                                            | Maximum time to wait for the initial config load, in milliseconds. Deprecated alias: `initialization_timeout_sec` (seconds, multiplied by 1000 internally). |
 | `on_no_default`   | `Symbol`                   | `:error`                                                            | Behavior when a key has no value and no default: `:error`, `:warn`, or `:ignore`.                 |
 | `global_context`  | `Hash`                     | `{}`                                                                | Context applied to every evaluation.                                                              |
 | `datadir`         | `String`                   | `ENV['QUONFIG_DIR']`                                                | Path to a local workspace. When set, the SDK runs offline from disk.                              |

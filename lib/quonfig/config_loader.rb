@@ -12,7 +12,7 @@ module Quonfig
   #     -> 304 Not Modified (ETag honored via If-None-Match)
   #
   # The fetch is synchronous; Client is responsible for timing out the initial
-  # fetch per `initialization_timeout_sec`.
+  # fetch per `init_timeout_ms`.
   class ConfigLoader
     LOG = Quonfig::InternalLogger.new(self)
 

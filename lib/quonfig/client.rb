@@ -747,7 +747,7 @@ module Quonfig
     end
 
     # Initialize network mode: sync HTTP fetch (bounded by
-    # initialization_timeout_sec) then start SSE + polling as requested.
+    # init_timeout_ms) then start SSE + polling as requested.
     def initialize_network_mode
       raise Quonfig::Errors::InvalidSdkKeyError, @options.sdk_key if @options.sdk_key.nil? || @options.sdk_key.to_s.strip.empty?
 
@@ -764,7 +764,7 @@ module Quonfig
     end
 
     def perform_initial_fetch
-      timeout = @options.initialization_timeout_sec || 10
+      timeout = (@options.init_timeout_ms || 10_000) / 1000.0
       result = :failed
 
       begin
