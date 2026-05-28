@@ -50,13 +50,13 @@ attach a context in three ways:
 client.get_bool('beta-feature', user: { key: 'user-123', plan: 'pro' })
 ```
 
-### 2. `in_context` block
+### 2. `with_context` block
 
 Everything evaluated inside the block sees the supplied context. The block's
-return value is returned from `in_context`.
+return value is returned from `with_context`.
 
 ```ruby
-result = client.in_context(user: { key: 'user-123', plan: 'pro' }) do |bound|
+result = client.with_context(user: { key: 'user-123', plan: 'pro' }) do |bound|
   {
     hero:   bound.get_string('homepage-hero'),
     limit:  bound.get_int('rate-limit'),
@@ -67,8 +67,9 @@ end
 
 ### 3. `with_context` — BoundClient for repeated lookups
 
-`with_context` returns an immutable `BoundClient` that carries the context on
-every call. Useful when you want to pass a context-bound handle down the stack.
+Called without a block, `with_context` returns an immutable `BoundClient` that
+carries the context on every call. Useful when you want to pass a
+context-bound handle down the stack.
 
 ```ruby
 bound = client.with_context(user: { key: 'user-123', plan: 'pro' })
@@ -77,6 +78,9 @@ bound.get_string('homepage-hero')
 bound.enabled?('beta-feature')
 bound.get_int('rate-limit')
 ```
+
+> `in_context` is a deprecated alias of `with_context` kept for backward
+> compatibility through 1.0.0. New code should use `with_context`.
 
 ## Datadir / offline mode
 

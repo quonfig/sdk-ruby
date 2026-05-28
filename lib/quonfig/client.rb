@@ -185,17 +185,27 @@ module Quonfig
 
     # ---- Context binding ----------------------------------------------
 
-    def in_context(properties)
-      bound = Quonfig::BoundClient.new(self, properties)
-      block_given? ? yield(bound) : bound
+    # Bind +properties+ as a context. With a block, yields a
+    # {Quonfig::BoundClient} and returns the block's value. Without a block,
+    # returns the BoundClient directly.
+    #
+    # qfg-e0kk: kept as a deprecated alias of {#with_context}. The two methods
+    # have always been runtime-identical; sdk-1.0 unifies on +with_context+
+    # across all SDKs. No runtime warning is emitted (Prefab-fork lineage,
+    # heavy customer usage). Slated for removal in 2.0.0.
+    #
+    # @deprecated Use {#with_context} instead.
+    def in_context(properties, &block)
+      with_context(properties, &block)
     end
 
-    def with_context(properties, &block)
-      if block_given?
-        in_context(properties, &block)
-      else
-        Quonfig::BoundClient.new(self, properties)
-      end
+    # Bind +properties+ as a context. With a block, yields a
+    # {Quonfig::BoundClient} and returns the block's value. Without a block,
+    # returns the BoundClient directly — useful for passing a context-bound
+    # handle down the stack.
+    def with_context(properties)
+      bound = Quonfig::BoundClient.new(self, properties)
+      block_given? ? yield(bound) : bound
     end
 
     # ---- Filters & helpers --------------------------------------------

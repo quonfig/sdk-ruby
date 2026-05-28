@@ -184,6 +184,19 @@ class TestClient < Minitest::Test
     assert_equal({ user: { 'key' => '1' } }, yielded.context)
   end
 
+  # qfg-e0kk: with_context is canonical; in_context kept as deprecated alias.
+  def test_with_context_yields_bound_client_when_block_given
+    yielded = nil
+    result = client_with(Quonfig::ConfigStore.new).with_context(user: { 'key' => '1' }) do |bound|
+      yielded = bound
+      :block_return_value
+    end
+
+    assert_kind_of Quonfig::BoundClient, yielded
+    assert_equal({ user: { 'key' => '1' } }, yielded.context)
+    assert_equal :block_return_value, result
+  end
+
   def test_global_context_is_merged_into_jit_context
     cfg = make_config(
       key: CONFIG_KEY,
