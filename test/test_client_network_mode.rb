@@ -197,6 +197,63 @@ class TestClientNetworkMode < Minitest::Test
     ENV['QUONFIG_ENVIRONMENT'] = prev_env if prev_env
   end
 
+  # qfg-pinh: In DELIVERY (SDK-key) mode the server's meta.environment is
+  # AUTHORITATIVE. An explicit environment pin (environment: option or
+  # QUONFIG_ENVIRONMENT) is DATADIR-ONLY and must be IGNORED in delivery mode.
+  # Canonical reference = sdk-go: the evaluator always evaluates against the
+  # installed envelope's meta.environment; the pin never branches eval in
+  # delivery mode.
+  #
+  # Realistic envelope: config environment.id == meta.environment ==
+  # 'development' (value false); default true. Pin = 'staging' (mismatch).
+  # Expect the env override (false), NOT the pin, NOT the default (true).
+  def test_pin_ignored_in_delivery_mode_meta_environment_authoritative
+    prev_env = ENV.delete('QUONFIG_ENVIRONMENT')
+    start_env_scoped_server
+
+    client = Quonfig::Client.new(
+      sdk_key: 'test-key',
+      api_urls: ["http://127.0.0.1:#{PORT}"],
+      enable_sse: false,
+      enable_polling: false,
+      context_upload_mode: :none,
+      collect_evaluation_summaries: false,
+      environment: 'staging' # mismatched pin — must be IGNORED in delivery mode
+    )
+
+    assert_equal false, client.get('flag.env-scoped', :missing),
+                 'expected env override (false) from meta.environment=development, ' \
+                 'NOT the pin (staging) and NOT default (true)'
+    assert_logged [/environment 'staging' was set but the client is in delivery/]
+  ensure
+    client&.stop
+    ENV['QUONFIG_ENVIRONMENT'] = prev_env if prev_env
+  end
+
+  # qfg-pinh: when a pin is set but the client is in delivery mode, emit a WARN
+  # through the SDK logger exactly once at init.
+  def test_warn_emitted_when_pin_set_in_delivery_mode
+    prev_env = ENV.delete('QUONFIG_ENVIRONMENT')
+    start_env_scoped_server
+
+    client = Quonfig::Client.new(
+      sdk_key: 'test-key',
+      api_urls: ["http://127.0.0.1:#{PORT}"],
+      enable_sse: false,
+      enable_polling: false,
+      context_upload_mode: :none,
+      collect_evaluation_summaries: false,
+      environment: 'staging'
+    )
+
+    assert_logged [
+      /environment 'staging' was set but the client is in delivery \(SDK-key\) mode; the active environment is determined by the SDK key, so this setting is ignored \(it applies only when loading from a local data dir\)/
+    ]
+  ensure
+    client&.stop
+    ENV['QUONFIG_ENVIRONMENT'] = prev_env if prev_env
+  end
+
   def test_initialize_skips_network_when_store_injected
     # store: passed -> Client should not try any I/O. Unreachable URL must
     # be fine when a store is injected.

@@ -61,10 +61,26 @@ class TestDeliveryEnvironment < Minitest::Test
     ENV['QUONFIG_ENVIRONMENT'] = prev_env if prev_env
   end
 
-  # explicit environment pin wins over meta.environment
-  def test_explicit_environment_pin_wins_over_meta_environment
+  # explicit environment pin is IGNORED in delivery mode (meta.environment
+  # authoritative)
+  #
+  # qfg-pinh (Jeff, 2026-05-29, Option A): in delivery (SDK-key) mode
+  # meta.environment is AUTHORITATIVE; an explicit environment pin is
+  # datadir-only and IGNORED. This case was rewritten from the old
+  # "explicit environment pin wins over meta.environment" assertion to a
+  # realistic pin-ignored scenario: meta.environment == the config's
+  # environment.id ('development', value false), and a mismatched pin
+  # ('staging') that MUST be ignored — so the env override (false) wins, not
+  # the default (true) the stale pin would have fallen through to.
+  #
+  # The pin in delivery mode also emits a WARN; assert it so the teardown
+  # log guard doesn't trip.
+  #
+  # NOTE: pending the integration-test-data generator/YAML rewrite (qfg-pinh),
+  # which will regenerate this file with the same semantics across all 6 SDKs.
+  def test_explicit_environment_pin_is_ignored_in_delivery_mode
     prev_env = ENV.delete('QUONFIG_ENVIRONMENT')
-    envelope_json = '{"meta":{"version":"v1","environment":"staging"},"configs":[{"id":"c-env","key":"flag.env-scoped","type":"bool","valueType":"bool","sendToClientSdk":false,"default":{"rules":[{"criteria":[{"operator":"ALWAYS_TRUE"}],"value":{"type":"bool","value":true}}]},"environment":{"id":"development","rules":[{"criteria":[{"operator":"ALWAYS_TRUE"}],"value":{"type":"bool","value":false}}]}}]}'
+    envelope_json = '{"meta":{"version":"v1","environment":"development"},"configs":[{"id":"c-env","key":"flag.env-scoped","type":"bool","valueType":"bool","sendToClientSdk":false,"default":{"rules":[{"criteria":[{"operator":"ALWAYS_TRUE"}],"value":{"type":"bool","value":true}}]},"environment":{"id":"development","rules":[{"criteria":[{"operator":"ALWAYS_TRUE"}],"value":{"type":"bool","value":false}}]}}]}'
     server, port = start_delivery_server(envelope_json)
     client = Quonfig::Client.new(
       sdk_key: 'sdk-test',
@@ -73,10 +89,11 @@ class TestDeliveryEnvironment < Minitest::Test
       enable_polling: false,
       context_upload_mode: :none,
       collect_evaluation_summaries: false,
-      environment: 'development'
+      environment: 'staging' # mismatched pin — IGNORED in delivery mode
     )
     assert_equal false, client.get('flag.env-scoped', :missing),
-                 'delivery-wire env override: expected false for flag.env-scoped'
+                 'delivery-wire env override: expected false (meta.environment), pin ignored'
+    assert_logged [/environment 'staging' was set but the client is in delivery/]
   ensure
     client&.stop
     server&.shutdown

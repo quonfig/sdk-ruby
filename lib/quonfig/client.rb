@@ -714,6 +714,14 @@ module Quonfig
       old_keys = @store.keys.to_set
       (old_keys - new_keys).each { |k| @store.delete(k) }
       envelope.configs.each { |cfg| @store.set(cfg['key'], cfg) }
+      # qfg-pinh: evaluate against the installed envelope's meta.environment,
+      # matching sdk-go. In datadir mode the loader stamps meta.environment =
+      # the resolved env (the `environment:` pin or QUONFIG_ENVIRONMENT), so
+      # this also covers the env-var-only case where @options.environment is
+      # nil at evaluator construction.
+      meta = envelope.respond_to?(:meta) ? envelope.meta : nil
+      env_id = meta && (meta['environment'] || meta[:environment])
+      @evaluator.env_id = env_id if env_id && !env_id.to_s.empty?
       record_refresh!
     end
 
@@ -761,6 +769,8 @@ module Quonfig
     def initialize_network_mode
       raise Quonfig::Errors::InvalidSdkKeyError, @options.sdk_key if @options.sdk_key.nil? || @options.sdk_key.to_s.strip.empty?
 
+      warn_if_pin_ignored_in_delivery_mode
+
       @config_loader = Quonfig::ConfigLoader.new(@store, @options)
 
       perform_initial_fetch
@@ -796,23 +806,45 @@ module Quonfig
       end
     end
 
-    # qfg-xpln.2: In SDK-key delivery mode the server scopes each config to a
-    # single environment and reports the active env id in `meta.environment`
-    # (the loader captures it as @config_loader.environment_id). The consumer
-    # does NOT pin an environment, so the evaluator's env_id — frozen to
-    # @options.environment at construction — would be nil and every config
-    # would silently resolve through `default`. sdk-go does the same
-    # propagation (c.envID = envelope.Meta.Environment, quonfig.go:850).
+    # qfg-pinh: In SDK-key DELIVERY mode the server's `meta.environment` is
+    # AUTHORITATIVE. The server scopes each config to a single environment and
+    # reports the active env id in `meta.environment` (the loader captures it
+    # as @config_loader.environment_id). The evaluator must always evaluate
+    # against that installed env id — matching sdk-go, where eval never
+    # branches on the pin (c.envID = envelope.Meta.Environment, quonfig.go:850).
     #
-    # A client-pinned @options.environment always wins (WithEnvironment
-    # supersedes the env var / server hint), so we only adopt the server's
-    # env id when no pin was supplied.
+    # An explicit environment pin (`environment:` option / QUONFIG_ENVIRONMENT)
+    # is DATADIR-ONLY: in delivery mode it is IGNORED (it only feeds the datadir
+    # loader, which stamps meta.environment = pin). So we always adopt the
+    # server's env id here regardless of the pin. A WARN is emitted once at init
+    # (see #warn_if_pin_ignored_in_delivery_mode) when a pin is set in delivery
+    # mode so customers aren't surprised that it has no effect.
+    #
+    # qfg-xpln.2 originally only adopted the server env when NO pin was set,
+    # which let the pin win in delivery mode — qfg-pinh reverses that.
     def sync_evaluator_env_id!
-      return if @options.environment && !@options.environment.to_s.empty?
       return unless @config_loader.respond_to?(:environment_id)
 
       server_env = @config_loader.environment_id
       @evaluator.env_id = server_env if server_env && !server_env.to_s.empty?
+    end
+
+    # qfg-pinh: an explicit environment pin (`environment:` option or
+    # QUONFIG_ENVIRONMENT) is DATADIR-ONLY. In delivery (SDK-key) mode the
+    # active environment is determined by the SDK key and reported via
+    # `meta.environment`, so the pin is ignored. Warn once at init so the
+    # customer isn't surprised the setting has no effect. Fired only on the
+    # delivery-mode init path (datadir mode honors the pin and never calls
+    # this).
+    def warn_if_pin_ignored_in_delivery_mode
+      env = @options.environment
+      return if env.nil? || env.to_s.empty?
+
+      LOG.warn(
+        "[quonfig] environment '#{env}' was set but the client is in delivery " \
+        '(SDK-key) mode; the active environment is determined by the SDK key, ' \
+        'so this setting is ignored (it applies only when loading from a local data dir)'
+      )
     end
 
     def handle_init_failure(err)
