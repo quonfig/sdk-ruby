@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.20 - 2026-05-29
+
+- **Fix (delivery): derive evaluator env from `meta.environment` in HTTP+SSE delivery mode (qfg-xpln.2).** Per-environment overrides were not being applied when the SDK ran in delivery mode (HTTP fetch + SSE stream). The evaluator now derives its `env_id` from the authoritative `meta.environment` carried on every delivery envelope, so environment-scoped rules and overrides resolve correctly against the environment api-delivery actually served — matching datadir-mode behavior.
+- **Fix (options): an explicit environment pin is datadir-only; ignored in delivery mode with a WARN (qfg-pinh).** In delivery mode the served envelope's `meta.environment` is authoritative — the environment is decided server-side by api-delivery, not by the client. A client-supplied environment pin (`with_environment` / `QUONFIG_ENVIRONMENT`) is therefore only meaningful in datadir mode. In delivery mode the pin is now ignored and a one-time WARN is logged so the conflict is visible rather than silently misleading.
+
 ## 0.0.19 - 2026-05-28
 
 - **Deprecation (context): `in_context` is now a deprecated alias of `with_context` (qfg-e0kk).** The two methods have always been runtime-identical — both accept a properties hash and either yield a `Quonfig::BoundClient` to a given block or return the BoundClient directly. As part of the sdk-1.0 unification, every SDK in the family is converging on the `with_context` family; sdk-ruby keeps `in_context` as a YARD-`@deprecated` alias for the 1.0.0 cycle so existing customer code (especially Prefab-fork lineage call sites) keeps working without a runtime warning. Implementation collapses to a one-line forward (`in_context` now calls `with_context`), and the README example is updated to use `with_context`. Slated for removal in 2.0.0.
