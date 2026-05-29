@@ -791,8 +791,28 @@ module Quonfig
       if result == :failed
         handle_init_failure(RuntimeError.new('Config fetch failed against all api_urls'))
       else
+        sync_evaluator_env_id!
         record_refresh!
       end
+    end
+
+    # qfg-xpln.2: In SDK-key delivery mode the server scopes each config to a
+    # single environment and reports the active env id in `meta.environment`
+    # (the loader captures it as @config_loader.environment_id). The consumer
+    # does NOT pin an environment, so the evaluator's env_id — frozen to
+    # @options.environment at construction — would be nil and every config
+    # would silently resolve through `default`. sdk-go does the same
+    # propagation (c.envID = envelope.Meta.Environment, quonfig.go:850).
+    #
+    # A client-pinned @options.environment always wins (WithEnvironment
+    # supersedes the env var / server hint), so we only adopt the server's
+    # env id when no pin was supplied.
+    def sync_evaluator_env_id!
+      return if @options.environment && !@options.environment.to_s.empty?
+      return unless @config_loader.respond_to?(:environment_id)
+
+      server_env = @config_loader.environment_id
+      @evaluator.env_id = server_env if server_env && !server_env.to_s.empty?
     end
 
     def handle_init_failure(err)
@@ -821,6 +841,7 @@ module Quonfig
 
         begin
           @config_loader.apply_envelope(envelope)
+          sync_evaluator_env_id!
           handle_sse_state_change(:connected)
           record_refresh!
         rescue StandardError => e
@@ -858,6 +879,7 @@ module Quonfig
           break if stopped_ref.call
 
           @config_loader.fetch!
+          sync_evaluator_env_id!
           record_refresh!
           notify_delivered.call
           notify_on_update_callback

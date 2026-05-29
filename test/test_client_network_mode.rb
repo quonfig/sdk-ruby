@@ -117,6 +117,86 @@ class TestClientNetworkMode < Minitest::Test
     client&.stop
   end
 
+  # qfg-xpln.2: In SDK-key delivery mode the server scopes each config to ONE
+  # environment using a singular `environment` block plus `meta.environment` =
+  # the active env id. The consumer does NOT pin an environment; the SDK must
+  # take the active env from `meta.environment` (sdk-go: c.envID =
+  # envelope.Meta.Environment). Before the fix, the evaluator's env_id was
+  # frozen to @options.environment (nil here), so the env override silently
+  # fell through to `default`.
+  ENV_SCOPED_CONFIG = {
+    'id' => 'c-env',
+    'key' => 'flag.env-scoped',
+    'type' => 'bool',
+    'valueType' => 'bool',
+    'sendToClientSdk' => false,
+    'default' => {
+      'rules' => [
+        {
+          'criteria' => [{ 'operator' => 'ALWAYS_TRUE' }],
+          'value' => { 'type' => 'bool', 'value' => true }
+        }
+      ]
+    },
+    'environment' => {
+      'id' => 'development',
+      'rules' => [
+        {
+          'criteria' => [{ 'operator' => 'ALWAYS_TRUE' }],
+          'value' => { 'type' => 'bool', 'value' => false }
+        }
+      ]
+    }
+  }.freeze
+
+  def start_env_scoped_server
+    log = WEBrick::Log.new(StringIO.new)
+    @server = WEBrick::HTTPServer.new(
+      Port: PORT, Logger: log, AccessLog: []
+    )
+    @server.mount_proc '/api/v2/configs' do |_req, res|
+      @fetch_count += 1
+      res.status = 200
+      res['Content-Type'] = 'application/json'
+      res['ETag'] = "v#{@fetch_count}"
+      res.body = JSON.generate(
+        'configs' => [ENV_SCOPED_CONFIG],
+        'meta' => { 'version' => "v#{@fetch_count}", 'environment' => 'development' }
+      )
+    end
+    Thread.new { @server.start }
+    50.times do
+      break if tcp_open?
+
+      sleep 0.05
+    end
+  end
+
+  def test_env_override_applied_from_meta_environment_when_no_pin
+    prev_env = ENV.delete('QUONFIG_ENVIRONMENT')
+    start_env_scoped_server
+
+    client = Quonfig::Client.new(
+      sdk_key: 'test-key',
+      api_urls: ["http://127.0.0.1:#{PORT}"],
+      enable_sse: false,
+      enable_polling: false,
+      # Disable telemetry so the background reporter doesn't POST to a
+      # non-existent telemetry endpoint and trip the teardown log check.
+      context_upload_mode: :none,
+      collect_evaluation_summaries: false
+      # NO environment: option, NO QUONFIG_ENVIRONMENT
+    )
+
+    # The env block (id 'development', value false) must win over default
+    # (value true) because meta.environment == 'development'.
+    assert_equal false, client.get('flag.env-scoped', :missing),
+                 'expected env override (false) from meta.environment, not default (true)'
+  ensure
+    client&.stop
+    ENV['QUONFIG_ENVIRONMENT'] = prev_env if prev_env
+  end
+
   def test_initialize_skips_network_when_store_injected
     # store: passed -> Client should not try any I/O. Unreachable URL must
     # be fine when a store is injected.
