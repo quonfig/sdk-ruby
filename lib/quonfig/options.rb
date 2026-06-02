@@ -194,7 +194,9 @@ module Quonfig
       global_context: {},
       logger_key: nil,
       logger: nil,
-      enable_quonfig_user_context: false,
+      # Tri-state (nil = unset). Default ON, gated only by the presence of
+      # ~/.quonfig/tokens.json; see Client#build_initial_global_context.
+      enable_quonfig_user_context: nil,
       data_dir_auto_reload: false,
       data_dir_auto_reload_debounce_ms: 200
     )

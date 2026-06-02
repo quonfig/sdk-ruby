@@ -953,14 +953,27 @@ module Quonfig
     # customer's so any explicit `quonfig-user` keys win on collision.
     def build_initial_global_context(options)
       customer = normalize_context(options.global_context)
-      enabled = options.enable_quonfig_user_context == true ||
-                ENV['QUONFIG_DEV_CONTEXT'] == 'true'
-      return customer unless enabled
+      return customer unless dev_context_enabled?(options)
 
       dev = Quonfig::DevContext.load_quonfig_user_context
       return customer if dev.nil?
 
       merge_contexts(dev, customer)
+    end
+
+    # Tri-state resolution for dev-context injection. Default ON, gated only
+    # by the presence of the tokens file (the loader no-ops without it ->
+    # dead in prod). Precedence: an explicit option (non-nil) wins, else
+    # QUONFIG_DEV_CONTEXT ('true'/'false'), else true.
+    def dev_context_enabled?(options)
+      opt = options.enable_quonfig_user_context
+      return opt == true unless opt.nil?
+
+      case ENV.fetch('QUONFIG_DEV_CONTEXT', nil)
+      when 'true' then true
+      when 'false' then false
+      else true
+      end
     end
 
     def normalize_context(ctx)

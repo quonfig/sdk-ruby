@@ -48,8 +48,9 @@ class TestDevContext < Minitest::Test
     assert_equal({ 'quonfig-user' => { 'email' => 'bob@foo.com' } }, global_context_of(client))
   end
 
-  # 2. RED: no-op when option disabled and no env var
-  def test_no_op_when_option_disabled
+  # 2. The flip: enabled by DEFAULT (no opt-in, no env var) when the token
+  # file is present; customer context preserved alongside the injection.
+  def test_enabled_by_default
     write_tokens(userEmail: 'bob@foo.com')
 
     client = Quonfig::Client.new(
@@ -57,7 +58,48 @@ class TestDevContext < Minitest::Test
       store: Quonfig::ConfigStore.new
     )
 
-    assert_equal({ user: { 'plan' => 'pro' } }, global_context_of(client))
+    assert_equal(
+      { user: { 'plan' => 'pro' }, 'quonfig-user' => { 'email' => 'bob@foo.com' } },
+      global_context_of(client)
+    )
+  end
+
+  # 2b. explicit enable_quonfig_user_context: false disables despite token
+  def test_option_false_disables
+    write_tokens(userEmail: 'bob@foo.com')
+
+    client = Quonfig::Client.new(
+      Quonfig::Options.new(enable_quonfig_user_context: false),
+      store: Quonfig::ConfigStore.new
+    )
+
+    assert_equal({}, global_context_of(client))
+  end
+
+  # 2c. QUONFIG_DEV_CONTEXT=false disables despite token
+  def test_env_false_disables
+    write_tokens(userEmail: 'bob@foo.com')
+    ENV['QUONFIG_DEV_CONTEXT'] = 'false'
+
+    client = Quonfig::Client.new(
+      Quonfig::Options.new,
+      store: Quonfig::ConfigStore.new
+    )
+
+    assert_equal({}, global_context_of(client))
+  end
+
+  # 2d. explicit option true overrides QUONFIG_DEV_CONTEXT=false
+  def test_option_true_overrides_env_false
+    write_tokens(userEmail: 'bob@foo.com')
+    ENV['QUONFIG_DEV_CONTEXT'] = 'false'
+
+    client = Quonfig::Client.new(
+      Quonfig::Options.new(enable_quonfig_user_context: true),
+      store: Quonfig::ConfigStore.new
+    )
+
+    assert_equal({ 'quonfig-user' => { 'email' => 'bob@foo.com' } }, global_context_of(client))
   end
 
   # 3. RED: no-op when option enabled but file missing
