@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.21 - 2026-06-02
+
+- **Dev-context injection is now default-on (qfg-bw7g.5).** `enable_quonfig_user_context` now defaults to `nil` (unset). When left unset it defaults to **on**, gated solely by the presence of `~/.quonfig/tokens.json`; the loader no-ops without that file, so this stays inert in production. New `dev_context_enabled?` precedence: explicit `enable_quonfig_user_context` option ?? `QUONFIG_DEV_CONTEXT` env (`true`/`false`) ?? `true`. Pass `enable_quonfig_user_context: false` or set `QUONFIG_DEV_CONTEXT=false` to opt out.
+
 ## 0.0.20 - 2026-05-29
 
 - **Fix (delivery): derive evaluator env from `meta.environment` in HTTP+SSE delivery mode (qfg-xpln.2).** Per-environment overrides were not being applied when the SDK ran in delivery mode (HTTP fetch + SSE stream). The evaluator now derives its `env_id` from the authoritative `meta.environment` carried on every delivery envelope, so environment-scoped rules and overrides resolve correctly against the environment api-delivery actually served — matching datadir-mode behavior.
