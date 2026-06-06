@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0 - 2026-06-06
+
+- **Stable 1.0.0 release.** The Quonfig Ruby SDK is now declared stable. No API or
+  behavior changes from 0.0.21 — this is a coordinated 1.0.0 version stamp across
+  the entire Quonfig SDK family.
+
 ## 0.0.21 - 2026-06-02
 
 - **Dev-context injection is now default-on (qfg-bw7g.5).** `enable_quonfig_user_context` now defaults to `nil` (unset). When left unset it defaults to **on**, gated solely by the presence of `~/.quonfig/tokens.json`; the loader no-ops without that file, so this stays inert in production. New `dev_context_enabled?` precedence: explicit `enable_quonfig_user_context` option ?? `QUONFIG_DEV_CONTEXT` env (`true`/`false`) ?? `true`. Pass `enable_quonfig_user_context: false` or set `QUONFIG_DEV_CONTEXT=false` to opt out.
