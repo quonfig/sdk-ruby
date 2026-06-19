@@ -54,7 +54,7 @@ jobs:
           # Tracks main: the scenarios-failover/ + scenarios-ordering/ corpus
           # this job drives only exists on main and is not yet in a tag. Pin to a
           # tag once the corpus is rev'd into one, matching chaos.yaml's rationale.
-          ref: main
+          ref: v2026.06.19
 
       - name: Checkout api-delivery
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
