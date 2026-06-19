@@ -42,7 +42,7 @@ class TestConfigLoader < Minitest::Test
       path == '/api/v2/configs' && headers['If-None-Match'] == 'W/"etag-one"'
     end
 
-    Quonfig::HttpConnection.stub :new, ->(_uri, _key) { http_conn } do
+    Quonfig::HttpConnection.stub :new, ->(_uri, _key, **_kw) { http_conn } do
       assert_equal :updated, @loader.fetch!
       assert_equal :not_modified, @loader.fetch!
     end

@@ -409,6 +409,48 @@ module Quonfig
       end
     end
 
+    # ---- Failover + canonical-ordering diagnostics (qfg-7h5d.1.9) ------
+    #
+    # Read-only signals surfaced for the failover/ordering chaos probe and for
+    # operators. Like #connection_state / #last_successful_refresh these are
+    # DIAGNOSTIC ONLY — do not wire them into a liveness probe.
+
+    # True once the SDK has installed at least one envelope (any source). The
+    # failover scenarios assert the client reaches readiness off the secondary
+    # leg inside the init budget even when the primary is refused/hung/slow.
+    def ready?
+      !last_successful_refresh.nil?
+    end
+
+    # Meta.generation of the currently-held envelope (0 before the first install
+    # or when the backend does not emit a generation). Canonical ordering: an
+    # established client never regresses to a lower generation.
+    def held_generation
+      @config_loader&.held_generation || 0
+    end
+
+    # Count of envelopes actually installed. Rejected-older and same-generation
+    # snapshots do NOT bump this, so o04 can assert "no flap" via a stable count.
+    def config_install_count
+      @config_loader&.install_count || 0
+    end
+
+    # 'primary' / 'secondary' / '' — which config_api_urls leg produced the
+    # currently-held config. Used to assert HTTP config-fetch failover (f01-f04).
+    def resolved_from
+      @config_loader&.resolved_from || ''
+    end
+
+    # True if the live SSE stream has ever repointed to a non-primary leg. The
+    # failover epic asserts this stays false (f05): SSE does not fail over.
+    def sse_failed_over_to_secondary?
+      sse = @sse_client
+      return false if sse.nil?
+      return false unless sse.respond_to?(:failed_over_to_secondary?)
+
+      sse.failed_over_to_secondary?
+    end
+
     def fork
       self.class.new(@options.for_fork)
     end

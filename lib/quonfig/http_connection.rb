@@ -13,9 +13,17 @@ module Quonfig
       'X-Quonfig-SDK-Version' => SDK_VERSION
     }.freeze
 
-    def initialize(uri, sdk_key)
+    # +timeout_ms+ (qfg-7h5d.1.9): per-request bound applied to BOTH the connect
+    # (open) and read phases of every request made through this connection. nil
+    # leaves Faraday's defaults (no timeout) in place — preserving the prior
+    # behavior for callers that don't pass one. The config-fetch path passes
+    # Options#config_fetch_timeout_ms so a hung upstream (accepts the TCP
+    # connection but never responds) aborts fast instead of blocking the caller's
+    # whole init budget.
+    def initialize(uri, sdk_key, timeout_ms: nil)
       @uri = uri
       @sdk_key = sdk_key
+      @timeout_ms = timeout_ms
     end
 
     attr_reader :uri
@@ -32,6 +40,15 @@ module Quonfig
       merged = JSON_HEADERS.merge('Authorization' => auth_header).merge(headers)
       Faraday.new(@uri) do |conn|
         conn.headers.merge!(merged)
+        if @timeout_ms
+          seconds = @timeout_ms / 1000.0
+          # open_timeout bounds the TCP connect; timeout bounds the read. A
+          # 'timeout' toxic accepts the connection but never sends bytes, so the
+          # read deadline is the one that fires — set both so a refused/slow
+          # connect is bounded too.
+          conn.options.open_timeout = seconds
+          conn.options.timeout = seconds
+        end
       end
     end
 

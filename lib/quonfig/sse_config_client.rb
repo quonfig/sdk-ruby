@@ -89,6 +89,19 @@ module Quonfig
 
       @source_index = -1
       @last_event_id = nil
+      # qfg-7h5d.1.9: latches true if the SSE reconnect rotation ever selects a
+      # non-primary (index > 0) sse_api_urls leg. The failover epic asserts SSE
+      # does NOT fail over to the secondary (f05) — it stays on its own endpoint
+      # and degrades via the single-upstream SSE↔HTTP fallback. With a single SSE
+      # URL configured this can never flip; the flag makes the design choice
+      # observable (and would surface a regression if SSE were given two legs).
+      @failed_over_to_secondary = false
+    end
+
+    # True if the live SSE stream has ever connected to a non-primary leg. Read
+    # by the failover chaos probe (f05). See @failed_over_to_secondary.
+    def failed_over_to_secondary?
+      @failed_over_to_secondary
     end
 
     # Layer 1 (SSE) reconnect counter. Bumped exactly once per reconnect
@@ -398,6 +411,7 @@ module Quonfig
     def current_url
       urls = @prefab_options.sse_api_urls
       @source_index = (@source_index + 1) % urls.size
+      @failed_over_to_secondary = true if @source_index.positive?
       urls[@source_index]
     end
 
