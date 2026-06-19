@@ -95,6 +95,11 @@ class TestConfigLoaderFailover < Minitest::Test
     false
   end
 
+  # qfg-7h5d.1.14: under the parallel-failover HEDGE the hung primary no longer
+  # has to abort before the secondary is tried. The hedge fires the secondary in
+  # PARALLEL once config_fetch_hedge_delay_ms elapses (primary still hung), so the
+  # SDK resolves off the secondary FAST — well inside the hedge abort — and the
+  # hung primary's timeout warning fires on the detached leg at the hedge abort.
   def test_hung_primary_fails_over_to_secondary_inside_budget
     primary_url = start_hung_primary
     secondary_url = start_secondary
@@ -102,7 +107,10 @@ class TestConfigLoaderFailover < Minitest::Test
     options = Quonfig::Options.new(
       sdk_key: '1-test-sdk-key',
       api_urls: [primary_url, secondary_url],
-      config_fetch_timeout_ms: 800,
+      # Hedge after 300ms (the hung primary is still in flight), hard-abort the
+      # primary leg at 1200ms so its timeout warning fires deterministically.
+      config_fetch_hedge_delay_ms: 300,
+      config_fetch_hedge_abort_ms: 1200,
       enable_sse: false,
       fallback_poll_enabled: false
     )
@@ -112,18 +120,20 @@ class TestConfigLoaderFailover < Minitest::Test
     result = nil
     worker = Thread.new { result = loader.fetch! }
 
-    # Generous budget: 800ms primary timeout + secondary fetch. If the per-URL
-    # timeout is missing the primary hangs forever and this join trips.
+    # The hedge fires the secondary at ~300ms; fetch! returns on its install well
+    # before the primary's 1200ms abort. If the hedge never fired (sequential),
+    # the hung primary would block this join until the abort and starve readiness.
     completed = worker.join(4)
     worker.kill unless completed
 
-    assert completed, 'fetch! did not return within 4s — the hung primary starved the secondary (no per-URL timeout)'
+    assert completed, 'fetch! did not return within 4s — the hung primary starved the secondary (hedge did not fire)'
     assert_equal :updated, result, 'expected the secondary leg to satisfy the fetch'
     assert_includes store.keys, 'failover.flag', 'store should hold the secondary-served config'
 
-    # The hung-primary attempt logs a timeout warning before failing over — that
-    # warning IS the per-URL-timeout mechanism firing; consume it so the strict
-    # teardown log check passes.
+    # The detached hung-primary leg aborts at the hedge abort (~1200ms) and logs a
+    # timeout warning. Wait for it so the strict teardown log check is satisfied
+    # (the warning IS the per-leg hedge-abort mechanism firing).
+    wait_for(-> { $logs.string =~ %r{error fetching configs from http://127.0.0.1} }, max_wait: 4)
     assert_logged([%r{error fetching configs from http://127.0.0.1}])
   end
 end

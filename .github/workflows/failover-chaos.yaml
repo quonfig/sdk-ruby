@@ -12,12 +12,11 @@ name: Failover Chaos
 # job only has to build api-delivery and boot toxiproxy via
 # scripts/run-failover-chaos.sh. Wall clock ~3 min.
 #
-# Scenarios gated here: f01-f05 (failover) + o02-o04 (ordering). o01-secondary-
-# newer is SKIPPED — it asserts cross-leg "max-wins" (hold the higher generation
-# even when the older primary leg is healthy), which the backend SDKs do not yet
-# implement (it's out of the §5f reject-older scope, "no source ranking"). That
-# behaviour is owned by qfg-7h5d.1.14; drop the CHAOS_SKIP below to re-gate o01
-# once it lands.
+# Scenarios gated here: f01-f05 (failover) + o01-o05 (ordering). The
+# parallel-failover hedge (qfg-7h5d.1.14) makes o01 (fast primary wins, secondary
+# never contacted — cold standby), o03 (slow newer primary heals forward), and
+# o05 (slow older primary loses to fast newer secondary) all green, so CHAOS_SKIP
+# is now empty and the full ordering suite runs.
 
 on:
   push:
@@ -51,10 +50,11 @@ jobs:
         with:
           repository: quonfig/integration-test-data
           path: integration-test-data
-          # Tracks main: the scenarios-failover/ + scenarios-ordering/ corpus
-          # this job drives only exists on main and is not yet in a tag. Pin to a
-          # tag once the corpus is rev'd into one, matching chaos.yaml's rationale.
-          ref: v2026.06.19
+          # Pinned to the corpus tag that carries the reframed o01 (fast primary
+          # wins; held==41, resolvedFrom==primary, installCount==1), the new o05
+          # (slow older primary loses to fast newer secondary), and o03 (heal
+          # forward). qfg-7h5d.1.14: the parallel-failover hedge makes these green.
+          ref: v2026.06.19.1
 
       - name: Checkout api-delivery
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -85,10 +85,10 @@ jobs:
 
       - name: Run failover + ordering chaos rigs
         working-directory: sdk-ruby
-        env:
-          # o01-secondary-newer needs cross-leg max-wins (qfg-7h5d.1.14); not
-          # implemented yet. Drop this once o01 can go green.
-          CHAOS_SKIP: o01-secondary-newer|o03-late-primary-heals
+        # CHAOS_SKIP is intentionally unset: the parallel-failover hedge
+        # (qfg-7h5d.1.14) makes o01 + o03 + o05 green, so the FULL ordering suite
+        # (o01-o05) and the failover suite (f01-f05) all run. run-failover-chaos.sh
+        # has no built-in CHAOS_SKIP default, so an unset env var = no skip.
         run: ./scripts/run-failover-chaos.sh
 
       - name: Upload chaos logs on failure

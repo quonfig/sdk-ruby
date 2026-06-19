@@ -812,6 +812,7 @@ module Quonfig
       raise Quonfig::Errors::InvalidSdkKeyError, @options.sdk_key if @options.sdk_key.nil? || @options.sdk_key.to_s.strip.empty?
 
       warn_if_pin_ignored_in_delivery_mode
+      warn_if_hedge_abort_exceeds_init_timeout
 
       @config_loader = Quonfig::ConfigLoader.new(@store, @options)
 
@@ -886,6 +887,30 @@ module Quonfig
         "[quonfig] environment '#{env}' was set but the client is in delivery " \
         '(SDK-key) mode; the active environment is determined by the SDK key, ' \
         'so this setting is ignored (it applies only when loading from a local data dir)'
+      )
+    end
+
+    # qfg-7h5d.1.14: the per-leg hedge abort MUST be < init_timeout_ms, otherwise
+    # the init-path heal leg is clipped by the overall init deadline before it can
+    # heal forward. Mirrors sdk-go's construction-time warning in options.go. Warn
+    # once at init in delivery mode; does not change behavior.
+    def warn_if_hedge_abort_exceeds_init_timeout
+      return unless @options.respond_to?(:config_fetch_hedge_abort_ms)
+      # The hedge (and its heal leg) only engages with a secondary leg; with a
+      # single config_api_url there is no heal leg to clip, so the warning would
+      # be misleading.
+      return unless Array(@options.config_api_urls).length >= 2
+
+      abort_ms = @options.config_fetch_hedge_abort_ms
+      init_ms = @options.init_timeout_ms
+      return if abort_ms.nil? || init_ms.nil?
+      return if init_ms > abort_ms
+
+      LOG.warn(
+        "[quonfig] init_timeout_ms (#{init_ms}ms) <= config_fetch_hedge_abort_ms " \
+        "(#{abort_ms}ms); the hedged config-fetch heal leg may be clipped by the " \
+        'init deadline before it can heal forward. Set init_timeout_ms above the ' \
+        'hedge abort.'
       )
     end
 

@@ -7,7 +7,8 @@ module Quonfig
   class Options
     attr_reader :sdk_key, :environment, :api_urls, :sse_api_urls, :telemetry_destination, :config_api_urls,
                 :on_no_default, :init_timeout_ms, :on_init_failure, :collect_sync_interval, :datadir, :enable_sse, :fallback_poll_enabled, :fallback_poll_interval_ms, :global_context, :logger_key, :logger, :enable_quonfig_user_context,
-                :data_dir_auto_reload, :data_dir_auto_reload_debounce_ms, :config_fetch_timeout_ms
+                :data_dir_auto_reload, :data_dir_auto_reload_debounce_ms, :config_fetch_timeout_ms,
+                :config_fetch_hedge_delay_ms, :config_fetch_hedge_abort_ms
     attr_accessor :is_fork
 
     # Default fallback poll interval, in milliseconds. The SDK polls api-delivery
@@ -27,6 +28,27 @@ module Quonfig
     # upstream. Additive + a default that already fails over → backward
     # compatible, not a breaking change.
     DEFAULT_CONFIG_FETCH_TIMEOUT_MS = 3_000
+
+    # Default hedge delay, in milliseconds (qfg-7h5d.1.14). On the init/refresh
+    # config-fetch the SDK fires the PRIMARY leg first; if it has not settled
+    # within this delay (or errors fast) the SDK ALSO fires the secondary leg in
+    # PARALLEL without cancelling the primary. ~1s is below a realistic
+    # slow-but-alive primary's worst case yet far enough below the per-leg abort
+    # that a healthy sub-second primary is NEVER hedged — the secondary stays a
+    # cold standby and a healthy system adds zero secondary load. Tunable via
+    # +config_fetch_hedge_delay_ms+. Additive + backward compatible.
+    DEFAULT_CONFIG_FETCH_HEDGE_DELAY_MS = 1_000
+
+    # Default per-leg hedge hard-abort deadline, in milliseconds (qfg-7h5d.1.14).
+    # The hedged config-fetch path bounds each leg by this instead of
+    # #config_fetch_timeout_ms (which still governs the sequential FetchConfigs
+    # path). It MUST exceed the longest healable primary latency so a late-but-
+    # newer primary heals forward (rather than aborting), and MUST be <
+    # init_timeout_ms so the init-path heal leg is not clipped — the client logs a
+    # warning at construction if init_timeout_ms <= this value. ~6s sits between a
+    # ~3s slow-but-healthy upstream and the default 10s init budget. Tunable via
+    # +config_fetch_hedge_abort_ms+. Additive + backward compatible.
+    DEFAULT_CONFIG_FETCH_HEDGE_ABORT_MS = 6_000
 
     # Deprecated alias for #fallback_poll_enabled. Will be removed in a future
     # minor release.
@@ -195,6 +217,8 @@ module Quonfig
       initialization_timeout_sec: nil,
       on_init_failure: ON_INITIALIZATION_FAILURE::RAISE,
       config_fetch_timeout_ms: nil,
+      config_fetch_hedge_delay_ms: nil,
+      config_fetch_hedge_abort_ms: nil,
       collect_max_paths: DEFAULT_MAX_PATHS,
       collect_sync_interval: nil,
       context_upload_mode: :periodic_example, # :periodic_example, :shapes_only, :none
@@ -251,6 +275,12 @@ module Quonfig
       @on_init_failure = on_init_failure
       # qfg-7h5d.1.9: per-URL config-fetch timeout. nil → DEFAULT_CONFIG_FETCH_TIMEOUT_MS.
       @config_fetch_timeout_ms = config_fetch_timeout_ms || DEFAULT_CONFIG_FETCH_TIMEOUT_MS
+      # qfg-7h5d.1.14: parallel-failover hedge knobs. nil → defaults. The hedge
+      # delay is when the secondary ALSO fires in parallel; the hedge abort is the
+      # per-leg hard deadline on the hedged path (the sequential FetchConfigs path
+      # keeps using config_fetch_timeout_ms).
+      @config_fetch_hedge_delay_ms = config_fetch_hedge_delay_ms || DEFAULT_CONFIG_FETCH_HEDGE_DELAY_MS
+      @config_fetch_hedge_abort_ms = config_fetch_hedge_abort_ms || DEFAULT_CONFIG_FETCH_HEDGE_ABORT_MS
 
       @collect_max_paths = collect_max_paths
       @collect_sync_interval = collect_sync_interval

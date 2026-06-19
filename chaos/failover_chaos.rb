@@ -614,11 +614,11 @@ module FailoverShared
         return if @setup_done
 
         @setup_done = true
-        %w[CHAOS_API_DELIVERY_BIN CHAOS_FIXTURE_DIR CHAOS_SDK_KEYS_FILE].each do |k|
-          if ENV.fetch(k, nil).to_s.empty?
-            @setup_error = "#{k} not set — run scripts/run-failover-chaos.sh to boot the rig"
-            return
-          end
+        missing = %w[CHAOS_API_DELIVERY_BIN CHAOS_FIXTURE_DIR CHAOS_SDK_KEYS_FILE]
+                  .find { |k| ENV.fetch(k, nil).to_s.empty? }
+        if missing
+          @setup_error = "#{missing} not set — run scripts/run-failover-chaos.sh to boot the rig"
+          return
         end
         tp = FailoverToxiproxy.new(TOXIPROXY_URL)
         unless tp.ping

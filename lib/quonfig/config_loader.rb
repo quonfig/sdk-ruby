@@ -18,7 +18,7 @@ module Quonfig
 
     CONFIGS_PATH = '/api/v2/configs'
 
-    attr_reader :etag, :version, :environment_id
+    attr_reader :version, :environment_id
 
     # qfg-7h5d.1.9 (canonical ordering). Diagnostic surface read by the failover/
     # ordering chaos probe and by operators:
@@ -48,7 +48,14 @@ module Quonfig
       end
 
       @api_config = Concurrent::Map.new
-      @etag = nil
+      # qfg-7h5d.1.14: per-leg ETag is load-bearing for the parallel hedge. The
+      # hedge runs the primary and secondary legs concurrently; a SINGLE shared
+      # ETag would (a) let a 304 from one leg mask the other and (b) be a data
+      # race with two legs writing it. Each leg keeps its own slot keyed by
+      # config_api_urls index, guarded by @etag_mutex (snapshot before the
+      # request, write-back after — the network wait happens with no lock held).
+      @etags = {}
+      @etag_mutex = Mutex.new
       @version = nil
       @environment_id = nil
       @logger = logger || LOG
@@ -64,6 +71,13 @@ module Quonfig
       @install_mutex = Mutex.new
     end
 
+    # Backward-compatible reader: the primary leg's last ETag. Pre-hedge this was
+    # a single shared @etag; per-leg isolation now means index 0 is the canonical
+    # "the ETag" for callers/tests that read one value.
+    def etag
+      @etag_mutex.synchronize { @etags[0] }
+    end
+
     # 'primary' / 'secondary' / '' for the leg that produced the currently-held
     # config (config_api_urls index 0 = primary, 1 = secondary).
     def resolved_from
@@ -75,20 +89,44 @@ module Quonfig
       end
     end
 
-    # Fetch configs from /api/v2/configs with ETag / If-None-Match caching.
-    # On 200 responses, installs the envelope into the attached ConfigStore
-    # (if one was provided).
+    # Fetch configs from /api/v2/configs with per-leg ETag / If-None-Match caching.
+    #
+    # qfg-7h5d.1.14 — PARALLEL-FAILOVER HEDGE. On every init/refresh fetch the
+    # PRIMARY leg (config_api_urls[0]) is fired first, on the CALLING thread. If
+    # it answers within config_fetch_hedge_delay_ms it WINS and the secondary is
+    # NEVER contacted (cold standby — zero extra load on a healthy system). If the
+    # primary is SLOW past the hedge delay OR errors fast, the SECONDARY leg
+    # (config_api_urls[1]) is ALSO fired IN PARALLEL on a background thread,
+    # at-most-once — the primary is NOT cancelled. Whatever arrives is installed
+    # through the EXISTING reject-older guard (#install_envelope), so watermark-MAX
+    # falls out for free: a higher generation wins, a late OLDER payload never
+    # regresses an established client, and a late NEWER payload heals forward.
+    #
+    # fetch! returns as soon as the FIRST leg installs (readiness latches off it);
+    # any still-running leg keeps running on its own thread, bounded by
+    # config_fetch_hedge_abort_ms, and heals forward if it lands a newer
+    # generation. There is NO coalescing/in-flight gate — overlapping fetches are
+    # safe (per-leg ETag isolation + every install serialized through
+    # @install_mutex + the reject-older guard + each leg bounded by the abort), and
+    # a coalescing gate would make a manual refresh silently no-op (a contract
+    # violation).
     #
     # Returns one of:
-    #   :updated       -- 200 response; store replaced
-    #   :not_modified  -- 304 response; store untouched
-    #   :failed        -- every configured source failed
+    #   :updated       -- at least one leg installed a 200 envelope
+    #   :not_modified  -- a leg answered 304 (no change) and nothing installed
+    #   :failed        -- every fired leg failed
     def fetch!
-      Array(@options.config_api_urls).each_with_index do |api_url, index|
-        result = fetch_from(api_url, index)
-        return result if result != :failed
-      end
-      :failed
+      urls = Array(@options.config_api_urls)
+      return :failed if urls.empty?
+
+      # Single leg (or no secondary configured): no hedge, just fetch on the
+      # calling thread under the SEQUENTIAL per-URL timeout (config_fetch_timeout_ms
+      # is unchanged and still governs any non-hedged path). Preserves the
+      # synchronous, single-request-per-call shape the legacy/mock callers depend
+      # on.
+      return fetch_from(urls[0], 0, timeout_ms: config_fetch_timeout_ms) if urls.length < 2
+
+      fetch_hedged(urls)
     end
 
     # Apply a ConfigEnvelope (from SSE) to the store. Called by the SSE client
@@ -118,26 +156,149 @@ module Quonfig
 
     private
 
-    def fetch_from(source, index = nil)
-      # qfg-7h5d.1.9: bound this single per-URL attempt so a hung upstream aborts
-      # fast (Faraday::TimeoutError, caught below as :failed) and the next leg is
-      # reached inside the caller's init/poll budget instead of being starved
-      # until it.
-      conn = Quonfig::HttpConnection.new(
-        source, @options.sdk_key,
-        timeout_ms: (@options.respond_to?(:config_fetch_timeout_ms) ? @options.config_fetch_timeout_ms : nil)
-      )
+    # Hedge orchestration (qfg-7h5d.1.14). Fires the primary leg on its own
+    # thread; if it is slow past the hedge delay OR errors fast, ALSO fires the
+    # secondary in parallel — at-most-once, never after a fast primary win, never
+    # cancelling the primary. Both legs push their settled result to a shared
+    # queue. fetch! returns as soon as the FIRST leg INSTALLS (so readiness
+    # latches off it); the other leg keeps running on its own thread, bounded by
+    # the hedge abort inside fetch_from, and heals forward through the
+    # reject-older guard. We never join the slow leg — a hung primary must not
+    # block a successful secondary install.
+    def fetch_hedged(urls)
+      hedge_delay_s = hedge_delay_ms / 1000.0
+      abort_ms = hedge_abort_ms
+
+      # Each fired leg pushes exactly one [:done, index, result] message. A
+      # SizedQueue large enough for both legs so a finished leg never blocks on
+      # push after we've stopped draining.
+      results = Queue.new
+
+      # At-most-once secondary gate. The mutex makes "a fast primary win
+      # suppresses the secondary" and "the hedge-delay elapsing fires it"
+      # mutually exclusive — exactly one of suppress/fire wins.
+      gate = Mutex.new
+      secondary_fired = false
+
+      run_leg = lambda do |index|
+        Thread.new do
+          result = begin
+            fetch_from(urls[index], index, timeout_ms: abort_ms)
+          rescue StandardError => e
+            @logger.debug "Hedge leg #{index} failed: #{e.class}: #{e.message}"
+            :failed
+          end
+          results.push([:done, index, result])
+        end
+      end
+
+      fire_secondary = lambda do
+        spawn = gate.synchronize do
+          next false if secondary_fired
+
+          secondary_fired = true
+        end
+        run_leg.call(1) if spawn
+      end
+
+      suppress_secondary = lambda do
+        gate.synchronize { secondary_fired = true }
+      end
+
+      # The primary always runs. A separate hedge-delay timer thread fires the
+      # secondary if the primary has not settled by then — without waiting for
+      # the primary to finish.
+      primary_thread = run_leg.call(0)
+
+      hedge_timer = Thread.new do
+        sleep hedge_delay_s
+        # If the primary is still in flight at the hedge delay, hedge in parallel.
+        fire_secondary.call if primary_thread.alive?
+      end
+
+      installed = false
+      saw_not_modified = false
+      drained = 0
+
+      # Drain leg results until the FIRST install latches readiness, or until
+      # every fired leg has reported (so a both-fail / both-304 cycle still
+      # terminates). `fired` is read under the gate because the secondary can be
+      # spawned concurrently by the timer or the primary's fast-error path.
+      loop do
+        fired = gate.synchronize { secondary_fired ? 2 : 1 }
+        break if drained >= fired && results.empty?
+
+        _tag, index, result = results.pop
+        drained += 1
+
+        case result
+        when :failed
+          # A fast primary error must hedge immediately (do not wait for the
+          # timer). The gate keeps the secondary at-most-once.
+          fire_secondary.call if index.zero?
+        when :not_modified
+          saw_not_modified = true
+        else # :updated -> a real install
+          installed = true
+          # If the PRIMARY just won inside the hedge window, close the gate so a
+          # racing timer can never fire the secondary — the cold-standby promise.
+          suppress_secondary.call if index.zero?
+          break
+        end
+      end
+
+      # Stop the timer if it is still sleeping (already-fired is harmless).
+      hedge_timer.kill if hedge_timer.alive?
+
+      return :updated if installed
+      return :not_modified if saw_not_modified
+
+      :failed
+    end
+
+    def hedge_delay_ms
+      if @options.respond_to?(:config_fetch_hedge_delay_ms) && @options.config_fetch_hedge_delay_ms
+        @options.config_fetch_hedge_delay_ms
+      else
+        Quonfig::Options::DEFAULT_CONFIG_FETCH_HEDGE_DELAY_MS
+      end
+    end
+
+    def hedge_abort_ms
+      if @options.respond_to?(:config_fetch_hedge_abort_ms) && @options.config_fetch_hedge_abort_ms
+        @options.config_fetch_hedge_abort_ms
+      else
+        Quonfig::Options::DEFAULT_CONFIG_FETCH_HEDGE_ABORT_MS
+      end
+    end
+
+    def config_fetch_timeout_ms
+      @options.respond_to?(:config_fetch_timeout_ms) ? @options.config_fetch_timeout_ms : nil
+    end
+
+    def fetch_from(source, index = nil, timeout_ms: nil)
+      # qfg-7h5d.1.9 / .1.14: bound this single per-leg attempt so a hung upstream
+      # aborts (Faraday::TimeoutError, caught below as :failed). On the hedged
+      # path the caller passes config_fetch_hedge_abort_ms; on the sequential /
+      # single-URL path it passes config_fetch_timeout_ms.
+      conn = Quonfig::HttpConnection.new(source, @options.sdk_key, timeout_ms: timeout_ms)
       headers = {}
-      headers['If-None-Match'] = @etag if @etag
+      # Per-leg ETag: snapshot this leg's slot before the request (no lock held
+      # during the network wait).
+      etag = etag_for(index)
+      headers['If-None-Match'] = etag if etag
       response = conn.get(CONFIGS_PATH, headers)
 
       case response.status
       when 200
         new_etag = response.headers['ETag'] || response.headers['etag']
         envelope = parse_envelope(response.body)
-        install_envelope(envelope, source: source, source_index: index)
-        @etag = new_etag
-        :updated
+        result = install_envelope(envelope, source: source, source_index: index)
+        # Write this leg's ETag back AFTER the response (per-leg, race-free).
+        set_etag_for(index, new_etag)
+        # install_envelope returns :not_modified when the reject-older guard drops
+        # an equal/older payload — surface that so the caller doesn't double-count.
+        result == :not_modified ? :not_modified : :updated
       when 304
         @logger.debug "Configs not modified (304) from #{source}"
         :not_modified
@@ -154,6 +315,14 @@ module Quonfig
     rescue StandardError => e
       @logger.warn "Unexpected error fetching configs from #{source}: #{e.message}"
       :failed
+    end
+
+    def etag_for(index)
+      @etag_mutex.synchronize { @etags[index || 0] }
+    end
+
+    def set_etag_for(index, value)
+      @etag_mutex.synchronize { @etags[index || 0] = value }
     end
 
     def parse_envelope(body)
