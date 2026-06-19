@@ -1,0 +1,103 @@
+name: Failover Chaos
+
+# Runs the failover + canonical-ordering chaos rigs (toxiproxy + the
+# scenarios-failover/ and scenarios-ordering/ corpus from
+# integration-test-data/chaos) against sdk-ruby. Jeff wants these running all the
+# time, so this fires on every push to main + every PR alongside the existing
+# Chaos workflow (chaos.yaml, single-upstream suite).
+#
+# Unlike chaos.yaml, the Ruby runner (chaos/failover_chaos.rb) spawns its own
+# fixture upstream(s) — one upstream behind the primary+secondary proxies for
+# failover, two upstreams at divergent Meta.generations for ordering — so this
+# job only has to build api-delivery and boot toxiproxy via
+# scripts/run-failover-chaos.sh. Wall clock ~3 min.
+#
+# Scenarios gated here: f01-f05 (failover) + o02-o04 (ordering). o01-secondary-
+# newer is SKIPPED — it asserts cross-leg "max-wins" (hold the higher generation
+# even when the older primary leg is healthy), which the backend SDKs do not yet
+# implement (it's out of the §5f reject-older scope, "no source ranking"). That
+# behaviour is owned by qfg-7h5d.1.14; drop the CHAOS_SKIP below to re-gate o01
+# once it lands.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  failover-chaos:
+    name: Failover + Ordering Chaos
+    # The "Checkout api-delivery" step needs secrets.QUONFIG_REPO_TOKEN to read
+    # the private api-delivery repo. GitHub does NOT expose Actions secrets to
+    # pull_request runs triggered by Dependabot, so the token resolves to an
+    # empty string and checkout fails fast. Skip the job on Dependabot PRs — it
+    # still runs in full on every push to main after merge.
+    if: github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    # Suite is ~3 min; cap at 30 to absorb warmup + the api-delivery build.
+    # Scenarios fail fast inside the runner via their own wall_clock_seconds, so
+    # this only kicks in if something hangs.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout sdk-ruby
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          path: sdk-ruby
+
+      - name: Checkout integration-test-data
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          repository: quonfig/integration-test-data
+          path: integration-test-data
+          # Tracks main: the scenarios-failover/ + scenarios-ordering/ corpus
+          # this job drives only exists on main and is not yet in a tag. Pin to a
+          # tag once the corpus is rev'd into one, matching chaos.yaml's rationale.
+          ref: main
+
+      - name: Checkout api-delivery
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          # api-delivery is private; the default GITHUB_TOKEN cannot read it. A
+          # PAT or fine-grained token with read access must be configured as the
+          # repo secret QUONFIG_REPO_TOKEN. The two rigs build api-delivery from
+          # source (GOWORK=off) to spawn their fixture upstreams.
+          repository: quonfig/api-delivery
+          path: api-delivery
+          ref: main
+          token: ${{ secrets.QUONFIG_REPO_TOKEN }}
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version: '1.26'
+          cache-dependency-path: api-delivery/go.sum
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.310.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+          working-directory: sdk-ruby
+
+      - name: Verify docker compose available
+        run: docker compose version
+
+      - name: Run failover + ordering chaos rigs
+        working-directory: sdk-ruby
+        env:
+          # o01-secondary-newer needs cross-leg max-wins (qfg-7h5d.1.14); not
+          # implemented yet. Drop this once o01 can go green.
+          CHAOS_SKIP: o01-secondary-newer
+        run: ./scripts/run-failover-chaos.sh
+
+      - name: Upload chaos logs on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: failover-chaos-logs-${{ github.run_id }}
+          path: |
+            sdk-ruby/.chaos-api-delivery
+            sdk-ruby/chaos-*.log
+          if-no-files-found: ignore
+          retention-days: 7
