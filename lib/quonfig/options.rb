@@ -32,12 +32,13 @@ module Quonfig
     # Default hedge delay, in milliseconds (qfg-7h5d.1.14). On the init/refresh
     # config-fetch the SDK fires the PRIMARY leg first; if it has not settled
     # within this delay (or errors fast) the SDK ALSO fires the secondary leg in
-    # PARALLEL without cancelling the primary. ~1s is below a realistic
+    # PARALLEL without cancelling the primary. ~2s is below a realistic
     # slow-but-alive primary's worst case yet far enough below the per-leg abort
     # that a healthy sub-second primary is NEVER hedged — the secondary stays a
-    # cold standby and a healthy system adds zero secondary load. Tunable via
+    # cold standby and a healthy system adds zero secondary load. Standardized to
+    # 2000ms across all backend SDKs (qfg-7h5d.1.14). Tunable via
     # +config_fetch_hedge_delay_ms+. Additive + backward compatible.
-    DEFAULT_CONFIG_FETCH_HEDGE_DELAY_MS = 1_000
+    DEFAULT_CONFIG_FETCH_HEDGE_DELAY_MS = 2_000
 
     # Default per-leg hedge hard-abort deadline, in milliseconds (qfg-7h5d.1.14).
     # The hedged config-fetch path bounds each leg by this instead of
