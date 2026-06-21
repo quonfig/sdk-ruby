@@ -357,7 +357,11 @@ module Quonfig
         # network install path (initial fetch, failover/poll fetch, SSE snapshot,
         # SSE update, fallback poller); datadir install bypasses this (it is the
         # local source of truth and goes through Client#apply_datadir_envelope).
-        unless @held_generation.nil? || incoming_gen > @held_generation
+        # Carve-out: an UNVERSIONED snapshot (generation <= 0 — a server that
+        # predates the watermark, or one whose rev-count failed) carries no
+        # ordering info, so it is never rejected as "older"; freezing the client
+        # on stale config would be worse (mirrors sdk-node).
+        unless @held_generation.nil? || incoming_gen <= 0 || incoming_gen > @held_generation
           @logger.debug "Reject-older guard: dropping incoming generation #{incoming_gen} <= held #{@held_generation} (source=#{source})"
           return :not_modified
         end

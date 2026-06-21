@@ -134,4 +134,25 @@ class TestConfigLoaderOrdering < Minitest::Test
     assert_equal 42, loader.held_generation, 'newer generation must heal forward'
     assert_equal seed_installs + 1, loader.install_count
   end
+
+  # qfg-7h5d.1.18: an established client must still install an UNVERSIONED
+  # snapshot (generation 0 — a server that predates the watermark, or one whose
+  # rev-count failed). It carries no ordering information, so the guard must not
+  # reject it as "older"; freezing the client on stale config would be worse.
+  # Mirrors sdk-node's long-standing carve-out.
+  def test_unversioned_snapshot_installs_carve_out
+    current_gen = 42
+    url = start_server(SINGLE_PORT, -> { current_gen })
+
+    loader = build_loader([url])
+
+    assert_equal :updated, loader.fetch!
+    assert_equal 42, loader.held_generation, 'must establish on gen 42'
+
+    # Server now serves an unversioned (generation 0) snapshot.
+    current_gen = 0
+    loader.fetch!
+    assert_equal 0, loader.held_generation,
+                 'gen-0 carve-out: an unversioned snapshot must install, not freeze the client on 42'
+  end
 end
