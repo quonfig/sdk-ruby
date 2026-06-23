@@ -41,12 +41,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout sdk-ruby
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           path: sdk-ruby
 
       - name: Checkout integration-test-data
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           repository: quonfig/integration-test-data
           path: integration-test-data
@@ -57,7 +57,7 @@ jobs:
           ref: v2026.06.19.1
 
       - name: Checkout api-delivery
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           # api-delivery is private; the default GITHUB_TOKEN cannot read it. A
           # PAT or fine-grained token with read access must be configured as the
