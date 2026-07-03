@@ -369,6 +369,51 @@ class TestSSEConfigClient < Minitest::Test
     assert_logged([/SSE.*Terminal.*HTTP 401/])
   end
 
+  # qfg-41nh.6 (f05 invariant): SSE never fails over — failover is HTTP-poll
+  # only (the config-fetch hedge keeps both api_urls legs). When sse_api_urls
+  # carries a secondary stream leg, the reconnect loop must PIN to the primary
+  # (index 0) and retry it forever with backoff; the secondary stream endpoint
+  # must never see a connection. Reference semantics: sdk-go's sseClient — a
+  # single pinned URL with runLoop backoff. Pre-fix, current_url rotated
+  # through sse_api_urls on every reconnect, parking the stream on the
+  # secondary (which is sized for poll rps, not SSE herds) and silently
+  # binding freshness to the mirror.
+  def test_sse_pins_to_primary_and_never_dials_secondary_stream
+    CountingErrorEndpoint.hits = 0
+    SecondaryStreamSentinelEndpoint.hits = 0
+    primary_server, = start_webrick_server(4580, CountingErrorEndpoint)
+    secondary_server, = start_webrick_server(4581, SecondaryStreamSentinelEndpoint)
+    client = nil
+
+    begin
+      Thread.new { primary_server.start }
+      Thread.new { secondary_server.start }
+
+      prefab_options = OpenStruct.new(
+        sse_api_urls: ['http://localhost:4580', 'http://localhost:4581'],
+        sdk_key: 'k'
+      )
+      config_loader = OpenStruct.new(highwater_mark: 0)
+      sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
+      client = Quonfig::SSEConfigClient.new(prefab_options, config_loader, sse_options)
+
+      client.start { |_e, _ev, _s| }
+      wait_for -> { CountingErrorEndpoint.hits >= 3 }
+    ensure
+      client&.close
+      primary_server.stop
+      secondary_server.stop
+    end
+
+    assert CountingErrorEndpoint.hits >= 3,
+           "reconnects must keep retrying the primary stream URL (got #{CountingErrorEndpoint.hits})"
+    assert_equal 0, SecondaryStreamSentinelEndpoint.hits,
+                 'the secondary stream URL must NEVER be dialed — SSE does not fail over (f05)'
+    refute client.failed_over_to_secondary?,
+           'failed_over_to_secondary? must stay false while the stream leg is pinned to primary'
+    assert_logged([/SSE Streaming Error.*HTTP 500/])
+  end
+
   def test_last_event_id_sent_on_reconnect
     LastEventIdEndpoint.received_ids.clear
     server, = start_webrick_server(4571, LastEventIdEndpoint)
@@ -825,6 +870,40 @@ class TestSSEConfigClient < Minitest::Test
 
     def do_GET(_request, _response)
       raise 'always 500'
+    end
+  end
+
+  # qfg-41nh.6: always-500 endpoint with a hit counter — stands in for a dead
+  # primary stream leg so the pin test can prove the reconnect loop keeps
+  # retrying it.
+  class CountingErrorEndpoint < WEBrick::HTTPServlet::AbstractServlet
+    @hits = 0
+    class << self
+      attr_accessor :hits
+    end
+
+    def do_GET(_request, _response)
+      self.class.hits += 1
+      raise 'primary stream down'
+    end
+  end
+
+  # qfg-41nh.6: healthy SSE endpoint with a hit counter — stands in for the
+  # secondary stream leg. It WOULD serve events if dialed; the f05 pin test
+  # asserts it never is. (Healthy on purpose: under the pre-fix rotation the
+  # client happily parks here, which is exactly the regression to catch.)
+  class SecondaryStreamSentinelEndpoint < WEBrick::HTTPServlet::AbstractServlet
+    @hits = 0
+    class << self
+      attr_accessor :hits
+    end
+
+    def do_GET(_request, response)
+      self.class.hits += 1
+      response.status = 200
+      response['Content-Type'] = 'text/event-stream'
+      response.chunked = false
+      response.body = "id: 99\ndata: #{TestSSEConfigClient::SAMPLE_JSON_PAYLOAD}\n\n"
     end
   end
 

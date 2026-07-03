@@ -87,14 +87,16 @@ module Quonfig
       @conn_mutex = Mutex.new
       @active_http = nil
 
-      @source_index = -1
       @last_event_id = nil
-      # qfg-7h5d.1.9: latches true if the SSE reconnect rotation ever selects a
-      # non-primary (index > 0) sse_api_urls leg. The failover epic asserts SSE
-      # does NOT fail over to the secondary (f05) — it stays on its own endpoint
-      # and degrades via the single-upstream SSE↔HTTP fallback. With a single SSE
-      # URL configured this can never flip; the flag makes the design choice
-      # observable (and would surface a regression if SSE were given two legs).
+      # qfg-7h5d.1.9 / qfg-41nh.6: latches true if a connection attempt ever
+      # targets a non-primary sse_api_urls leg. The failover epic asserts SSE
+      # does NOT fail over to the secondary (f05) — the stream is PINNED to
+      # sse_api_urls[0] and degrades via the single-upstream SSE↔HTTP fallback,
+      # so with a correct #current_url this never flips even when a secondary
+      # stream URL is configured (options derive one from api_urls by default).
+      # The latch is measured at the dial site in #stream_once, so a regression
+      # that reintroduces stream-URL rotation is observable to the failover
+      # chaos probe (f05) and to operators.
       @failed_over_to_secondary = false
     end
 
@@ -269,7 +271,13 @@ module Quonfig
     # gotcha and solve it the same way: per-chunk reset, async close on
     # expiry (chaos scenario 02 — sse_silent_stall).
     def stream_once(&block)
-      url = "#{current_url}/api/v2/sse/config"
+      base = current_url
+      # f05 latch: record if this connection attempt targets a non-primary
+      # stream leg. With the pin in #current_url this is structurally false;
+      # measuring at the dial site (rather than inside URL selection) keeps a
+      # rotation regression observable to the chaos probe.
+      @failed_over_to_secondary = true if base != @prefab_options.sse_api_urls.first
+      url = "#{base}/api/v2/sse/config"
       cursor = current_cursor
       @logger.debug "SSE Streaming Connect to #{url} start_at #{cursor.inspect}"
 
@@ -405,14 +413,15 @@ module Quonfig
       end
     end
 
-    # Rotate through configured SSE URLs. The same rotation rule the
-    # previous implementation used, preserved so multi-region failover
-    # behavior is unchanged.
+    # The stream leg is PINNED to the primary stream URL (sse_api_urls[0])
+    # and retried forever with backoff — SSE never fails over (f05 invariant,
+    # qfg-41nh.6). Failover is HTTP-poll only: the config-fetch hedge keeps
+    # BOTH api_urls legs, but the live stream never repoints to
+    # stream.secondary (which is sized for poll rps, not SSE herds, and would
+    # silently bind freshness to the mirror). Matches sdk-go's sseClient — a
+    # single pinned URL with reconnect backoff (sse_client.go runLoop).
     def current_url
-      urls = @prefab_options.sse_api_urls
-      @source_index = (@source_index + 1) % urls.size
-      @failed_over_to_secondary = true if @source_index.positive?
-      urls[@source_index]
+      @prefab_options.sse_api_urls.first
     end
 
     # Internal: HTTP-status sentinel error for non-200 SSE responses. Surfaces
