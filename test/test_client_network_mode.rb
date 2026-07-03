@@ -254,6 +254,79 @@ class TestClientNetworkMode < Minitest::Test
     ENV['QUONFIG_ENVIRONMENT'] = prev_env if prev_env
   end
 
+  # qfg-41nh.6 (WS2.4, liveness honesty): during a TOTAL outage with
+  # on_init_failure: :return, the fallback poll worker must not stamp
+  # record_refresh! or fire on_update on failed ticks. Pre-fix the worker
+  # stamped + notified on EVERY tick regardless of fetch outcome, so ready?
+  # reported true over an EMPTY store and last_successful_refresh advanced
+  # while nothing had ever been fetched — a monitoring lie during exactly the
+  # incident window where those signals matter.
+  def test_failed_poll_ticks_do_not_stamp_refresh_or_fire_on_update
+    updates = 0
+    client = Quonfig::Client.new(
+      sdk_key: 'test-key',
+      api_urls: ['http://127.0.0.1:1'], # unreachable — total outage
+      enable_sse: false,
+      fallback_poll_enabled: true,
+      fallback_poll_interval_ms: 100,
+      init_timeout_ms: 2000,
+      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN,
+      context_upload_mode: :none,
+      collect_evaluation_summaries: false
+    )
+    client.on_update { updates += 1 }
+
+    # Let several failed poll ticks elapse (interval 100ms).
+    sleep 0.6
+
+    assert_empty client.keys, 'store must stay empty through a total outage'
+    refute client.ready?,
+           'ready? must NOT report ready with an empty store when every fetch has failed'
+    assert_nil client.last_successful_refresh,
+               'last_successful_refresh must not advance on failed poll ticks'
+    assert_equal 0, updates, 'on_update must not fire on failed poll ticks'
+
+    assert_logged [
+      /Initialization did not complete cleanly/,
+      /fallback poller engaged/
+    ]
+  ensure
+    client&.stop
+  end
+
+  # qfg-41nh.6 (WS2.4, immediate fetch on engage): when the fallback poller
+  # engages it must fetch IMMEDIATELY, not sleep a full interval first —
+  # matching sdk-go's fallback_poller.go engage() (immediate Fetch, then
+  # ticker). Pre-fix the worker slept first, so with the default 60s interval
+  # the first post-engage data arrived ~180s after SSE loss vs ~120s in go.
+  # The engage must also be logged (it was previously silent).
+  def test_fallback_poller_fetches_immediately_on_engage
+    start_server
+
+    client = Quonfig::Client.new(
+      sdk_key: 'test-key',
+      api_urls: ["http://127.0.0.1:#{PORT}"],
+      enable_sse: false,
+      fallback_poll_enabled: true,
+      fallback_poll_interval_ms: 60_000, # a sleep-first worker would wait 60s
+      context_upload_mode: :none,
+      collect_evaluation_summaries: false
+    )
+
+    # Init fetch is 1; the engage fetch must land promptly without waiting
+    # for the 60s interval.
+    wait_for(-> { @fetch_count >= 2 }, max_wait: 3)
+
+    assert_operator @fetch_count, :>=, 2,
+                    'poller must fetch immediately on engage (init fetch + engage fetch)'
+    assert client.ready?, 'client must be ready after successful fetches'
+    refute_nil client.last_successful_refresh
+
+    assert_logged [/fallback poller engaged/]
+  ensure
+    client&.stop
+  end
+
   def test_initialize_skips_network_when_store_injected
     # store: passed -> Client should not try any I/O. Unreachable URL must
     # be fine when a store is injected.

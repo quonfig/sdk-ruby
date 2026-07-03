@@ -250,6 +250,8 @@ class TestHealthPrimitives < Minitest::Test
 
     assert_equal :falling_back, client.connection_state,
                  'initial :error must engage Layer 2 immediately'
+    # qfg-41nh.6: the engage edge is logged for operator visibility.
+    assert_logged [/fallback poller engaged/]
   ensure
     client&.stop
   end
@@ -273,6 +275,8 @@ class TestHealthPrimitives < Minitest::Test
 
     assert_equal :falling_back, client.connection_state,
                  'grace elapsed: Layer 2 must engage'
+    # qfg-41nh.6: the engage edge is logged for operator visibility.
+    assert_logged [/fallback poller engaged/]
   ensure
     client&.stop
   end
@@ -296,6 +300,8 @@ class TestHealthPrimitives < Minitest::Test
                  'recovery edge must disengage the fallback poller'
     assert_nil client.instance_variable_get(:@poll_supervisor),
                'poll_supervisor reference must be cleared after disengage'
+    # qfg-41nh.6: the engage edge is logged for operator visibility.
+    assert_logged [/fallback poller engaged/]
   ensure
     client&.stop
   end

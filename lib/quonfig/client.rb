@@ -970,18 +970,35 @@ module Quonfig
 
       poll_seconds = poll_ms / 1000.0
       stopped_ref = -> { @stopped }
+      # Fetch-first (qfg-41nh.6): the poller fetches IMMEDIATELY on engage and
+      # then sleeps the interval — matching sdk-go's fallback_poller.go
+      # engage() (immediate Fetch, then ticker). A sleep-first worker made the
+      # first post-engage data arrive a full extra interval late (~180s after
+      # SSE loss with the default 60s interval, vs ~120s in go).
       worker = lambda do |notify_delivered|
         loop do
           break if stopped_ref.call
 
-          sleep poll_seconds
+          result = @config_loader.fetch!
+          # Liveness honesty (qfg-41nh.6): stamp freshness only when the fetch
+          # actually SUCCEEDED. :updated and :not_modified (a 304, or a
+          # guard-rejected-but-successful response) are successes — the
+          # channel is healthy; :failed must NOT advance
+          # last_successful_refresh (pre-fix every tick stamped + notified
+          # regardless of outcome, so ready?/freshness reported healthy over
+          # an empty store through a total outage). on_update fires only on a
+          # real install, matching sdk-go (OnConfigUpdate fires in
+          # installEnvelope only).
+          if result != :failed
+            sync_evaluator_env_id!
+            record_refresh!
+            notify_delivered.call
+          end
+          notify_on_update_callback if result == :updated
+
           break if stopped_ref.call
 
-          @config_loader.fetch!
-          sync_evaluator_env_id!
-          record_refresh!
-          notify_delivered.call
-          notify_on_update_callback
+          sleep poll_seconds
         end
       end
 
@@ -990,6 +1007,10 @@ module Quonfig
       )
       @state_mutex.synchronize { @poll_supervisor = supervisor }
       supervisor.start
+      # Operator signal (qfg-41nh.6): engage was previously unlogged (only the
+      # stop path logged, at debug). Matches sdk-go's WARN on OnEngage — the
+      # poller engaging means the SDK is in a degraded update mode.
+      LOG.warn "[quonfig] Layer 2 fallback poller engaged (interval=#{poll_ms}ms)"
     end
 
     # Invoke the customer-supplied on_update callback under a rescue. A raise
