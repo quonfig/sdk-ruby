@@ -233,6 +233,58 @@ end
 
 at_exit { FailoverUpstreams.pids.dup.each { |pid| FailoverUpstreams.kill(pid) } }
 
+# ----- secondary-stream sentinel (qfg-41nh.6) -----
+
+# A real TCP endpoint standing in for stream.secondary. The SDK is handed this
+# URL as its SECOND stream leg (see failover_build_client) so the SDK-side SSE
+# primary pin is actually exercised — pre-fix the harness force-pinned a single
+# stream URL, which made f05 structurally incapable of catching the rotation
+# bug it exists to catch. Any accepted connection means the SSE client dialed
+# the secondary stream leg (an f05 violation); failover_run_scenario fails any
+# scenario whose run moves the accept count.
+module SSESecondaryStreamSentinel
+  @lock = Mutex.new
+  @count = 0
+  @server = nil
+  @port = nil
+
+  class << self
+    def url
+      "http://127.0.0.1:#{port}"
+    end
+
+    def count
+      @lock.synchronize { @count }
+    end
+
+    private
+
+    def port
+      @lock.synchronize do
+        return @port if @server
+
+        @server = TCPServer.new('127.0.0.1', 0)
+        @port = @server.addr[1]
+        server = @server
+        Thread.new do
+          loop do
+            sock = server.accept
+            @lock.synchronize { @count += 1 }
+            begin
+              sock.close
+            rescue StandardError
+              nil
+            end
+          end
+        rescue StandardError
+          nil # listener torn down at process exit
+        end
+        @port
+      end
+    end
+  end
+end
+
 # ----- SDK probe -----
 
 # Thin read-only view over the diagnostic accessors the SDK exposes for this
@@ -410,10 +462,14 @@ def failover_build_client(probe, sse_enabled, polling)
     context_upload_mode: :none,
     collect_evaluation_summaries: false
   )
-  # SSE rides a SINGLE leg (the primary 'sse' proxy). The failover epic asserts
-  # SSE does NOT repoint to the secondary — giving it one URL makes that
-  # structural (and #sse_failed_over_to_secondary? observable if it ever did).
-  options.instance_variable_set(:@sse_api_urls, [stream])
+  # De-vacuoused f05 (qfg-41nh.6): the client gets BOTH stream legs — the
+  # primary 'sse' proxy plus a live sentinel standing in for stream.secondary —
+  # so the SDK-side pin (SSE never fails over; SSEConfigClient#current_url) is
+  # what keeps the stream off the secondary, not a harness constraint.
+  # #sse_failed_over_to_secondary? latches at the dial site, and the sentinel
+  # counts TCP accepts; failover_run_scenario fails any scenario in which the
+  # sentinel sees a connection.
+  options.instance_variable_set(:@sse_api_urls, [stream, SSESecondaryStreamSentinel.url])
 
   client = Quonfig::Client.new(options)
   probe.client = client
@@ -435,6 +491,7 @@ def failover_run_scenario(tp, run, ordering:)
   stop_flag = ChaosStopFlag.new
   threads = []
   client = nil
+  sentinel_before = SSESecondaryStreamSentinel.count
 
   begin
     events = run['chaos'] || []
@@ -520,6 +577,16 @@ def failover_run_scenario(tp, run, ordering:)
         details << "FAIL  #{label} — last: #{s[:last_reason]}"
       end
     end
+    # f05 invariant, every scenario (qfg-41nh.6): no stream connection may ever
+    # reach the secondary. The sentinel is the client's second stream leg, so a
+    # single accept means the SSE pin regressed.
+    sentinel_delta = SSESecondaryStreamSentinel.count - sentinel_before
+    if sentinel_delta.positive?
+      failed += 1
+      details << "FAIL  invariant: secondary stream sentinel accepted #{sentinel_delta} " \
+                 'connection(s) — SSE must never dial the secondary (f05)'
+    end
+
     details << "summary: #{passed} passed, #{failed} failed " \
                "(ready=#{probe.ready}, resolvedFrom=#{probe.resolved_from.inspect}, " \
                "heldGeneration=#{probe.held_generation}, installCount=#{probe.install_count}, " \
