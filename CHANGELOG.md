@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.1.1 - 2026-07-03
 
 - **Fix (SSE): the stream leg is pinned to the primary stream URL — SSE never fails over (qfg-41nh.6).** The reconnect loop previously rotated through `sse_api_urls` on every reconnect, so with the default two derived stream URLs a primary blip silently parked the live stream on `stream.secondary` and bound config freshness to the mirror. The stream now always dials `sse_api_urls[0]` and retries it forever with backoff (matching sdk-go); failover remains HTTP-poll only, and the HTTP config-fetch hedge still uses both `api_urls` legs. The `sse_failed_over_to_secondary?` diagnostic is now latched at the dial site, and the failover chaos harness hands the client both stream legs so the f05 probe actually exercises the pin.
 - **Fix (delivery): per-leg config-fetch aborts are now wall-clock (qfg-41nh.6).** The per-leg timeout was enforced with Faraday/Net::HTTP phase timeouts, which are per-read — a slow-drip upstream (one byte per interval) could hold a "bounded" leg open indefinitely and wedge the init fetch, a fallback poll tick, or the hedge drain. `timeout_ms` (plus a small headroom) is now also enforced as a wall-clock ceiling over the whole request, surfacing a `Faraday::TimeoutError` through the existing failure paths. Hedged legs additionally always settle their drain slot, so `fetch!` is guaranteed to return within the per-leg abort budget.
