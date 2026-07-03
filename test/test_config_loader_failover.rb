@@ -30,10 +30,12 @@ class TestConfigLoaderFailover < Minitest::Test
     @hung_server = nil
     @hung_threads = []
     @secondary = nil
+    @drip_server = nil
   end
 
   def teardown
     @hung_server&.close
+    @drip_server&.close
     @hung_threads.each { |t| t.kill if t.alive? }
     @secondary&.shutdown
     super
@@ -93,6 +95,108 @@ class TestConfigLoaderFailover < Minitest::Test
     true
   rescue StandardError
     false
+  end
+
+  # qfg-41nh.6: a slow-drip upstream — answers 200 immediately, then feeds the
+  # body one byte per +interval_s+. Net::HTTP's read_timeout is PER-READ (each
+  # byte resets the deadline), so a per-read bound alone never fires against
+  # this server; only a true wall-clock per-leg deadline aborts it. Models a
+  # sick upstream/middlebox trickling bytes during an outage.
+  def start_slow_drip_primary(total_bytes: 60, interval_s: 0.1)
+    @drip_server = TCPServer.new('127.0.0.1', 0)
+    port = @drip_server.addr[1]
+    @hung_threads << Thread.new do
+      loop do
+        sock = @drip_server.accept
+        @hung_threads << Thread.new do
+          # Consume the request head, then drip.
+          until sock.gets == "\r\n"; end
+          sock.write "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" \
+                     "Content-Length: #{total_bytes}\r\n\r\n"
+          total_bytes.times do
+            sock.write 'x'
+            sock.flush
+            sleep interval_s
+          end
+        rescue StandardError
+          nil
+        ensure
+          begin
+            sock.close
+          rescue StandardError
+            nil
+          end
+        end
+      rescue StandardError
+        break
+      end
+    end
+    "http://127.0.0.1:#{port}"
+  end
+
+  # qfg-41nh.6 (WS2.4): the per-leg abort must be WALL-CLOCK. Pre-fix, the
+  # Faraday/Net::HTTP timeout was per-read — the drip feeds a byte every 100ms
+  # against a 500ms "timeout", so the read deadline never fired and fetch!
+  # blocked for the full ~6s drip. The leg must abort at ~timeout_ms wall
+  # clock and surface :failed.
+  def test_slow_drip_leg_aborts_at_wall_clock_deadline
+    primary_url = start_slow_drip_primary
+
+    options = Quonfig::Options.new(
+      sdk_key: '1-test-sdk-key',
+      api_urls: [primary_url],
+      config_fetch_timeout_ms: 500,
+      enable_sse: false,
+      fallback_poll_enabled: false
+    )
+    loader = Quonfig::ConfigLoader.new(Quonfig::ConfigStore.new, options)
+
+    result = nil
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    worker = Thread.new { result = loader.fetch! }
+    completed = worker.join(2.5)
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+    worker.kill unless completed
+
+    assert completed,
+           'fetch! did not return within 2.5s — the slow-drip leg evaded the per-leg deadline ' \
+           '(per-read timeout reset on every dripped byte)'
+    assert_equal :failed, result, 'a wall-clock-aborted leg must surface :failed'
+    assert_operator elapsed, :<, 2.5, "expected wall-clock abort at ~0.5s, took #{elapsed.round(2)}s"
+
+    assert_logged([%r{error fetching configs from http://127\.0\.0\.1}])
+  end
+
+  # qfg-41nh.6 (WS2.4): the hedge drain (fetch_hedged's results.pop loop) waits
+  # for every fired leg to settle when nothing installs. Pre-fix, a slow-drip
+  # primary never settled inside config_fetch_hedge_abort_ms (per-read resets),
+  # so with the secondary also down the drain wedged the calling thread (the
+  # fallback poll loop) for the full drip duration. Both legs are now
+  # wall-clock bounded, so fetch! returns :failed within ~hedge_abort_ms.
+  def test_hedged_fetch_with_slow_drip_primary_does_not_wedge_the_drain
+    primary_url = start_slow_drip_primary
+    dead_secondary = 'http://127.0.0.1:1'
+
+    options = Quonfig::Options.new(
+      sdk_key: '1-test-sdk-key',
+      api_urls: [primary_url, dead_secondary],
+      config_fetch_hedge_delay_ms: 200,
+      config_fetch_hedge_abort_ms: 800,
+      enable_sse: false,
+      fallback_poll_enabled: false
+    )
+    loader = Quonfig::ConfigLoader.new(Quonfig::ConfigStore.new, options)
+
+    result = nil
+    worker = Thread.new { result = loader.fetch! }
+    completed = worker.join(3)
+    worker.kill unless completed
+
+    assert completed,
+           'fetch! did not return within 3s — the slow-drip primary leg wedged the hedge drain'
+    assert_equal :failed, result, 'both legs down must surface :failed'
+
+    assert_logged([%r{error fetching configs from http://127\.0\.0\.1}])
   end
 
   # qfg-7h5d.1.14: under the parallel-failover HEDGE the hung primary no longer

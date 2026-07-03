@@ -180,15 +180,21 @@ module Quonfig
       gate = Mutex.new
       secondary_fired = false
 
+      # Each leg is wall-clock bounded by abort_ms (HttpConnection enforces a
+      # whole-request deadline, qfg-41nh.6), so a leg ALWAYS settles — a
+      # slow-drip upstream can no longer hold a leg open past the abort and
+      # wedge the drain below. The push lives in an ensure so even a
+      # non-StandardError escape still settles this leg's drain slot.
       run_leg = lambda do |index|
         Thread.new do
-          result = begin
-            fetch_from(urls[index], index, timeout_ms: abort_ms)
+          result = :failed
+          begin
+            result = fetch_from(urls[index], index, timeout_ms: abort_ms)
           rescue StandardError => e
             @logger.debug "Hedge leg #{index} failed: #{e.class}: #{e.message}"
-            :failed
+          ensure
+            results.push([:done, index, result])
           end
-          results.push([:done, index, result])
         end
       end
 
