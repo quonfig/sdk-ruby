@@ -24,6 +24,16 @@ on:
   pull_request:
   workflow_call:
   workflow_dispatch:
+  schedule:
+    # Nightly run on main (WS3.2, qfg-41nh.14): post-1.1.0 this suite is
+    # otherwise dormant between SDK pushes while api-delivery keeps moving.
+    # Cron times are staggered across the six backend SDK repos (06:10-07:25
+    # UTC, 15 min apart) to be kind to shared runners and the toxiproxy image
+    # pulls. Scheduled runs use repo-level secrets (QUONFIG_REPO_TOKEN is
+    # repo-scoped), so the api-delivery checkout works here too. Failure
+    # visibility relies on GitHub's default watcher-notification emails —
+    # there is no Slack webhook wired into these repos yet.
+    - cron: '55 6 * * *'
 
 jobs:
   failover-chaos:
