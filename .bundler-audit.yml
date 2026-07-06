@@ -1,0 +1,12 @@
+# bundler-audit config (read by `bundle-audit check`).
+#
+# ignore: advisories acknowledged with a reason. Each entry MUST carry a
+# comment saying why it is ignored and when to remove it.
+ignore:
+  # webrick CVE-2026-38969 (GHSA-h4w6-wx8r-p68v): trailer-reparse issue with NO
+  # fixed release yet (advisory covers through 1.9.2, the latest version; we are
+  # on 1.9.2). webrick is a development-only Gemfile dependency used as a local
+  # test server -- it is NOT a gemspec runtime dependency and never ships to gem
+  # consumers. Remove this entry as soon as a patched webrick is released and
+  # bumped (check: https://rubygems.org/gems/webrick).
+  - CVE-2026-38969
