@@ -171,6 +171,9 @@ module IntegrationTestHelpers
         )
       rescue Quonfig::Errors::InitializationTimeoutError
         test.assert(true, 'init raised InitializationTimeoutError as expected')
+        # A single explicit api_url warns about disabled failover (qfg-41nh.26)
+        # before the init fetch times out; drain it so teardown doesn't trip.
+        $logs = nil if defined?($logs)
         return
       end
     test.assert_equal :raise, on_init,

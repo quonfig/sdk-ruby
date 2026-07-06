@@ -258,6 +258,42 @@ Quonfig::Client.new(
 | `data_dir_auto_reload_debounce_ms`  | `Integer` (ms)    | `200`                                                               | Debounce window for the auto-reload watcher — events arriving inside the window are coalesced into a single re-read. Ignored when `data_dir_auto_reload` is `false`. |
 | `logger`          | Logger-like object         | `nil`                                                               | Optional host-app logger (e.g. `Rails.logger`). Must respond to `debug`/`info`/`warn`/`error`. When set, all SDK warnings/errors flow through this logger instead of the default stderr / SemanticLogger backend. |
 
+## Failover & `QUONFIG_DOMAIN`
+
+By default the SDK derives every hostname from `QUONFIG_DOMAIN` (default
+`quonfig.com`):
+
+| Role                     | URL                                     |
+|--------------------------|-----------------------------------------|
+| Config fetch (primary)   | `https://primary.quonfig.com`           |
+| SSE stream (primary)     | `https://stream.primary.quonfig.com`    |
+| Config fetch (secondary) | `https://secondary.quonfig.com`         |
+| SSE stream (secondary)   | `https://stream.secondary.quonfig.com`  |
+| Telemetry                | `https://telemetry.quonfig.com`         |
+
+Set `QUONFIG_DOMAIN` to move all of them together (e.g.
+`QUONFIG_DOMAIN=quonfig-staging.com`). **Automatic failover and hedging between
+the primary and the secondary are on by default** — the secondary runs on
+separate infrastructure, and the HTTP config-fetch fails over to it if the
+primary is unreachable and hedges to it if the primary is slow.
+
+`api_urls:` replaces the derived list wholesale. To keep automatic failover
+with custom URLs, **pass both a primary and a secondary URL**:
+
+```ruby
+Quonfig::Client.new(
+  sdk_key: 'your-sdk-key',
+  api_urls: [
+    'https://primary.your-proxy.example',
+    'https://secondary.your-proxy.example'
+  ]
+)
+```
+
+A single URL disables failover, and the SDK logs a warning at init. See
+https://docs.quonfig.com/docs/explanations/architecture/resiliency for the full
+model.
+
 ## Typed getters
 
 Each typed getter takes a config key and an optional context hash. If the key

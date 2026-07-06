@@ -90,6 +90,8 @@ class TestClientNetworkMode < Minitest::Test
     assert_equal 1, @fetch_count, 'expected exactly one HTTP fetch during init'
     assert_includes client.keys, 'log-levels.test-ruby'
     assert_equal 'WARN', client.get('log-levels.test-ruby', 'default')
+    # A single explicit api_url disables failover (qfg-41nh.26); the SDK warns once.
+    assert_logged [/explicit api_urls disables automatic failover/]
   ensure
     client&.stop
   end
@@ -105,6 +107,8 @@ class TestClientNetworkMode < Minitest::Test
         initialization_timeout_sec: 2
       )
     end
+    # The single explicit api_url warns before the fetch fails (qfg-41nh.26).
+    assert_logged [/explicit api_urls disables automatic failover/]
   end
 
   def test_initialize_returns_empty_store_when_on_init_failure_is_return
@@ -198,6 +202,8 @@ class TestClientNetworkMode < Minitest::Test
     # (value true) because meta.environment == 'development'.
     assert_equal false, client.get('flag.env-scoped', :missing),
                  'expected env override (false) from meta.environment, not default (true)'
+    # A single explicit api_url disables failover (qfg-41nh.26); the SDK warns once.
+    assert_logged [/explicit api_urls disables automatic failover/]
   ensure
     client&.stop
     ENV['QUONFIG_ENVIRONMENT'] = prev_env if prev_env

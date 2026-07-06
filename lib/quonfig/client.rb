@@ -824,6 +824,7 @@ module Quonfig
 
       warn_if_pin_ignored_in_delivery_mode
       warn_if_hedge_abort_exceeds_init_timeout
+      warn_if_explicit_api_urls_disables_failover
 
       @config_loader = Quonfig::ConfigLoader.new(@store, @options, failover_aggregator: @failover_aggregator)
 
@@ -922,6 +923,27 @@ module Quonfig
         "(#{abort_ms}ms); the hedged config-fetch heal leg may be clipped by the " \
         'init deadline before it can heal forward. Set init_timeout_ms above the ' \
         'hedge abort.'
+      )
+    end
+
+    # qfg-41nh.26: the SDK's default (and every QUONFIG_DOMAIN-derived) api_urls
+    # list carries a primary AND a secondary leg, and the HTTP config-fetch
+    # hedges/fails over between them (secondary runs on separate infra). An
+    # explicit `api_urls:` replaces that list wholesale, so a single-entry
+    # override silently drops the secondary and disables automatic failover.
+    # Warn once at init in delivery mode so the customer isn't surprised.
+    # Mirrors sdk-go's construction-time warning (quonfig.go). Does not change
+    # behavior. Fired only when the caller explicitly set api_urls AND the
+    # resolved list has fewer than two legs — never on the default/derived
+    # two-URL list.
+    def warn_if_explicit_api_urls_disables_failover
+      return unless @options.respond_to?(:api_urls_explicit)
+      return unless @options.api_urls_explicit
+      return unless Array(@options.config_api_urls).length < 2
+
+      LOG.warn(
+        '[quonfig] explicit api_urls disables automatic failover to the ' \
+        'secondary; pass both primary and secondary URLs to keep it'
       )
     end
 

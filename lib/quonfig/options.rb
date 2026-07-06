@@ -8,7 +8,7 @@ module Quonfig
     attr_reader :sdk_key, :environment, :api_urls, :sse_api_urls, :telemetry_destination, :config_api_urls,
                 :on_no_default, :init_timeout_ms, :on_init_failure, :collect_sync_interval, :datadir, :enable_sse, :fallback_poll_enabled, :fallback_poll_interval_ms, :global_context, :logger_key, :logger, :enable_quonfig_user_context,
                 :data_dir_auto_reload, :data_dir_auto_reload_debounce_ms, :config_fetch_timeout_ms,
-                :config_fetch_hedge_delay_ms, :config_fetch_hedge_abort_ms
+                :config_fetch_hedge_delay_ms, :config_fetch_hedge_abort_ms, :api_urls_explicit
     attr_accessor :is_fork
 
     # Default fallback poll interval, in milliseconds. The SDK polls api-delivery
@@ -307,6 +307,16 @@ module Quonfig
       #   2. ENV['QUONFIG_DOMAIN'] -> derives all three
       #   3. Hardcoded DEFAULT_DOMAIN ('quonfig.com')
       domain = Quonfig::Options.domain
+
+      # Whether the caller explicitly supplied api_urls (vs. the SDK deriving
+      # both legs from QUONFIG_DOMAIN / DEFAULT_DOMAIN). The default and every
+      # domain-derived list carries a primary AND a secondary leg, so the SDK
+      # hedges/fails over automatically; an explicit single-entry override
+      # silently drops the secondary. Client warns once at init when this is
+      # true and the resolved list has < 2 legs (see
+      # Client#warn_if_explicit_api_urls_disables_failover). Mirrors sdk-go's
+      # apiURLsExplicit flag (qfg-41nh.26).
+      @api_urls_explicit = !api_urls.nil?
 
       @api_urls = Array(api_urls || Quonfig::Options.derive_api_urls(domain))
                   .map { |url| remove_trailing_slash(url) }

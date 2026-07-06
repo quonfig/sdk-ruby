@@ -55,6 +55,8 @@ class TestDeliveryEnvironment < Minitest::Test
     )
     assert_equal false, client.get('flag.env-scoped', :missing),
                  'delivery-wire env override: expected false for flag.env-scoped'
+    # A single explicit api_url disables failover (qfg-41nh.26); the SDK warns once.
+    assert_logged([/explicit api_urls disables automatic failover/])
   ensure
     client&.stop
     server&.shutdown
@@ -99,6 +101,8 @@ class TestDeliveryEnvironment < Minitest::Test
     )
     assert_equal true, client.get('flag.default-only', :missing),
                  'delivery-wire env override: expected true for flag.default-only'
+    # A single explicit api_url disables failover (qfg-41nh.26); the SDK warns once.
+    assert_logged([/explicit api_urls disables automatic failover/])
   ensure
     client&.stop
     server&.shutdown
