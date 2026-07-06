@@ -78,7 +78,13 @@ class TestClientNetworkMode < Minitest::Test
       sdk_key: 'test-key',
       api_urls: ["http://127.0.0.1:#{PORT}"],
       enable_sse: false,
-      enable_polling: false
+      enable_polling: false,
+      # Disable telemetry so the background reporter doesn't POST to a
+      # non-existent telemetry endpoint and trip the teardown log check. The
+      # successful init install now records a failover resolved-from signal
+      # (qfg-41nh.18), which the reporter would otherwise flush on stop.
+      context_upload_mode: :none,
+      collect_evaluation_summaries: false
     )
 
     assert_equal 1, @fetch_count, 'expected exactly one HTTP fetch during init'

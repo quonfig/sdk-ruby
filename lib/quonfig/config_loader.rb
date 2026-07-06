@@ -37,7 +37,7 @@ module Quonfig
     #
     # Backward compat: callers that pass a single +base_client+ (mock client
     # used by tests that expects `.options`) are still supported.
-    def initialize(store_or_base_client, options = nil, logger: nil)
+    def initialize(store_or_base_client, options = nil, logger: nil, failover_aggregator: nil)
       if options.nil? && store_or_base_client.respond_to?(:options)
         # Legacy shape: ConfigLoader.new(base_client)
         @options = store_or_base_client.options
@@ -46,6 +46,11 @@ module Quonfig
         @store = store_or_base_client
         @options = options
       end
+
+      # Optional failover-telemetry sink (qfg-41nh.18). When telemetry is
+      # enabled the Client passes the shared FailoverAggregator; nil otherwise,
+      # so every record call below is a no-op under a telemetry opt-out.
+      @failover_aggregator = failover_aggregator
 
       @api_config = Concurrent::Map.new
       # qfg-7h5d.1.14: per-leg ETag is load-bearing for the parallel hedge. The
@@ -179,6 +184,10 @@ module Quonfig
       # mutually exclusive — exactly one of suppress/fire wins.
       gate = Mutex.new
       secondary_fired = false
+      # Distinct from secondary_fired (which is ALSO set true by suppress on a
+      # fast primary win): this is set only when the secondary leg was ACTUALLY
+      # spawned, so it is the exact "the hedge fired" signal (qfg-41nh.18).
+      secondary_spawned = false
 
       # Each leg is wall-clock bounded by abort_ms (HttpConnection enforces a
       # whole-request deadline, qfg-41nh.6), so a leg ALWAYS settles — a
@@ -203,6 +212,7 @@ module Quonfig
           next false if secondary_fired
 
           secondary_fired = true
+          secondary_spawned = true
         end
         run_leg.call(1) if spawn
       end
@@ -255,6 +265,14 @@ module Quonfig
 
       # Stop the timer if it is still sleeping (already-fired is harmless).
       hedge_timer.kill if hedge_timer.alive?
+
+      # Failover observability (qfg-41nh.18): if the secondary leg was actually
+      # spawned this cycle, the hedge fired (the primary was slow past the hedge
+      # delay or errored fast). Recorded once per cycle regardless of which leg's
+      # payload won the reject-older guard. Read under the gate — the flag is
+      # written under it by fire_secondary, which may run on the timer thread.
+      hedged = gate.synchronize { secondary_spawned }
+      @failover_aggregator&.record_hedge_fired if hedged
 
       return :updated if installed
       return :not_modified if saw_not_modified
@@ -369,6 +387,10 @@ module Quonfig
         # on stale config would be worse (mirrors sdk-node).
         unless @held_generation.nil? || incoming_gen <= 0 || incoming_gen > @held_generation
           @logger.debug "Reject-older guard: dropping incoming generation #{incoming_gen} <= held #{@held_generation} (source=#{source})"
+          # Failover observability (qfg-41nh.18): count the guard rejection. This
+          # single guard covers BOTH the HTTP config-fetch path and the SSE
+          # message path (apply_envelope) — every network install funnels here.
+          @failover_aggregator&.record_guard_rejected
           return :not_modified
         end
 
@@ -388,6 +410,11 @@ module Quonfig
         @held_generation = incoming_gen
         @install_count += 1
         @resolved_from_index = source_index unless source_index.nil?
+        # Failover observability (qfg-41nh.18): record which leg served this
+        # successful HTTP install (source_index 0 = primary, > 0 = secondary).
+        # SSE / datadir installs pass source_index nil and are ignored by the
+        # aggregator, so they are never counted.
+        @failover_aggregator&.record_resolved_from(source_index)
 
         # Replace the live store atomically.
         return if @store.nil?

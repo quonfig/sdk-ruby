@@ -66,6 +66,16 @@ module Quonfig
       @poll_supervisor = nil
       @stopped = false
       @telemetry_reporter = nil
+      # Shared failover-telemetry aggregator (qfg-41nh.18). Created once and
+      # shared between the ConfigLoader (which records hedge-fired /
+      # guard-rejected / resolved-from at the failover call sites) and the
+      # TelemetryReporter (which drains it on each flush). Created before the
+      # ConfigLoader so the initial HTTP fetch — often the ONLY HTTP fetch when
+      # SSE is healthy — is captured. Recording is a per-config-refresh mutex +
+      # increment (negligible); nothing is EMITTED unless telemetry is enabled
+      # (the reporter, which owns the drain, only starts then). Survives fork:
+      # the pre-fork stop drains it, the child's rebuilt reporter drains onward.
+      @failover_aggregator = Quonfig::Telemetry::FailoverAggregator.new
       @state_mutex = Mutex.new
       @last_successful_refresh = nil
       @sse_state = :idle
@@ -689,6 +699,7 @@ module Quonfig
         context_shape_aggregator: shape_aggregator,
         example_contexts_aggregator: example_aggregator,
         evaluation_summaries_aggregator: summaries_aggregator,
+        failover_aggregator: @failover_aggregator,
         sync_interval: @options.collect_sync_interval
       )
 
@@ -814,7 +825,7 @@ module Quonfig
       warn_if_pin_ignored_in_delivery_mode
       warn_if_hedge_abort_exceeds_init_timeout
 
-      @config_loader = Quonfig::ConfigLoader.new(@store, @options)
+      @config_loader = Quonfig::ConfigLoader.new(@store, @options, failover_aggregator: @failover_aggregator)
 
       perform_initial_fetch
 

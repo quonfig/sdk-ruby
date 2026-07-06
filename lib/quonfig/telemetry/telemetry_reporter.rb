@@ -13,7 +13,8 @@ module Quonfig
     #     "events": [
     #       { "summaries":       { "start": ..., "end": ..., "summaries": [...] } },
     #       { "contextShapes":   { "shapes":   [...] } },
-    #       { "exampleContexts": { "examples": [...] } }
+    #       { "exampleContexts": { "examples": [...] } },
+    #       { "failover":        { "start": ..., "end": ..., "hedgeFired": ..., ... } }
     #     ]
     #   }
     #
@@ -30,6 +31,7 @@ module Quonfig
                      context_shape_aggregator: nil,
                      example_contexts_aggregator: nil,
                      evaluation_summaries_aggregator: nil,
+                     failover_aggregator: nil,
                      sync_interval: nil,
                      http_connection: nil)
         @options = options
@@ -39,6 +41,11 @@ module Quonfig
         @context_shape_aggregator = context_shape_aggregator
         @example_contexts_aggregator = example_contexts_aggregator
         @evaluation_summaries_aggregator = evaluation_summaries_aggregator
+        # Failover counters carry no user data and are the operational signal for
+        # the secondary-delivery hardening (qfg-41nh.18), so they ride the
+        # existing telemetry stream. The ConfigLoader records directly into this
+        # aggregator at the failover call sites; the reporter only drains it.
+        @failover_aggregator = failover_aggregator
         @http_connection = http_connection
         @sync_interval = calculate_sync_interval(sync_interval)
         @stopped = Concurrent::AtomicBoolean.new(false)
@@ -124,6 +131,9 @@ module Quonfig
         end
         if (example_event = @example_contexts_aggregator&.drain_event)
           events << example_event
+        end
+        if (failover_event = @failover_aggregator&.drain_event)
+          events << failover_event
         end
 
         return if events.empty?

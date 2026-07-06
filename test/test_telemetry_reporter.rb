@@ -165,6 +165,61 @@ class TestTelemetryReporter < Minitest::Test
     assert_equal 1, counter['reason']
   end
 
+  # qfg-41nh.18: the reporter folds the failover aggregator into the same
+  # periodic flush as the other aggregators. With eval + context collection OFF,
+  # a failover event still lands on the wire in the exact camelCase shape
+  # api-telemetry parses.
+  def test_sync_posts_failover_event_with_eval_and_context_collection_off
+    fake = FakeHttpConnection.new
+    failover_agg = Quonfig::Telemetry::FailoverAggregator.new
+
+    reporter = Quonfig::Telemetry::TelemetryReporter.new(
+      options: make_options,
+      instance_hash: 'h',
+      failover_aggregator: failover_agg,
+      http_connection: fake
+    )
+
+    failover_agg.record_hedge_fired
+    failover_agg.record_guard_rejected
+    failover_agg.record_guard_rejected
+    failover_agg.record_resolved_from(0) # primary
+    failover_agg.record_resolved_from(1) # secondary
+
+    reporter.sync
+
+    assert_equal 1, fake.posts.size
+    _path, body = fake.posts.first
+
+    failover_event = body['events'].find { |e| e.key?('failover') }
+    refute_nil failover_event, 'expected a failover event in the payload'
+
+    f = failover_event['failover']
+    assert_equal 1, f['hedgeFired']
+    assert_equal 2, f['guardRejected']
+    assert_equal 1, f['resolvedFromPrimary']
+    assert_equal 1, f['resolvedFromSecondary']
+    assert_equal 0, f['resolvedFromLkg']
+    assert_kind_of Integer, f['start']
+    assert_kind_of Integer, f['end']
+
+    # No eval/context aggregators were wired, so ONLY the failover event ships.
+    assert_equal 1, body['events'].size
+  end
+
+  def test_sync_noop_when_failover_aggregator_empty
+    fake = FakeHttpConnection.new
+    reporter = Quonfig::Telemetry::TelemetryReporter.new(
+      options: make_options,
+      instance_hash: 'h',
+      failover_aggregator: Quonfig::Telemetry::FailoverAggregator.new,
+      http_connection: fake
+    )
+
+    reporter.sync
+    assert_equal 0, fake.posts.size, 'a healthy client with no failover activity emits nothing'
+  end
+
   def test_at_exit_final_drain_posts_pending_batch
     fake = FakeHttpConnection.new
     shape_agg = Quonfig::Telemetry::ContextShapeAggregator.new(max_shapes: 100)
