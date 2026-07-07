@@ -98,8 +98,11 @@ jobs:
         working-directory: sdk-ruby
         env:
           # Smoke skips 11-null-hypothesis (30 min idle). Full suite
-          # runs everything. The wrapper honors CHAOS_SKIP.
-          CHAOS_SKIP: ${{ inputs.mode == 'full' && '' || '11' }}
+          # (mode=full) runs everything. 'none' is a truthy sentinel
+          # matching no scenario number; the earlier `&& '' ||` form
+          # collapsed to '11' even on mode=full because '' is falsy in
+          # GitHub expressions (qfg-hvlc). The wrapper honors CHAOS_SKIP.
+          CHAOS_SKIP: ${{ inputs.mode == 'full' && 'none' || '11' }}
         run: ./scripts/run-chaos.sh
 
       - name: Upload chaos logs on failure
