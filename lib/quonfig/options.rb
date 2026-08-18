@@ -140,8 +140,19 @@ module Quonfig
 
     # In datadir mode the SDK evaluates config from a local workspace and does
     # not connect to the delivery service.
+    #
+    # NOTE: this says nothing about telemetry. Datadir mode is a config-DELIVERY
+    # mode; usage telemetry still flows whenever an SDK key is configured. See
+    # #telemetry_allowed?.
     def local_only?
       !@datadir.nil?
+    end
+
+    # True when an SDK key is configured. The SDK key is what identifies the
+    # workspace telemetry is attributed to, so it is the single gate on whether
+    # any collection happens at all (qfg-j001 / qfg-5x9x).
+    def sdk_key?
+      !(@sdk_key.nil? || @sdk_key.to_s.empty?)
     end
 
     def datadir?
@@ -202,6 +213,13 @@ module Quonfig
     #     Debounce window in milliseconds. Filesystem events arriving
     #     inside the window are coalesced into a single re-read. Ignored
     #     when +:data_dir_auto_reload+ is +false+.
+    #   @option options [Boolean] :allow_telemetry_in_local_mode (false)
+    #     @deprecated No-op since 1.3.0 (qfg-5x9x). Telemetry is gated on SDK-key
+    #       presence alone, so datadir mode no longer suppresses it and this flag
+    #       has nothing left to unlock. Still accepted so existing callers keep
+    #       working; slated for removal in 2.0.0. To turn telemetry off, use the
+    #       standard opt-outs (+:collect_evaluation_summaries+ +false+,
+    #       +:context_upload_mode+ +:none+).
     def init(
       api_urls: nil,
       telemetry_url: nil,
@@ -226,6 +244,7 @@ module Quonfig
       context_max_size: DEFAULT_MAX_EVAL_SUMMARIES,
       collect_evaluation_summaries: true,
       collect_max_evaluation_summaries: DEFAULT_MAX_EVAL_SUMMARIES,
+      # Deprecated no-op since 1.3.0 (qfg-5x9x) — see the @option doc above.
       allow_telemetry_in_local_mode: false,
       global_context: {},
       logger_key: nil,
@@ -287,6 +306,7 @@ module Quonfig
       @collect_sync_interval = collect_sync_interval
       @collect_evaluation_summaries = collect_evaluation_summaries
       @collect_max_evaluation_summaries = collect_max_evaluation_summaries
+      # Retained for back-compat only; nothing reads it (qfg-5x9x).
       @allow_telemetry_in_local_mode = allow_telemetry_in_local_mode
       @is_fork = false
       @global_context = global_context
@@ -342,8 +362,21 @@ module Quonfig
       end
     end
 
+    # The telemetry gate: an explicit per-collector opt-out (+option+) AND the
+    # presence of an SDK key. Mode is deliberately NOT part of this decision.
+    #
+    # qfg-5x9x: this used to read
+    #   `option && (!local_only? || @allow_telemetry_in_local_mode)`
+    # which zeroed every collect_max_* the moment a datadir was set, so a
+    # datadir client holding a perfectly valid SDK key built no aggregators and
+    # therefore never constructed a reporter — it emitted nothing at all.
+    # Datadir + SDK key is a supported combination and telemetry has to flow
+    # there like it does in delivery mode. Conversely a keyless client (the
+    # open-source / no-account path) has no workspace to attribute data to, so
+    # nothing is collected and the reporter never starts. Mirrors sdk-node's
+    # `isTelemetryEnabled` and sdk-go's `Options.TelemetryEnabled()`.
     def telemetry_allowed?(option)
-      option && (!local_only? || @allow_telemetry_in_local_mode)
+      option && sdk_key?
     end
 
     def remove_trailing_slash(url)

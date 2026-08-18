@@ -192,40 +192,55 @@ class TestOptions < Minitest::Test
     assert Quonfig::Options.new(datadir: '/tmp/ws').local_only?
   end
 
+  # qfg-5x9x: every collect_max_* is gated on SDK-key presence (a keyless client
+  # has no workspace to attribute telemetry to), so these cases pass a key. The
+  # keyless side of the gate — and the fact that a datadir no longer suppresses
+  # collection — is asserted in test/test_datadir_telemetry.rb.
+  SDK_KEY = 'qf_sk_dev_abc_deadbeef'
+
   def test_collect_max_paths
-    assert_equal 1000, Quonfig::Options.new.collect_max_paths
-    assert_equal 100, Quonfig::Options.new(collect_max_paths: 100).collect_max_paths
+    assert_equal 1000, Quonfig::Options.new(sdk_key: SDK_KEY).collect_max_paths
+    assert_equal 100, Quonfig::Options.new(sdk_key: SDK_KEY, collect_max_paths: 100).collect_max_paths
   end
 
   def test_collect_max_evaluation_summaries
-    assert_equal 100_000, Quonfig::Options.new.collect_max_evaluation_summaries
-    assert_equal 0, Quonfig::Options.new(collect_evaluation_summaries: false).collect_max_evaluation_summaries
+    assert_equal 100_000, Quonfig::Options.new(sdk_key: SDK_KEY).collect_max_evaluation_summaries
+    assert_equal 0,
+                 Quonfig::Options.new(sdk_key: SDK_KEY,
+                                      collect_evaluation_summaries: false).collect_max_evaluation_summaries
     assert_equal 3,
-                 Quonfig::Options.new(collect_max_evaluation_summaries: 3).collect_max_evaluation_summaries
+                 Quonfig::Options.new(sdk_key: SDK_KEY,
+                                      collect_max_evaluation_summaries: 3).collect_max_evaluation_summaries
   end
 
   def test_context_upload_mode_periodic
-    options = Quonfig::Options.new(context_upload_mode: :periodic_example, context_max_size: 100)
+    options = Quonfig::Options.new(sdk_key: SDK_KEY, context_upload_mode: :periodic_example, context_max_size: 100)
     assert_equal 100, options.collect_max_example_contexts
 
-    options = Quonfig::Options.new(context_upload_mode: :none)
+    options = Quonfig::Options.new(sdk_key: SDK_KEY, context_upload_mode: :none)
     assert_equal 0, options.collect_max_example_contexts
   end
 
   def test_context_upload_mode_shapes_only
-    options = Quonfig::Options.new(context_upload_mode: :shapes_only, context_max_size: 100)
+    options = Quonfig::Options.new(sdk_key: SDK_KEY, context_upload_mode: :shapes_only, context_max_size: 100)
     assert_equal 100, options.collect_max_shapes
 
-    options = Quonfig::Options.new(context_upload_mode: :none)
+    options = Quonfig::Options.new(sdk_key: SDK_KEY, context_upload_mode: :none)
     assert_equal 0, options.collect_max_shapes
   end
 
   def test_context_upload_mode_none
-    options = Quonfig::Options.new(context_upload_mode: :none)
+    options = Quonfig::Options.new(sdk_key: SDK_KEY, context_upload_mode: :none)
     assert_equal 0, options.collect_max_example_contexts
 
-    options = Quonfig::Options.new(context_upload_mode: :none)
+    options = Quonfig::Options.new(sdk_key: SDK_KEY, context_upload_mode: :none)
     assert_equal 0, options.collect_max_shapes
+  end
+
+  def test_sdk_key_predicate
+    refute Quonfig::Options.new(sdk_key: nil).sdk_key?
+    refute Quonfig::Options.new(sdk_key: '').sdk_key?
+    assert Quonfig::Options.new(sdk_key: SDK_KEY).sdk_key?
   end
 
   # ---- QUONFIG_DOMAIN tests (qfg-w6gg) ----
