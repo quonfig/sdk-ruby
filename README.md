@@ -86,7 +86,8 @@ bound.get_int('rate-limit')
 
 For tests, CI, or air-gapped environments, point the client at a local workspace
 directory instead of the Quonfig API. In datadir mode the SDK loads JSON config
-files from disk and performs no network I/O.
+files from disk — config delivery does no network I/O at all: no config fetch,
+no SSE stream, no polling.
 
 ```ruby
 client = Quonfig::Client.new(
@@ -110,6 +111,32 @@ export QUONFIG_ENVIRONMENT=production
 ```ruby
 client = Quonfig::Client.new  # reads QUONFIG_DIR + QUONFIG_ENVIRONMENT
 ```
+
+### Telemetry in datadir mode
+
+Usage telemetry is gated on **SDK-key presence, not on mode**. A datadir client
+with an `sdk_key:` configured still reports evaluation summaries and context
+telemetry to the telemetry service, exactly as a delivery-mode client does —
+that combination is what makes flag usage visible in the Quonfig UI for services
+that read config from a checked-out workspace.
+
+A datadir client with **no** SDK key has no workspace to attribute telemetry to,
+so it collects and sends nothing: fully offline, zero network I/O.
+
+To run with a key but without telemetry, use the standard opt-outs:
+
+```ruby
+client = Quonfig::Client.new(
+  datadir:                      '/path/to/workspace',
+  environment:                  'production',
+  sdk_key:                      ENV['QUONFIG_BACKEND_SDK_KEY'],
+  collect_evaluation_summaries: false,
+  context_upload_mode:          :none
+)
+```
+
+> Changed in 1.3.0: before 1.3.0 a datadir sent nothing even with a valid SDK
+> key. See the CHANGELOG.
 
 ## Datadir mode: auto-reload on file changes
 
