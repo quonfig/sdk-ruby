@@ -45,6 +45,7 @@ class TestForkSafety < Minitest::Test
   PORT_RAISE         = 4711
   PORT_RAISE_SSE     = 4712
   PORT_ON_UPDATE     = 4713
+  PORT_ORPHAN        = 4714
 
   # rack-timeout's RequestTimeoutException and Ruby 3.3's
   # Timeout::ExitException are both Exception (not StandardError) subclasses,
@@ -1724,6 +1725,117 @@ class TestForkSafety < Minitest::Test
   end
 
   # ------------------------------------------------------------------
+  # E2 — a non-StandardError that lands AFTER the update channel is up.
+  #
+  # `rebuild_in_child!` disarms `@fork_rebuild_pending` after
+  # `initialize_network_mode` has already run `start_update_channel`. Anything
+  # that escapes in that window (rack-timeout, Timeout::ExitException,
+  # Thread#kill) leaves the flag armed *with a live stream*; the retry then
+  # re-ran `initialize_network_mode`, dialled a SECOND stream, and overwrote
+  # `@sse_client` — orphaning the first worker, which `stop` could no longer
+  # close.
+  #
+  # `start_update_channel` must be idempotent.
+  # ------------------------------------------------------------------
+  def test_retrying_a_rebuild_that_already_started_the_channel_does_not_orphan_a_stream
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_ORPHAN, StreamEndpoint, configs: true)
+    server_thread = Thread.new { server.start }
+    client = build_client_for_fork_tests(
+      port: PORT_ORPHAN,
+      api_urls: ["http://127.0.0.1:#{PORT_ORPHAN}"]
+    )
+
+    begin
+      assert wait_until(5) { client.get(CONFIG_KEY, nil) == 'v0' },
+             'parent never installed the initial envelope'
+      assert wait_until(5) { StreamEndpoint.live_streams >= 1 }, 'parent never opened its SSE stream'
+
+      config_hits_before = ConfigsEndpoint.hits
+
+      report = fork_and_capture do
+        # Prepended IN THE CHILD so the injection can never leak into the rest
+        # of this suite. It fires exactly once, immediately after the update
+        # channel has spawned its worker.
+        Quonfig::Client.prepend(Module.new do
+          def start_update_channel
+            result = super
+            if Thread.current[:quonfig_kill_after_channel]
+              Thread.current[:quonfig_kill_after_channel] = false
+              raise TestForkSafety::RackTimeoutLike, 'landed after the SSE worker spawned'
+            end
+
+            result
+          end
+        end)
+
+        Thread.current[:quonfig_kill_after_channel] = true
+        first =
+          begin
+            client.get(CONFIG_KEY, 'DEFAULT')
+            'no raise'
+          rescue TestForkSafety::RackTimeoutLike
+            'raised'
+          end
+        sse1 = client.instance_variable_get(:@sse_client)
+        after_first = {
+          'pending' => client.instance_variable_get(:@fork_rebuild_pending),
+          'sse1_alive' => sse1&.alive? || false
+        }
+
+        second = client.get(CONFIG_KEY, 'DEFAULT')
+        sleep 0.3
+        sse2 = client.instance_variable_get(:@sse_client)
+        after_second = {
+          'pending' => client.instance_variable_get(:@fork_rebuild_pending),
+          'live_sse_clients' => live_sse_client_count,
+          'sse_replaced' => !sse1.equal?(sse2),
+          'sse1_alive' => sse1&.alive? || false,
+          # Zero reconnects on the one surviving client — together with
+          # "not replaced" that is exactly one dial for the whole child.
+          'sse_restarts' => client.worker_restart_total(layer: '1')
+        }
+
+        client.stop
+        wait_until(5) { live_sse_client_count.zero? }
+        after_stop = { 'live_sse_clients' => live_sse_client_count, 'sse1_alive' => sse1&.alive? || false,
+                       'sse_restarts' => after_second['sse_restarts'] }
+
+        { 'first' => first, 'after_first' => after_first, 'second' => second,
+          'after_second' => after_second, 'after_stop' => after_stop }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert_equal 'raised', report['first'],
+                   'the probe must actually interrupt the rebuild after the channel started'
+      assert report['after_first']['pending'],
+             'a non-StandardError past the channel must leave the rebuild armed for a retry'
+      assert report['after_first']['sse1_alive'],
+             'this test is only meaningful if the interrupted rebuild left a LIVE stream behind'
+      assert_equal 'v0', report['second'], 'the retry must serve config'
+      refute report['after_second']['pending'], 'the retry must complete the rebuild'
+      refute report['after_second']['sse_replaced'],
+             'the retry replaced a LIVE SSE client — the first one is now an orphan nothing can close'
+      assert_equal 1, report['after_second']['live_sse_clients'],
+                   'the retry dialled a second stream; exactly one live SSE client is allowed'
+      assert_equal 0, report['after_stop']['sse_restarts'],
+                   'the one surviving SSE client redialled; the child must open exactly one stream'
+      assert_equal 0, report['after_stop']['live_sse_clients'],
+                   'stop could not close every stream the child opened (orphaned worker)'
+      assert_equal 2, ConfigsEndpoint.hits - config_hits_before,
+                   'expected the interrupted fetch plus exactly one retry'
+    ensure
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/explicit api_urls disables automatic failover/])
+    end
+  end
+
+  # ------------------------------------------------------------------
   # E4 — the parent-side no-op must not depend on the parent having threads.
   #
   # `live_components_in_this_process?` asked "is a worker alive / is the
@@ -1775,6 +1887,12 @@ class TestForkSafety < Minitest::Test
   # nothing holds a reference to any more.
   def sse_worker_thread_count
     Thread.list.count { |t| t.backtrace&.any? { |line| line.include?('sse_config_client.rb') } }
+  end
+
+  # Every SSE client object still running, whether or not the Client holds a
+  # reference to it. An ORPHAN shows up here and nowhere else.
+  def live_sse_client_count
+    ObjectSpace.each_object(Quonfig::SSEConfigClient).count(&:alive?)
   end
 
   def wait_until(timeout = 5)

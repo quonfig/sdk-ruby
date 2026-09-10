@@ -1266,6 +1266,14 @@ module Quonfig
       # A `stop` that raced the post-fork rebuild must win: never dial a
       # stream for a client the customer has already killed (qfg-lv4n.1).
       return if @stopped
+      # Idempotent. `rebuild_in_child!` disarms @fork_rebuild_pending only
+      # AFTER initialize_network_mode has already started the channel, so a
+      # non-StandardError landing in that window (rack-timeout,
+      # Timeout::ExitException, Thread#kill) leaves the flag armed WITH a
+      # live stream. The retry re-runs initialize_network_mode; without this
+      # guard it dialled a SECOND stream and overwrote @sse_client, orphaning
+      # the first worker where `stop` could never reach it (qfg-lv4n.1 E2).
+      return if sse_worker_alive? || @poll_supervisor&.alive?
 
       sse_started = @options.enable_sse && start_sse
       start_polling if @options.enable_polling && !sse_started
