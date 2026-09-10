@@ -410,48 +410,6 @@ module Quonfig
       @fork_rebuild_pending = true
     end
 
-    # Lazy post-fork re-initialization. Called from every read entry point
-    # (+get+, +evaluate_details+, +defined?+, +keys+) — the flag read is a
-    # plain boolean, so the steady-state cost is one comparison per lookup.
-    #
-    # The first caller in the child does what +Client.new+ does: its own
-    # config fetch under the configured init timeout and +on_init_failure+
-    # policy, then its own SSE stream (or fallback poller) and its own
-    # telemetry reporter. It BLOCKS, so that first lookup already reflects
-    # the child's own current config.
-    #
-    # +connection_state+ deliberately does NOT trigger this: a diagnostic
-    # must never open a socket. It reports +:initializing+ while a rebuild is
-    # pending, which is exactly what the client is.
-    def ensure_initialized_after_fork
-      return unless @fork_rebuild_pending
-
-      @fork_rebuild_mutex.synchronize do
-        return unless @fork_rebuild_pending
-
-        # Cleared before the work, not after: a failed re-initialization must
-        # not turn every subsequent lookup into another blocking fetch.
-        @fork_rebuild_pending = false
-        return if @stopped
-
-        begin
-          rebuild_in_child!
-        rescue StandardError => e
-          # A fork must never break the customer's process. Unlike
-          # Client.new — which is allowed to raise under
-          # on_init_failure: :raise — this runs inside a `get`, so it logs
-          # and leaves the client serving defaults until the live channel
-          # (started below) heals the store.
-          LOG.error "[quonfig] post-fork re-initialization failed: #{e.class}: #{e.message}"
-          begin
-            start_update_channel if @sse_client.nil? && @poll_supervisor.nil?
-          rescue StandardError => inner
-            LOG.error "[quonfig] post-fork update channel failed to start: #{inner.class}: #{inner.message}"
-          end
-        end
-      end
-    end
-
     # quonfig_sdk_worker_restart_total counter (Tier 1 supervisor contract).
     # Layer 1 (SSE) is tracked on Quonfig::SSEConfigClient#restart_total —
     # incremented once per reconnect attempt by the SDK-owned reconnect
@@ -663,6 +621,48 @@ module Quonfig
         inherited_reporter&.discard_inherited!
       rescue StandardError => e
         LOG.debug "Error discarding inherited telemetry reporter: #{e.message}"
+      end
+    end
+
+    # Lazy post-fork re-initialization. Called from every read entry point
+    # (+get+, +evaluate_details+, +defined?+, +keys+) — the flag read is a
+    # plain boolean, so the steady-state cost is one comparison per lookup.
+    #
+    # The first caller in the child does what +Client.new+ does: its own
+    # config fetch under the configured init timeout and +on_init_failure+
+    # policy, then its own SSE stream (or fallback poller) and its own
+    # telemetry reporter. It BLOCKS, so that first lookup already reflects
+    # the child's own current config.
+    #
+    # +connection_state+ deliberately does NOT trigger this: a diagnostic
+    # must never open a socket. It reports +:initializing+ while a rebuild is
+    # pending, which is exactly what the client is.
+    def ensure_initialized_after_fork
+      return unless @fork_rebuild_pending
+
+      @fork_rebuild_mutex.synchronize do
+        return unless @fork_rebuild_pending
+
+        # Cleared before the work, not after: a failed re-initialization must
+        # not turn every subsequent lookup into another blocking fetch.
+        @fork_rebuild_pending = false
+        return if @stopped
+
+        begin
+          rebuild_in_child!
+        rescue StandardError => e
+          # A fork must never break the customer's process. Unlike
+          # Client.new — which is allowed to raise under
+          # on_init_failure: :raise — this runs inside a `get`, so it logs
+          # and leaves the client serving defaults until the live channel
+          # (started below) heals the store.
+          LOG.error "[quonfig] post-fork re-initialization failed: #{e.class}: #{e.message}"
+          begin
+            start_update_channel if @sse_client.nil? && @poll_supervisor.nil?
+          rescue StandardError => inner
+            LOG.error "[quonfig] post-fork update channel failed to start: #{inner.class}: #{inner.message}"
+          end
+        end
       end
     end
 
