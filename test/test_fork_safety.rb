@@ -3,6 +3,8 @@
 require 'test_helper'
 require 'webrick'
 require 'json'
+require 'tmpdir'
+require 'fileutils'
 
 # qfg-lv4n.1 / qfg-ryov: fork safety.
 #
@@ -30,6 +32,7 @@ class TestForkSafety < Minitest::Test
   PORT_HONEST_STATE  = 4699
   PORT_ATEXIT        = 4700
   PORT_HOOK_RESCUE   = 4701
+  PORT_DATADIR_TEL   = 4702
 
   # Minimal SSE endpoint that sends one event per connection then FINs. The
   # SDK reconnect loop will redial; we just need to observe "the worker
@@ -691,6 +694,86 @@ class TestForkSafety < Minitest::Test
   end
 
   # ------------------------------------------------------------------
+  # qfg-vquv — a forked DATADIR child must get its own telemetry reporter.
+  #
+  # The datadir branch of `after_fork_in_child` returned before the
+  # aggregator/reporter rebuild, so a datadir + SDK-key child (a supported,
+  # emitting combination since 1.3.0 / qfg-5x9x) recorded nothing of its own
+  # for the rest of its life — and, before the owner-pid guard, re-POSTed the
+  # PARENT's window at exit instead.
+  # ------------------------------------------------------------------
+  def test_datadir_child_gets_a_fresh_telemetry_reporter
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    workspace = build_datadir_workspace('d0')
+    client = Quonfig::Client.new(
+      sdk_key: 'qf_sk_dev_abc_deadbeef',
+      datadir: workspace,
+      environment: 'test',
+      telemetry_url: "http://127.0.0.1:#{PORT_DATADIR_TEL}/never-listens",
+      enable_sse: false,
+      fallback_poll_enabled: false,
+      # Long enough that the background loop never fires during the test.
+      collect_sync_interval: 3600
+    )
+
+    begin
+      assert_equal 'd0', client.get(CONFIG_KEY, nil)
+
+      parent_reporter = client.telemetry_reporter
+
+      refute_nil parent_reporter,
+                 'datadir + SDK key must have a telemetry reporter in the parent (qfg-5x9x)'
+
+      # Dirty the parent's window so "the child's is empty" is a real assertion.
+      50.times { client.get(CONFIG_KEY, nil, { 'user' => { 'key' => 'p' } }) }
+
+      parent_ids = {
+        'reporter' => parent_reporter.object_id,
+        'summaries' => parent_reporter.instance_variable_get(:@evaluation_summaries_aggregator).object_id,
+        'failover' => client.instance_variable_get(:@failover_aggregator).object_id
+      }
+
+      report = fork_and_capture do
+        child_reporter = client.telemetry_reporter
+        child_failover = client.instance_variable_get(:@failover_aggregator)
+        summaries = child_reporter&.instance_variable_get(:@evaluation_summaries_aggregator)
+        client.get(CONFIG_KEY, nil, { 'user' => { 'key' => 'c' } })
+        {
+          'reporter_nil' => child_reporter.nil?,
+          'reporter_id' => child_reporter&.object_id,
+          'summaries_id' => summaries&.object_id,
+          'failover_id' => child_failover&.object_id,
+          'owner_pid_is_child' => child_reporter&.owner_pid == Process.pid,
+          'thread_alive' => child_reporter&.instance_variable_get(:@thread)&.alive? || false,
+          # Drained AFTER one child evaluation: the child records its own
+          # usage and nothing of the parent's.
+          'own_evaluations' => telemetry_evaluations_in('events' => [summaries&.drain_event].compact)
+        }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      refute report['reporter_nil'],
+             'a forked datadir child got no telemetry reporter at all (qfg-vquv)'
+      refute_equal parent_ids['reporter'], report['reporter_id'],
+                   'the datadir child must get a FRESH reporter, not the inherited one'
+      refute_equal parent_ids['summaries'], report['summaries_id'],
+                   'the datadir child must get a FRESH evaluation-summaries aggregator'
+      refute_equal parent_ids['failover'], report['failover_id'],
+                   'the datadir child must get a FRESH failover aggregator'
+      assert report['owner_pid_is_child'],
+             "the child's reporter must own its own pid, so it is the one allowed to flush"
+      assert report['thread_alive'], "the child's reporter must actually be running"
+      assert_equal 1, report['own_evaluations'],
+                   "the child's window must hold exactly its own evaluations, not the parent's 50+"
+    ensure
+      client.stop
+      FileUtils.remove_entry(workspace) if workspace && Dir.exist?(workspace)
+    end
+  end
+
+  # ------------------------------------------------------------------
   # T5 — connection_state must never answer :connected when nothing is
   # actually alive. It has to derive from liveness, not from a stored flag
   # left behind by a torn-down session. (This is the diagnostic that let the
@@ -779,6 +862,30 @@ class TestForkSafety < Minitest::Test
       Minitest.singleton_class.send(:define_method, :run) { |*| true }
       exit 0
     end
+  end
+
+  # A minimal on-disk workspace for datadir-mode fork tests.
+  def build_datadir_workspace(value)
+    dir = Dir.mktmpdir('quonfig-fork-datadir')
+    FileUtils.mkdir_p(File.join(dir, 'configs'))
+    File.write(File.join(dir, 'quonfig.json'), JSON.generate({ 'environments' => ['test'] }))
+    File.write(
+      File.join(dir, 'configs', 'fork-value.config.json'),
+      JSON.generate(
+        'id' => 'fork-c1',
+        'key' => CONFIG_KEY,
+        'type' => 'config',
+        'valueType' => 'string',
+        'sendToClientSdk' => false,
+        'default' => {
+          'rules' => [
+            { 'criteria' => [{ 'operator' => 'ALWAYS_TRUE' }],
+              'value' => { 'type' => 'string', 'value' => value } }
+          ]
+        }
+      )
+    )
+    dir
   end
 
   # Total evaluations carried by a telemetry POST body.

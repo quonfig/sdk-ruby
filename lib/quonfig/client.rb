@@ -366,8 +366,19 @@ module Quonfig
       drop_inherited_threaded_components!
 
       if @options.datadir
+        # Datadir + an SDK key emits telemetry (qfg-5x9x, since 1.3.0), so the
+        # datadir child needs the same fresh aggregators and reporter as a
+        # network child — otherwise it records nothing of its own for the rest
+        # of its life (qfg-vquv). initialize_telemetry applies exactly the
+        # gating a fresh Client.new would: no SDK key, no aggregators, no
+        # reporter.
+        rebuild_aggregators_in_child!
+
+        rebuilt = []
         start_datadir_watcher if @options.data_dir_auto_reload
-        log_child_rebuild(@datadir_watcher.nil? ? [] : ['datadir-watcher'])
+        rebuilt << 'datadir-watcher' if @datadir_watcher
+        rebuilt << 'telemetry' if @telemetry_reporter
+        log_child_rebuild(rebuilt)
         return
       end
 
