@@ -211,15 +211,14 @@ Default is `false`; datadir mode is silent until you opt in.
 The auto-reload watcher uses a background thread, which — like any Ruby
 thread — does not survive `fork(2)`. **You do not need to wire this up
 manually on Ruby 3.1+.** The SDK's `Process._fork` hook (see [Rails
-integration](#rails-integration) below) stops the watcher in the parent
-before fork and restarts a fresh watcher in each child after fork. This
-covers Puma clustered mode, Unicorn, Sidekiq's parent-forks-workers model,
-Resque, Spring, and manual `fork { ... }` calls.
+integration](#rails-integration) below) starts a fresh watcher in each child
+after fork. The parent's watcher is left alone and keeps working. This covers
+Puma clustered mode, Unicorn, Resque, Spring, and manual `fork { ... }`
+calls — including a `fork` inside a Sidekiq job.
 
-On Ruby 3.0 (no `Process._fork`), follow the manual `before_fork` /
-`on_worker_boot` pattern in the [Rails integration](#rails-integration)
-section — `Quonfig.fork` rebuilds the full client, including the datadir
-watcher, in the child.
+On Ruby 3.0 (no `Process._fork`), follow the manual `on_worker_boot` pattern
+in the [Rails integration](#rails-integration) section — `Quonfig.fork`
+rebuilds the full client, including the datadir watcher, in the child.
 
 ### Tuning the debounce window
 
@@ -414,16 +413,25 @@ If both are supplied, the explicit `logger_name:` wins.
 
 ## Rails integration
 
-The SDK runs a background SSE thread (and optional polling thread) that you do
-not want to inherit across a `fork(2)`. Forked threads in the child process
-are dead — the SSE socket is held open by a thread that no longer exists, and
-the child silently stops receiving live updates.
+The SDK runs a background SSE thread (and optional polling thread). Ruby
+threads do not survive `fork(2)`, so a child process inherits references to
+threads that no longer exist and silently stops receiving live updates.
 
 **On Ruby 3.1+ the SDK installs a `Process._fork` hook at load time** that
-automatically tears down threaded components in the parent and restarts them
-in the child. This covers any `Process.fork` / `Kernel#fork` path — Puma's
-clustered mode, Unicorn, Sidekiq's parent-forks-workers model, Spring, and
-manual `fork { ... }` calls. **No customer wiring is required.**
+rebuilds those threads in the child. This covers any `Process.fork` /
+`Kernel#fork` path — Puma's clustered mode, Unicorn, Spring, Resque, a
+`fork { ... }` inside a Sidekiq job, and the `parallel` gem. **No customer
+wiring is required.**
+
+**The hook is child-only. A fork never touches the process that forked.**
+The parent keeps its SSE stream, its poller, its telemetry reporter, and its
+live config straight through any number of forks — so a long-lived process
+that forks workers *and keeps evaluating* (a Sidekiq process using the
+`parallel` gem, a rake task that shells out through `fork`) stays current.
+In the child, the SDK drops the inherited references without touching the
+objects — it never closes the inherited socket, because `fork(2)` duplicates
+the file descriptor and closing the child's copy of a TLS connection would
+tear down the stream the **parent** is still using.
 
 Caveats:
 
@@ -431,13 +439,8 @@ Caveats:
 - `system("fork-and-exec ...")` and `Process.spawn` are not covered (they do
   not go through `Process._fork`), but those execute a new program, so the
   in-process SSE state is moot.
-- The hook tears down the SSE/polling/telemetry threads in the parent before
-  fork (so the child does not inherit a live socket fd) and does **not**
-  auto-restart the parent. This mirrors the Puma master case: the master no
-  longer serves requests, so it does not need a live SSE connection. If you
-  have a non-Puma topology where the parent must keep streaming after fork,
-  call `Quonfig.instance.after_fork_in_child` manually in the parent after
-  the fork returns.
+- The child's telemetry aggregators start empty. The parent flushes the data
+  it collected before the fork; the child reports only its own.
 
 ### Puma (clustered mode)
 
@@ -450,52 +453,51 @@ handle the rest:
 Quonfig.init(Quonfig::Options.new(sdk_key: ENV.fetch('QUONFIG_BACKEND_SDK_KEY')))
 ```
 
-If you're on Ruby 3.0 (no `Process._fork`), wire the legacy hooks manually:
+If you're on Ruby 3.0 (no `Process._fork`), wire the worker boot hook
+manually:
 
 ```ruby
 # config/puma.rb (Ruby 3.0 only)
-before_fork do
-  Quonfig.instance.stop          # close the master's SSE before forking
-end
-
 on_worker_boot do
   Quonfig.fork                   # rebuild a fresh client per worker
 end
 ```
 
+Do **not** add a `before_fork { Quonfig.instance.stop }` — the master's
+client does not need to be torn down for the workers to be healthy, and
+stopping it means the master stops receiving config.
+
 ### Sidekiq
 
-On Ruby 3.1+ the automatic fork hook covers Sidekiq workers too — no
-`configure_server` wiring required.
+Sidekiq OSS does not fork: it runs jobs on threads inside one process, so
+`Quonfig.init` in your initializer is all you need on any Ruby version.
 
-On Ruby 3.0:
+Some jobs *do* fork — the `parallel` gem, an explicit `fork { ... }`, or
+Sidekiq Enterprise's swarm mode. On Ruby 3.1+ those are covered
+automatically, and (since 1.4.0) the Sidekiq process itself keeps streaming
+config the whole time. On Ruby 3.0, call `Quonfig.fork` at the top of the
+forked block:
 
 ```ruby
-# config/initializers/quonfig.rb
-Quonfig.init(Quonfig::Options.new(sdk_key: ENV.fetch('QUONFIG_BACKEND_SDK_KEY')))
-
-# config/initializers/sidekiq.rb (Ruby 3.0 only)
-Sidekiq.configure_server do |config|
-  config.on(:startup)  { Quonfig.fork if Process.ppid != 1 }
-  config.on(:shutdown) { Quonfig.instance.stop rescue nil }
+# Ruby 3.0 only
+Parallel.each(batch, in_processes: 4) do |row|
+  Quonfig.fork
+  # ...
 end
 ```
 
-For Sidekiq web/CLI processes that don't fork (default `concurrency: 1`),
-`Quonfig.init` in the initializer is sufficient on any Ruby version.
-
 ### Spring / Bootsnap preloaders
 
-Spring forks the preloader for each command. If your initializer creates a
-Quonfig client at boot, the SSE thread will be inherited dead in every child.
-Two options:
+Spring forks the preloader for each command. On Ruby 3.1+ the automatic hook
+already rebuilds the client in each spawned command, and the preloader itself
+keeps streaming. On Ruby 3.0, either:
 
 1. **Recommended:** initialize lazily — wrap `Quonfig.init` so it only runs
    the first time `Quonfig.instance` is called from a non-preloader process.
 2. **Or:** call `Quonfig.fork` from a `Spring.after_fork` hook.
 
 ```ruby
-# config/spring.rb
+# config/spring.rb (Ruby 3.0 only)
 Spring.after_fork do
   Quonfig.fork if defined?(Quonfig) && Quonfig.instance_variable_get(:@singleton)
 end
@@ -528,8 +530,10 @@ envelope is intentional: a reader concurrent with envelope application may
 observe the new value for some keys and the old value for others, then
 converge once the envelope finishes applying.
 
-`Quonfig.fork` is the only safe way to "carry" a client across `Process.fork`
-— do not reuse the parent's client in a child process.
+Forking is handled for you on Ruby 3.1+: the child rebuilds automatically and
+the parent is left running (see [Rails integration](#rails-integration)). On
+Ruby 3.0, `Quonfig.fork` is the way to "carry" a client into a child — do not
+reuse the parent's client object in a child process without it.
 
 ## Diagnostic health signals
 
