@@ -436,8 +436,11 @@ tear down the stream the **parent** is still using.
 > **Upgrading from 1.3.0 or earlier:** if you added a manual
 > `Quonfig.instance.after_fork_in_child` call **in the parent** as a
 > workaround for the parent going dark, remove it. As of 1.4.0 that call is a
-> no-op in any process that still owns live SDK components, so it will not
-> hurt you — but it is no longer doing anything, and the parent needs no call.
+> no-op in the process that owns the client — the SDK decides that by
+> comparing the current pid against the one it stamped when the client was
+> built, so it is exact whether or not the parent has any threads running. It
+> will not hurt you, but it is no longer doing anything, and the parent needs
+> no call.
 
 **After a fork, the child re-initializes on its first use of the client,
 exactly like a newly constructed client — including its `on_init_failure`

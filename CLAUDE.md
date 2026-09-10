@@ -82,11 +82,19 @@ pass):
   channel so SSE can heal; datadir clients must NOT (they have no config
   loader — every envelope would raise) and instead start the watcher or
   re-arm the rebuild.
-- **`after_fork_in_child` early-returns in a process that owns live
-  components.** Threads do not survive `fork(2)` and the reporter stamps an
-  owner pid, so this is false in a real child and true in the parent — which
-  makes the 1.0–1.3 "call it in the parent" workaround a harmless no-op
-  instead of an orphaned stream per call.
+- **`after_fork_in_child` early-returns in the process that OWNS the
+  client.** Ownership is a pid stamp (`@owner_pid`), taken in `initialize`
+  and re-taken in `rebuild_in_child!` when a child takes over — not a
+  liveness check. `Process.pid != @owner_pid` is *proof* of a `fork(2)`
+  child; a match is proof that nobody forked. That makes the 1.0–1.3 "call it
+  in the parent" workaround a harmless no-op instead of an orphaned stream
+  per call. Asking "is a worker thread alive / is the reporter mine?" instead
+  was wrong at both ends (qfg-lv4n.1 E1/E4): `on_update` runs *on* the SSE
+  worker thread, so a child forked from that callback inherits it as its one
+  surviving thread and was misread as the parent; and a datadir client with
+  auto-reload off and no SDK key has no threads at all, so a genuine
+  parent-side call sailed straight through the guard and wiped the live
+  store.
 
 Two rules the child must never break:
 

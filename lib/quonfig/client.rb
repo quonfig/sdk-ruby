@@ -83,6 +83,12 @@ module Quonfig
       @sse_ever_connected = false
       @fallback_engage_timer = nil
       @sse_terminal_failure = false
+      # The process that owns this client's threads, sockets, and store.
+      # Re-stamped when a child takes ownership in #rebuild_in_child!. A pid
+      # mismatch is PROOF that we are looking at a fork(2) child, which is
+      # what makes #owned_by_this_process? exact. See that method for why
+      # thread liveness could not answer the question.
+      @owner_pid = Process.pid
       # Post-fork lazy re-initialization (qfg-lv4n.1). Set by
       # +after_fork_in_child+; cleared by the first use of the client in the
       # child. See #ensure_initialized_after_fork.
@@ -391,11 +397,12 @@ module Quonfig
     # No-op if the client was already stopped — the customer asked for it to
     # be dead, and a fork must not resurrect it.
     #
-    # Also a no-op in any process that still owns live SDK components, i.e.
-    # the PARENT. Releases 1.0-1.3 documented calling this in the parent as
-    # the workaround for the parent going dark after a fork; on 1.4.0 the
-    # parent's components are alive and such a call would orphan them, so it
-    # is ignored (one debug line). See #live_components_in_this_process?.
+    # Also a no-op in the process that OWNS the client, i.e. the PARENT —
+    # decided by a pid stamp, not by whether anything looks alive. Releases
+    # 1.0-1.3 documented calling this in the parent as the workaround for the
+    # parent going dark after a fork; on 1.4.0+ such a call would orphan the
+    # parent's live components and zero its store, so it is ignored (one
+    # debug line). See #owned_by_this_process?.
     #
     # The hook does NO I/O: no fetch, no socket, no thread. It throws away
     # everything the child inherited — including the parent's config snapshot
@@ -405,7 +412,7 @@ module Quonfig
     # most of them in a `Parallel.map` batch, costs nothing at all.
     def after_fork_in_child
       return if @stopped
-      return if live_components_in_this_process?
+      return if owned_by_this_process?
 
       # The inherited Mutexes may be held by threads that no longer exist.
       # Only this thread exists in a fresh child, so swapping them is safe.
@@ -602,26 +609,36 @@ module Quonfig
 
     private
 
-    # True when THIS process still owns running SDK components — i.e. we are
+    # True when THIS process is the one that owns the client — i.e. we are
     # the parent, not a fork(2) child.
     #
-    # Ruby threads do not survive fork(2), so in a real child every inherited
-    # worker's Thread is dead and the inherited reporter's +owner_pid+ is
-    # somebody else's; all three checks answer false. In the process that
-    # forked they answer true.
+    # The answer is a pid comparison against the stamp taken when the client
+    # was constructed (and re-taken when a child rebuilds it). A pid mismatch
+    # is PROOF of a fork child; a match is proof that nobody forked.
     #
-    # This is what makes a stray +after_fork_in_child+ call in the PARENT a
+    # It deliberately does NOT ask whether any component looks alive, which
+    # is what 1.4.0 shipped and what got this wrong at both ends:
+    #
+    # * **False negative in a real child.** +on_update+ runs on the SSE worker
+    #   thread, so a customer who forks from that callback forks ON it — and
+    #   the inherited +@worker.alive?+ is therefore true in the child. The
+    #   child was classified as the parent, ignored the hook, served the
+    #   parent's snapshot forever and reported +:connected+ (qfg-lv4n.1 E1).
+    # * **False positive in a real parent.** A datadir client with
+    #   auto-reload off and no SDK key has no threads and no reporter at all,
+    #   so the guard let a parent-side call through and it wiped the live
+    #   store (qfg-lv4n.1 E4/D4).
+    #
+    # The parent case is what makes a stray +after_fork_in_child+ call a
     # no-op. Releases 1.0-1.3 documented exactly that call as the workaround
     # for the parent-keeps-evaluating topology, and that code is still out
-    # there: on 1.4.0 it would orphan the live SSE worker and its stream,
-    # zero the store, and stop the owner's telemetry reporter (qfg-lv4n.1 D4).
-    def live_components_in_this_process?
-      return false unless sse_worker_alive? ||
-                          @poll_supervisor&.alive? ||
-                          (@telemetry_reporter && @telemetry_reporter.owner_pid == Process.pid)
+    # there: on 1.4.0+ it would orphan the live SSE worker and its stream,
+    # zero the store, and stop the owner's telemetry reporter.
+    def owned_by_this_process?
+      return false unless @owner_pid == Process.pid
 
-      LOG.debug '[quonfig] after_fork_in_child called in a process that still owns live SDK ' \
-                "components (pid=#{Process.pid}); ignoring. Since 1.4.0 a fork never touches the " \
+      LOG.debug '[quonfig] after_fork_in_child called in the process that OWNS the client ' \
+                "(pid=#{Process.pid}); ignoring. Since 1.4.0 a fork never touches the " \
                 'process that forked, and the child-side rebuild is automatic on Ruby 3.1+.'
       true
     end
@@ -845,6 +862,11 @@ module Quonfig
     # +Client.new+ does for this client's mode, and logs one info line so a
     # customer grepping their logs can see the SDK noticed the fork.
     def rebuild_in_child!
+      # This process is taking ownership of the client. Re-stamping here is
+      # what keeps #owned_by_this_process? exact for everything that follows:
+      # a manual +after_fork_in_child+ in THIS child is now correctly a
+      # no-op, and a grandchild forked from here is still detected by pid.
+      @owner_pid = Process.pid
       components = []
 
       if @options.datadir

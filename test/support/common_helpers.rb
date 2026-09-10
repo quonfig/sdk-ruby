@@ -55,6 +55,16 @@ module CommonHelpers
     end
   end
 
+  # Make a client look, to the SDK, like one that arrived here through
+  # fork(2). Since qfg-lv4n.1 E1/E4 the SDK decides parent-vs-child by
+  # comparing the current pid against the one stamped when the client was
+  # built — a pid mismatch is proof of a child — so a single-process
+  # simulation of the child side has to move that stamp. Tests that fork for
+  # real never need this.
+  def simulate_fork_child_pid!(client)
+    client.instance_variable_set(:@owner_pid, Process.pid - 1)
+  end
+
   def context(properties)
     Quonfig::Context.new(properties)
   end

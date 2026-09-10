@@ -44,6 +44,7 @@ class TestForkSafety < Minitest::Test
   PORT_READERS       = 4710
   PORT_RAISE         = 4711
   PORT_RAISE_SSE     = 4712
+  PORT_ON_UPDATE     = 4713
 
   # rack-timeout's RequestTimeoutException and Ruby 3.3's
   # Timeout::ExitException are both Exception (not StandardError) subclasses,
@@ -339,6 +340,7 @@ class TestForkSafety < Minitest::Test
       # running against the same WEBrick server; the hook itself no longer
       # calls it.)
       client.before_fork_in_parent
+      simulate_fork_child_pid!(client)
       client.after_fork_in_child
 
       assert_nil client.instance_variable_get(:@sse_client),
@@ -382,6 +384,7 @@ class TestForkSafety < Minitest::Test
 
       Quonfig::Client::LOG.level = :info
       client.before_fork_in_parent
+      simulate_fork_child_pid!(client)
       client.after_fork_in_child
       # The line is logged when the client re-initializes — i.e. on first use,
       # not inside the hook.
@@ -1618,6 +1621,153 @@ class TestForkSafety < Minitest::Test
     end
   end
 
+  # ------------------------------------------------------------------
+  # E1 — a child forked from INSIDE an `on_update` callback.
+  #
+  # `on_update` runs on the SSE worker thread, so a customer who forks from
+  # it forks *on* that thread — which makes it the child's one surviving
+  # thread. Parent-detection that asks "is the inherited worker Thread
+  # alive?" therefore answers YES in a real child: the hook logged "called in
+  # a process that still owns live SDK components; ignoring", the child
+  # served the parent's snapshot forever, reported `:connected`, and resumed
+  # the parent's SSE loop on the shared fd.
+  #
+  # Parent-detection must be a pid stamp, not thread liveness: a pid mismatch
+  # is proof of a fork child whatever the inherited Thread objects claim.
+  # ------------------------------------------------------------------
+  def test_child_forked_from_inside_on_update_is_not_mistaken_for_the_parent
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_ON_UPDATE, StreamEndpoint, configs: true)
+    server_thread = Thread.new { server.start }
+    client = build_client_for_fork_tests(
+      port: PORT_ON_UPDATE,
+      api_urls: ["http://127.0.0.1:#{PORT_ON_UPDATE}"]
+    )
+
+    begin
+      assert wait_until(5) { client.get(CONFIG_KEY, nil) == 'v0' },
+             'parent never installed the initial envelope'
+      assert wait_until(5) { StreamEndpoint.live_streams >= 1 }, 'parent never opened its SSE stream'
+
+      parent_sse = client.instance_variable_get(:@sse_client)
+      sse_worker = parent_sse.instance_variable_get(:@worker)
+      reports = []
+      child_dials = nil
+      sse_hits_before = nil
+      fork_next_update = true
+
+      client.on_update do
+        next unless fork_next_update
+
+        fork_next_update = false
+        reports << begin
+          fork_and_capture(
+            hold: 3,
+            while_alive: lambda {
+              wait_until(2) { StreamEndpoint.hits - sse_hits_before == 1 }
+              child_dials = StreamEndpoint.hits - sse_hits_before
+            }
+          ) do
+            {
+              'on_sse_worker' => sse_worker.equal?(Thread.current),
+              'pending' => client.instance_variable_get(:@fork_rebuild_pending),
+              'store_keys' => client.instance_variable_get(:@store).keys.size,
+              'state' => client.connection_state.to_s,
+              'get' => client.get(CONFIG_KEY, 'DEFAULT'),
+              'sse_replaced' => !parent_sse.equal?(client.instance_variable_get(:@sse_client))
+            }
+          end
+        rescue Exception => e # rubocop:disable Lint/RescueException
+          { 'error' => "#{e.class}: #{e.message}" }
+        end
+      end
+
+      config_hits_before = ConfigsEndpoint.hits
+      sse_hits_before = StreamEndpoint.hits
+      StreamEndpoint.push(envelope_payload('v1', generation: 2))
+
+      assert wait_until(10) { !reports.empty? }, 'the on_update callback never forked'
+      report = reports.first
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert report['on_sse_worker'],
+             'this test is only meaningful if on_update really runs on the SSE worker thread'
+      assert report['pending'],
+             'a child forked from on_update was misclassified as the parent — the fork hook ' \
+             'ignored it and it kept serving the parent snapshot'
+      assert_equal 0, report['store_keys'],
+                   "the child must start from an EMPTY store, not the parent's snapshot"
+      assert_equal 'initializing', report['state'],
+                   'a child with a pending rebuild must not report :connected'
+      assert_equal 'v1', report['get'], "the child's first use must fetch its own config"
+      assert report['sse_replaced'], 'the child must dial its OWN stream, not reuse the parent object'
+      assert_equal 1, ConfigsEndpoint.hits - config_hits_before,
+                   'the child must run exactly one config fetch of its own'
+      assert_equal 1, child_dials,
+                   'the child must open exactly one SSE stream of its own (sampled while it was ' \
+                   'still holding the socket)'
+
+      # ...and the parent is untouched by all of it.
+      StreamEndpoint.push(envelope_payload('v2', generation: 3))
+
+      assert wait_until(6) { client.get(CONFIG_KEY, nil) == 'v2' },
+             'the parent stopped receiving SSE updates after a fork from inside on_update'
+    ensure
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/explicit api_urls disables automatic failover/])
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # E4 — the parent-side no-op must not depend on the parent having threads.
+  #
+  # `live_components_in_this_process?` asked "is a worker alive / is the
+  # reporter mine?". A datadir client with auto-reload off and no SDK key has
+  # NO threads and no reporter at all, so the 1.0-1.3 documented workaround
+  # (calling `after_fork_in_child` in the parent) sailed straight past the
+  # guard: it wiped the live store and re-armed a rebuild in a process that
+  # never forked. The pid stamp makes the check exact.
+  # ------------------------------------------------------------------
+  def test_parent_side_after_fork_in_child_is_a_noop_for_a_threadless_client
+    workspace = build_datadir_workspace('d0')
+
+    client = Quonfig::Client.new(
+      Quonfig::Options.new(
+        datadir: workspace,
+        environment: 'test',
+        context_upload_mode: :none,
+        collect_evaluation_summaries: false,
+        data_dir_auto_reload: false
+      )
+    )
+
+    begin
+      assert_equal 'd0', client.get(CONFIG_KEY, nil)
+      assert_nil client.instance_variable_get(:@datadir_watcher), 'this test needs a client with NO threads'
+      assert_nil client.telemetry_reporter, 'this test needs a client with NO telemetry reporter'
+
+      store_before = client.instance_variable_get(:@store)
+
+      # The documented 1.3.0 workaround, in the process that owns the client.
+      3.times { client.after_fork_in_child }
+
+      refute client.instance_variable_get(:@fork_rebuild_pending),
+             'a parent-side after_fork_in_child armed a post-fork rebuild in the OWNING process'
+      assert_same store_before, client.instance_variable_get(:@store),
+                  'a parent-side after_fork_in_child threw away the live store'
+      assert_equal 1, client.instance_variable_get(:@store).keys.size
+      assert_equal 'd0', client.get(CONFIG_KEY, nil)
+    ensure
+      client.stop
+      FileUtils.rm_rf(workspace)
+    end
+  end
+
   private
 
   # Threads currently executing inside the SSE client. Counting by backtrace
@@ -1645,7 +1795,12 @@ class TestForkSafety < Minitest::Test
   # has run +after_fork+ and released it. That removes the race in "the child's
   # FIRST call must see config published after the fork": without it the child
   # can get there before the parent has published.
-  def fork_and_capture(after_fork: nil, gate: false, &block)
+  # +hold:+ keeps the child alive (sockets and all) for that many seconds
+  # AFTER it has shipped its report, and +while_alive:+ runs in the parent
+  # during that window. That is how a test observes server-side state the
+  # child is responsible for — a stream it opened, say — without racing the
+  # child's exit.
+  def fork_and_capture(after_fork: nil, gate: false, hold: 0, while_alive: nil, &block)
     read_io, write_io = IO.pipe
     gate_read, gate_write = gate ? IO.pipe : [nil, nil]
 
@@ -1659,6 +1814,7 @@ class TestForkSafety < Minitest::Test
         write_io.write(JSON.dump('error' => "#{e.class}: #{e.message}"))
       ensure
         write_io.close
+        sleep hold if hold.positive?
         # Exit without running the parent's at_exit (which would re-run Minitest).
         exit!(0)
       end
@@ -1673,6 +1829,7 @@ class TestForkSafety < Minitest::Test
     end
     raw = read_io.read
     read_io.close
+    while_alive&.call
     Process.waitpid(pid)
 
     refute_empty raw.to_s, 'child wrote nothing to the pipe — likely crashed before reporting'

@@ -282,6 +282,7 @@ class TestDatadirAutoReload < Minitest::Test
     assert_nil client.instance_variable_get(:@datadir_watcher),
                'before_fork_in_parent must drop the watcher reference'
 
+    simulate_fork_child_pid!(client)
     client.after_fork_in_child
 
     assert_nil client.instance_variable_get(:@datadir_watcher),
