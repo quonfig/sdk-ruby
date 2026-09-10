@@ -427,7 +427,7 @@ wiring is required.**
 The parent keeps its SSE stream, its poller, its telemetry reporter, and its
 live config straight through any number of forks — so a long-lived process
 that forks workers *and keeps evaluating* (a Sidekiq process using the
-`parallel` gem, a rake task that shells out through `fork`) stays current.
+`parallel` gem, a rake task that calls `fork`) stays current.
 In the child, the SDK drops the inherited references without touching the
 objects — it never closes the inherited socket, because `fork(2)` duplicates
 the file descriptor and closing the child's copy of a TLS connection would
@@ -453,13 +453,27 @@ handle the rest:
 Quonfig.init(Quonfig::Options.new(sdk_key: ENV.fetch('QUONFIG_BACKEND_SDK_KEY')))
 ```
 
+If you use SemanticLogger you still need to reopen it in each worker — but
+do **not** call `Quonfig.fork` alongside it on 3.1+. The hook has already
+rebuilt the client by the time `on_worker_boot` runs, so a second rebuild
+leaves the worker holding two live SSE streams and two telemetry reporters,
+and the orphaned pair is never stopped:
+
+```ruby
+# config/puma.rb (Ruby 3.1+)
+on_worker_boot do
+  SemanticLogger.reopen
+end
+```
+
 If you're on Ruby 3.0 (no `Process._fork`), wire the worker boot hook
 manually:
 
 ```ruby
 # config/puma.rb (Ruby 3.0 only)
 on_worker_boot do
-  Quonfig.fork                   # rebuild a fresh client per worker
+  Quonfig.fork          # rebuild a fresh client per worker
+  SemanticLogger.reopen # if you use SemanticLogger
 end
 ```
 
@@ -474,14 +488,21 @@ Sidekiq OSS does not fork: it runs jobs on threads inside one process, so
 
 Some jobs *do* fork — the `parallel` gem, an explicit `fork { ... }`, or
 Sidekiq Enterprise's swarm mode. On Ruby 3.1+ those are covered
-automatically, and (since 1.4.0) the Sidekiq process itself keeps streaming
-config the whole time. On Ruby 3.0, call `Quonfig.fork` at the top of the
-forked block:
+automatically, with nothing to call, and (since 1.4.0) the Sidekiq process
+itself keeps streaming config the whole time.
+
+Ruby 3.0 is end-of-life and has no `Process._fork` hook. The `parallel` gem
+has no per-worker boot hook to wire a rebuild into either — `Parallel.each`
+just runs your block in each child, once per row — so calling `Quonfig.fork`
+at the top of the block builds a **new client per row**, each with its own
+SSE stream and telemetry reporter. Upgrade to 3.1+ if you can. If you must
+stay on 3.0, rebuild once per child process by memoizing on the pid:
 
 ```ruby
-# Ruby 3.0 only
+# Ruby 3.0 only — one rebuild per child process, not one per row.
 Parallel.each(batch, in_processes: 4) do |row|
-  Quonfig.fork
+  Quonfig.fork if $quonfig_pid != Process.pid
+  $quonfig_pid = Process.pid
   # ...
 end
 ```
