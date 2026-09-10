@@ -1427,7 +1427,19 @@ module Quonfig
   module ForkSafety
     def _fork
       pid = super
-      Quonfig::Client.each_instance(&:after_fork_in_child) if pid.zero?
+      if pid.zero?
+        # Per-instance, not per-fan-out: a process can hold more than one
+        # Client (a second workspace, a test harness, a gem that builds its
+        # own). One of them failing to rebuild — thread exhaustion, a
+        # customer logger that raises — must not cost every client behind it
+        # in the registry its rebuild and leave the child silently dark.
+        Quonfig::Client.each_instance do |client|
+          client.after_fork_in_child
+        rescue StandardError => e
+          Quonfig::Client::LOG.error 'Quonfig fork rebuild failed for one client ' \
+                                     "(continuing with the rest): #{e.class}: #{e.message}"
+        end
+      end
       pid
     rescue StandardError => e
       # Fork-hook failures must never break the customer's fork. Worst case

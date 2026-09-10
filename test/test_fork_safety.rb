@@ -29,6 +29,7 @@ class TestForkSafety < Minitest::Test
   PORT_CHILD_AGGS    = 4698
   PORT_HONEST_STATE  = 4699
   PORT_ATEXIT        = 4700
+  PORT_HOOK_RESCUE   = 4701
 
   # Minimal SSE endpoint that sends one event per connection then FINs. The
   # SDK reconnect loop will redial; we just need to observe "the worker
@@ -553,6 +554,71 @@ class TestForkSafety < Minitest::Test
     ensure
       StreamEndpoint.close_all!
       client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/Initialization did not complete cleanly/])
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # The fan-out is per-instance: one client blowing up in
+  # `after_fork_in_child` must not cost every client behind it in the
+  # registry its rebuild. A process with two clients (say, one for flags and
+  # one for a second workspace) would otherwise lose the second one to any
+  # transient failure in the first — thread exhaustion, a customer logger
+  # that raises — and the only symptom is a silently dark child.
+  # ------------------------------------------------------------------
+  def test_one_client_raising_does_not_skip_the_rest_of_the_registry
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_HOOK_RESCUE, StreamEndpoint)
+    server_thread = Thread.new { server.start }
+    first = build_client_for_fork_tests(port: PORT_HOOK_RESCUE)
+    second = build_client_for_fork_tests(port: PORT_HOOK_RESCUE)
+    raiser = nil
+
+    begin
+      assert wait_until(5) { first.get(CONFIG_KEY, nil) == 'v0' && second.get(CONFIG_KEY, nil) == 'v0' },
+             'both clients must be live before the fork'
+
+      # The hook fans out in registry order, so the failure has to land on
+      # whichever of the two comes FIRST — otherwise the test proves nothing.
+      registered = []
+      Quonfig::Client.each_instance { |c| registered << c if c.equal?(first) || c.equal?(second) }
+
+      assert_equal 2, registered.size, 'expected both clients in the fork registry'
+      raiser = registered.first
+      survivor = registered.last
+
+      raiser.define_singleton_method(:after_fork_in_child) do
+        raise 'boom from a customer logger or thread exhaustion'
+      end
+
+      report = fork_and_capture do
+        connected = wait_until(5) { survivor.connection_state == :connected }
+        sse = survivor.instance_variable_get(:@sse_client)
+        {
+          'worker_alive' => sse&.instance_variable_get(:@worker)&.alive? || false,
+          'connected' => connected,
+          'state' => survivor.connection_state.to_s,
+          'logged_continuation' => $logs.string.include?('continuing with the rest')
+        }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert report['worker_alive'],
+             'a client raising in after_fork_in_child skipped every client behind it in the registry ' \
+             "(surviving client: worker_alive=#{report['worker_alive']}, state=#{report['state']})"
+      assert report['connected'],
+             "the surviving client never reached :connected in the child (state=#{report['state']})"
+      assert report['logged_continuation'],
+             'the per-instance failure must be logged as such, not swallowed by the hook-wide rescue'
+    ensure
+      raiser&.singleton_class&.send(:remove_method, :after_fork_in_child)
+      StreamEndpoint.close_all!
+      first.stop
+      second.stop
       server.stop
       server_thread&.join(2)
       assert_logged([/Initialization did not complete cleanly/])
