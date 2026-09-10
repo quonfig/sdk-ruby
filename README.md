@@ -476,11 +476,17 @@ Caveats:
   it collected before the fork; the child reports only its own.
 - **Per-job forking pays per job.** A Resque-style worker that forks a child
   per job (or `Parallel.map` with one row per process) pays, in each child
-  that touches the client, one config fetch, one SSE dial, and one telemetry
-  POST at exit. That is the price of the child holding its own current config
-  and its own telemetry window, and it is deliberate — the delivery service
-  counts each of those connections as a real client. A child that never uses
-  the client pays none of it.
+  that touches the client, one config fetch, one SSE dial, and — **when the
+  child exits normally** — one telemetry POST at exit. That is the price of
+  the child holding its own current config and its own telemetry window, and
+  it is deliberate — the delivery service counts each of those connections as
+  a real client. A child that never uses the client pays none of it.
+
+  The at-exit drain depends on the child running `at_exit` handlers at all.
+  `Parallel` children do. **Resque children call `exit!` by default**, which
+  skips every `at_exit` handler — so there is no drain and no telemetry POST
+  unless you set `RUN_AT_EXIT_HOOKS=1`. Nothing else about the child changes;
+  it just never flushes the evaluations it collected.
 - In datadir mode a child whose workspace fails to load never dials the
   network: it logs the failure and, if `data_dir_auto_reload` is on, watches
   for a repaired workspace; otherwise the next use retries the load.
