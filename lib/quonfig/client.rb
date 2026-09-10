@@ -584,11 +584,26 @@ module Quonfig
     # threads that do not exist). Reforge, LaunchDarkly, dd-trace-rb,
     # redis-client and connection_pool all do exactly this.
     def drop_inherited_threaded_components!
+      inherited_reporter = @telemetry_reporter
+
       @sse_client = nil
       @poll_supervisor = nil
       @telemetry_reporter = nil
       @datadir_watcher = nil
       @fallback_engage_timer = nil
+
+      # Dropping our reference is not enough for the reporter: its
+      # `Kernel.at_exit { final_drain_on_exit }` closure is process-wide, it
+      # was copied by fork(2), and it still holds a full copy of the PARENT's
+      # un-flushed telemetry window. The reporter's own owner-pid guard is
+      # what makes that closure inert (see TelemetryReporter#start); this
+      # additionally makes the copied window unreachable. Neither stops,
+      # closes, nor joins anything.
+      begin
+        inherited_reporter&.discard_inherited!
+      rescue StandardError => e
+        LOG.debug "Error discarding inherited telemetry reporter: #{e.message}"
+      end
     end
 
     # Replace every aggregator with a fresh, empty one so the child never

@@ -28,6 +28,7 @@ class TestForkSafety < Minitest::Test
   PORT_CHILD_UPDATE  = 4697
   PORT_CHILD_AGGS    = 4698
   PORT_HONEST_STATE  = 4699
+  PORT_ATEXIT        = 4700
 
   # Minimal SSE endpoint that sends one event per connection then FINs. The
   # SDK reconnect loop will redial; we just need to observe "the worker
@@ -141,18 +142,56 @@ class TestForkSafety < Minitest::Test
     end
   end
 
+  # Records every telemetry POST that reaches the TEST process. A forked
+  # child that re-POSTs the parent's window is only visible here — an
+  # in-process transport stub cannot see it, because fork gives the child its
+  # own copy of the stub.
+  class TelemetrySink < WEBrick::HTTPServlet::AbstractServlet
+    @mutex = Mutex.new
+    @posts = []
+
+    class << self
+      def reset!
+        @mutex.synchronize { @posts = [] }
+      end
+
+      def posts
+        @mutex.synchronize { @posts.dup }
+      end
+
+      def record(body)
+        @mutex.synchronize { @posts << body }
+      end
+    end
+
+    def do_POST(request, response)
+      body =
+        begin
+          JSON.parse(request.body)
+        rescue StandardError
+          { 'raw' => request.body }
+        end
+      self.class.record(body)
+      response.status = 200
+      response['Content-Type'] = 'application/json'
+      response.body = '{}'
+    end
+  end
+
   def setup
     super
     OneShotEndpoint.event_id = 0
     OneShotEndpoint.hits = 0
     StreamEndpoint.reset!(envelope_payload('v0', generation: 1))
+    TelemetrySink.reset!
   end
 
-  def start_webrick_server(port, endpoint_class)
+  def start_webrick_server(port, endpoint_class, telemetry: false)
     log_string = StringIO.new
     logger = WEBrick::Log.new(log_string)
     server = WEBrick::HTTPServer.new(Port: port, Logger: logger, AccessLog: [])
     server.mount '/api/v2/sse', endpoint_class
+    server.mount '/api/v1/telemetry', TelemetrySink if telemetry
     [server, log_string]
   end
 
@@ -521,6 +560,71 @@ class TestForkSafety < Minitest::Test
   end
 
   # ------------------------------------------------------------------
+  # T4b — a child that exits NORMALLY must not re-POST the PARENT's
+  # telemetry window.
+  #
+  # `TelemetryReporter#start` registers a process-wide
+  # `Kernel.at_exit { final_drain_on_exit }` closure over the reporter.
+  # fork(2) copies it. Dropping `@telemetry_reporter` in the child does not
+  # unregister it — the closure still holds the inherited reporter, whose
+  # aggregators are a full copy of the parent's un-flushed window. Any child
+  # that exits the normal way (block-form `fork` + `exit`, which is what the
+  # `parallel` gem does) therefore POSTs the parent's data under the parent's
+  # instanceHash, and the parent POSTs it again from its own copy.
+  # ------------------------------------------------------------------
+  def test_child_normal_exit_does_not_reflush_the_parents_telemetry
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_ATEXIT, StreamEndpoint, telemetry: true)
+    server_thread = Thread.new { server.start }
+    client = build_telemetry_client_for_fork_tests(
+      port: PORT_ATEXIT,
+      telemetry_url: "http://127.0.0.1:#{PORT_ATEXIT}"
+    )
+
+    begin
+      assert wait_until(5) { client.get(CONFIG_KEY, nil) == 'v0' },
+             'parent never installed the initial SSE envelope'
+      refute_nil client.telemetry_reporter, 'this test needs a live telemetry reporter in the parent'
+
+      # Dirty the parent's window. None of this belongs to any child.
+      100.times { client.get(CONFIG_KEY, nil, { 'user' => { 'key' => 'u1' } }) }
+
+      # A child that evaluates NOTHING and exits normally.
+      pid = fork_with_normal_exit
+      Process.waitpid(pid)
+      wait_until(3) { !TelemetrySink.posts.empty? } # give a child POST time to land
+
+      child_posts = TelemetrySink.posts
+
+      assert_empty child_posts,
+                   'a normally-exiting child re-POSTed the parent telemetry window ' \
+                   "(#{child_posts.size} POST(s), " \
+                   "evaluations=#{child_posts.sum { |p| telemetry_evaluations_in(p) }}, " \
+                   "instanceHash matches parent=#{child_posts.all? { |p| p['instanceHash'] == client.instance_hash }})"
+
+      # ...and the parent's own flush still arrives, exactly once, with the
+      # full window. The guard must silence the CHILD, not the owner.
+      client.stop
+
+      assert wait_until(5) { TelemetrySink.posts.size == 1 },
+             "expected exactly one telemetry POST from the parent, got #{TelemetrySink.posts.size}"
+      parent_post = TelemetrySink.posts.first
+
+      assert_equal client.instance_hash, parent_post['instanceHash']
+      assert_operator telemetry_evaluations_in(parent_post), :>=, 100,
+                      "the parent's own flush lost evaluations: #{telemetry_evaluations_in(parent_post)}"
+    ensure
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/Initialization did not complete cleanly/])
+    end
+  end
+
+  # ------------------------------------------------------------------
   # T5 — connection_state must never answer :connected when nothing is
   # actually alive. It has to derive from liveness, not from a stored flag
   # left behind by a torn-down session. (This is the diagnostic that let the
@@ -596,6 +700,31 @@ class TestForkSafety < Minitest::Test
     JSON.parse(raw)
   end
 
+  # Fork a child that exits the NORMAL way (`exit`, not `exit!`), so every
+  # inherited `at_exit` handler runs — the `parallel` gem / Resque shape, and
+  # the only shape that exercises the inherited telemetry drain.
+  #
+  # Minitest's own autorun `at_exit` is neutralized inside the child first;
+  # without that the child would re-run this entire suite.
+  def fork_with_normal_exit(&block)
+    Process.fork do
+      block&.call
+      Minitest.class_variable_set(:@@after_run, [])
+      Minitest.singleton_class.send(:define_method, :run) { |*| true }
+      exit 0
+    end
+  end
+
+  # Total evaluations carried by a telemetry POST body.
+  def telemetry_evaluations_in(post)
+    summaries_event = (post['events'] || []).find { |e| e['summaries'] }
+    return 0 unless summaries_event
+
+    summaries_event['summaries']['summaries'].sum do |summary|
+      (summary['counters'] || []).sum { |counter| counter['count'].to_i }
+    end
+  end
+
   def envelope_payload(value, generation:)
     JSON.generate(
       'configs' => [
@@ -649,10 +778,10 @@ class TestForkSafety < Minitest::Test
 
   # Same, but with the telemetry collectors ON (pointed at the local WEBrick
   # server) so T4 has real aggregators to compare across the fork.
-  def build_telemetry_client_for_fork_tests(port:)
+  def build_telemetry_client_for_fork_tests(port:, telemetry_url: nil)
     build_client_for_fork_tests(
       port: port,
-      telemetry_url: "http://127.0.0.1:#{port}/never-listens",
+      telemetry_url: telemetry_url || "http://127.0.0.1:#{port}/never-listens",
       context_upload_mode: :periodic_example,
       collect_evaluation_summaries: true,
       # Long enough that the background reporter never fires during the test.
