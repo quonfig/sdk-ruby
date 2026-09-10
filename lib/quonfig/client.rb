@@ -391,6 +391,12 @@ module Quonfig
     # No-op if the client was already stopped — the customer asked for it to
     # be dead, and a fork must not resurrect it.
     #
+    # Also a no-op in any process that still owns live SDK components, i.e.
+    # the PARENT. Releases 1.0-1.3 documented calling this in the parent as
+    # the workaround for the parent going dark after a fork; on 1.4.0 the
+    # parent's components are alive and such a call would orphan them, so it
+    # is ignored (one debug line). See #live_components_in_this_process?.
+    #
     # The hook does NO I/O: no fetch, no socket, no thread. It throws away
     # everything the child inherited — including the parent's config snapshot
     # — and arms a flag. The child re-initializes on its FIRST use of the
