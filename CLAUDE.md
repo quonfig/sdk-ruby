@@ -52,7 +52,8 @@ all branch on the child stage of `_fork` only.
   one, allocates fresh telemetry + failover aggregators, and sets
   `@fork_rebuild_pending`. Skipped if `stop` was called.
 - **On the child's first use of the client:** `ensure_initialized_after_fork`
-  (called from `get`, `evaluate_details`, `defined?`, `keys`) runs what
+  (called from `get`, `evaluate_details`, `defined?`, `keys`, and the public
+  `store` / `resolver` / `evaluator` / `config_loader` readers) runs what
   `Client.new` runs — its own blocking config fetch under `init_timeout_ms` /
   `on_init_failure`, then its own SSE (or fallback poller) and its own
   telemetry reporter — and logs one info line. **The child never evaluates
@@ -61,6 +62,31 @@ all branch on the child stage of `_fork` only.
   socket, no thread), and `stop` in such a child returns immediately.
   `connection_state` deliberately does NOT trigger the rebuild — a diagnostic
   must not open a socket — and reports `:initializing` while one is pending.
+
+Four rules that keep the lazy rebuild honest (qfg-lv4n.1, second adversarial
+pass):
+
+- **`@fork_rebuild_pending` stays TRUE for the whole rebuild.** It is cleared
+  inside `rebuild_in_child!`, at the point the child has a live path to
+  config — not by the caller before the work. That is what makes concurrent
+  first-use callers block on the mutex instead of sailing past on the
+  unlocked fast path and reading the empty store, and it is what re-arms the
+  rebuild when a non-`StandardError` (`Timeout::ExitException`, rack-timeout,
+  `Thread#kill`) escapes. `@fork_rebuild_owner` is the same-thread guard so a
+  logger that evaluates a config from inside the rebuild cannot deadlock.
+- **`stop` raises `@stopped` BEFORE it queues for `@fork_rebuild_mutex`**, so
+  an in-flight rebuild skips `start_update_channel` and the reporter
+  entirely; the teardown then runs under that lock so it never interleaves
+  with construction.
+- **The failure path is mode-aware.** Network clients start the update
+  channel so SSE can heal; datadir clients must NOT (they have no config
+  loader — every envelope would raise) and instead start the watcher or
+  re-arm the rebuild.
+- **`after_fork_in_child` early-returns in a process that owns live
+  components.** Threads do not survive `fork(2)` and the reporter stamps an
+  owner pid, so this is false in a real child and true in the parent — which
+  makes the 1.0–1.3 "call it in the parent" workaround a harmless no-op
+  instead of an orphaned stream per call.
 
 Two rules the child must never break:
 

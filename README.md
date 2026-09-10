@@ -433,13 +433,19 @@ objects — it never closes the inherited socket, because `fork(2)` duplicates
 the file descriptor and closing the child's copy of a TLS connection would
 tear down the stream the **parent** is still using.
 
+> **Upgrading from 1.3.0 or earlier:** if you added a manual
+> `Quonfig.instance.after_fork_in_child` call **in the parent** as a
+> workaround for the parent going dark, remove it. As of 1.4.0 that call is a
+> no-op in any process that still owns live SDK components, so it will not
+> hurt you — but it is no longer doing anything, and the parent needs no call.
+
 **After a fork, the child re-initializes on its first use of the client,
-exactly like a newly constructed client: it fetches its own config and starts
-its own threads. It does not evaluate from the parent's snapshot.** The hook
-itself does no I/O — it drops what the child inherited and arms the
-re-initialization. So the first call in a forked child pays one fetch, and a
-child that never uses the client costs nothing: no fetch, no stream, no
-thread, no telemetry.
+exactly like a newly constructed client — including its `on_init_failure`
+policy: it fetches its own config and starts its own threads. It does not
+evaluate from the parent's snapshot.** The hook itself does no I/O — it drops
+what the child inherited and arms the re-initialization. So the first call in
+a forked child pays one fetch, and a child that never uses the client costs
+nothing: no fetch, no stream, no thread, no telemetry.
 
 Caveats:
 
@@ -448,12 +454,33 @@ Caveats:
   not go through `Process._fork`), but those execute a new program, so the
   in-process SSE state is moot.
 - The first lookup in a forked child **blocks** on that child's own config
-  fetch, under the same `init_timeout_ms` / `on_init_failure` options a fresh
-  client uses. If that fetch fails with `on_init_failure: :return`, the child
-  serves defaults until its stream or poller lands the first envelope —
-  again, exactly like a fresh client.
+  fetch, under the same `init_timeout_ms` and `on_init_failure` options a
+  fresh client uses. With the default `on_init_failure: :return` a failed
+  fetch logs one line and the child serves defaults until its stream or
+  poller lands the first envelope. With `on_init_failure: :raise` the failure
+  **raises out of that first lookup**, exactly as `Client.new` would, and
+  later lookups keep raising — without re-fetching — until the update channel
+  lands an envelope, at which point the client serves config normally again.
+- **Other threads wait.** Every thread that reaches the client while that
+  first fetch is in flight blocks on it and then sees the fetched config. One
+  fetch, one stream dial, and one telemetry reporter per child, however many
+  threads race the first request.
+- **`connection_state` never triggers the re-initialization** — a diagnostic
+  must not open a socket. A child that has not used the client yet answers
+  `:initializing`, which is exactly what it is; it flips to `:connected` on
+  first use.
 - The child's telemetry aggregators start empty. The parent flushes the data
   it collected before the fork; the child reports only its own.
+- **Per-job forking pays per job.** A Resque-style worker that forks a child
+  per job (or `Parallel.map` with one row per process) pays, in each child
+  that touches the client, one config fetch, one SSE dial, and one telemetry
+  POST at exit. That is the price of the child holding its own current config
+  and its own telemetry window, and it is deliberate — the delivery service
+  counts each of those connections as a real client. A child that never uses
+  the client pays none of it.
+- In datadir mode a child whose workspace fails to load never dials the
+  network: it logs the failure and, if `data_dir_auto_reload` is on, watches
+  for a repaired workspace; otherwise the next use retries the load.
 
 ### Puma (clustered mode)
 
