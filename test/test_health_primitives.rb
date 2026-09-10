@@ -239,6 +239,18 @@ class TestHealthPrimitives < Minitest::Test
     client.instance_variable_set(:@config_loader, fake)
   end
 
+  # qfg-lv4n.1: `connection_state` derives from LIVENESS, not from the stored
+  # @sse_state flag — a network client that is supposed to be holding an SSE
+  # stream cannot report :connected unless a worker is actually running.
+  # These tests drive the state machine's edges by hand (there is no real SSE
+  # worker), so they need a stand-in for the live one.
+  def stub_live_sse!(client)
+    fake = Object.new
+    def fake.alive? = true
+    def fake.close = nil
+    client.instance_variable_set(:@sse_client, fake)
+  end
+
   def test_fallback_engages_immediately_on_initial_sse_error
     # No prior :connected — the SDK never reached SSE, so the fallback
     # engages now (initial-fail path, same as initialize_network_mode's
@@ -287,6 +299,7 @@ class TestHealthPrimitives < Minitest::Test
     # channels live.
     client = make_client(poll_interval: 0.05)
     stub_config_loader!(client)
+    stub_live_sse!(client)
 
     client.send(:handle_sse_state_change, :connected)
     client.send(:handle_sse_state_change, :error)
@@ -311,6 +324,7 @@ class TestHealthPrimitives < Minitest::Test
     # engage at all.
     client = make_client(poll_interval: 0.1)
     stub_config_loader!(client)
+    stub_live_sse!(client)
 
     client.send(:handle_sse_state_change, :connected)
     client.send(:handle_sse_state_change, :error)

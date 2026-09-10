@@ -21,14 +21,16 @@ module Quonfig
     LOG = Quonfig::InternalLogger.new(self)
 
     # qfg-ryov: instance registry for the Process._fork hook. Every live
-    # Client is tracked here so the hook can fan out before_fork_in_parent /
-    # after_fork_in_child across all of them without the customer needing to
-    # name a specific instance. ObjectSpace::WeakMap means a Client that goes
-    # out of scope is GC'd without leaking through this registry. Stopped
-    # Clients stay in the registry until GC; both fork hooks early-return on
-    # +@stopped+ so a stopped instance is effectively a no-op. (We don't use
-    # WeakMap#delete because it was added in Ruby 3.3 and the matrix still
-    # includes 3.2.)
+    # Client is tracked here so the hook can fan out after_fork_in_child
+    # across all of them without the customer needing to name a specific
+    # instance. ObjectSpace::WeakMap means a Client that goes out of scope is
+    # GC'd without leaking through this registry. Stopped Clients stay in the
+    # registry until GC; after_fork_in_child early-returns on +@stopped+ so a
+    # stopped instance is effectively a no-op. (We don't use WeakMap#delete
+    # because it was added in Ruby 3.3 and the matrix still includes 3.2.)
+    #
+    # The registry is read in the CHILD only (qfg-lv4n.1) — the hook does
+    # nothing on the parent side, so no lock is taken across the syscall.
     @instances = ObjectSpace::WeakMap.new
     @instances_mutex = Mutex.new
 
@@ -316,47 +318,82 @@ module Quonfig
       tear_down_threaded_components!
     end
 
-    # qfg-ryov: pre-fork hook. Close the SSE worker, polling supervisor,
-    # telemetry reporter, and any fallback-engage timer. Idempotent — calling
-    # twice is safe. Does NOT set @stopped: the client is still expected to
-    # be usable post-fork via after_fork_in_child.
+    # @deprecated Since 1.4.0 the +Process._fork+ hook NO LONGER CALLS THIS.
+    #   A fork must not disturb the process that forked: the parent keeps its
+    #   SSE stream, its poller, and its telemetry reporter, and keeps serving
+    #   live config (qfg-lv4n.1). This method is retained for semver and for
+    #   the Ruby 3.0 manual-wiring path, where a customer who genuinely wants
+    #   the parent torn down before a fork can still call it. Prefer +stop+
+    #   if you want the client dead.
     #
-    # Why this matters: Ruby threads do not survive fork(2). If we let the
-    # child inherit a live Net::HTTP socket, both processes read from the
-    # same fd and corrupt each other's bytes. Closing in the parent before
-    # fork is the only safe shape.
+    # Closes the SSE worker, polling supervisor, telemetry reporter, datadir
+    # watcher, and any fallback-engage timer. Idempotent. Does NOT set
+    # +@stopped+, so +after_fork_in_child+ can still rebuild.
     def before_fork_in_parent
       return if @stopped
 
       tear_down_threaded_components!
     end
 
-    # qfg-ryov: post-fork (in child) hook. Re-establish whatever threaded
-    # components the client had pre-fork. No-op if the client was already
-    # stopped (the customer asked for it to be dead — do not resurrect),
-    # or if the client is in datadir mode (no threaded components to start).
+    # Post-fork hook, run IN THE CHILD ONLY (see Quonfig::ForkSafety).
+    #
+    # Ruby threads do not survive fork(2), so everything threaded the child
+    # inherited is a dead reference. The child drops those references and
+    # rebuilds from scratch — matching Reforge's +Reforge.fork+, which simply
+    # constructs a brand-new client and lets the inherited one be collected.
+    #
+    # Two things we deliberately do NOT do to the inherited objects:
+    #
+    # * **Never close the inherited SSE socket.** fork(2) duplicates the fd,
+    #   so the child's copy points at the connection the PARENT is still
+    #   streaming on. Closing a TLS socket writes a +close_notify+ alert onto
+    #   that shared connection and kills the parent's stream. Dropping the
+    #   reference leaves the parent's fd untouched.
+    # * **Never join an inherited thread.** The thread does not exist in the
+    #   child, so a +join+/+stop+ that waits on it blocks forever (see
+    #   LaunchDarkly ruby-server-sdk PR #430: "close blocks forever, because
+    #   EventProcessor#stop waits for a dispatcher thread that does not
+    #   exist").
+    #
+    # No-op if the client was already stopped — the customer asked for it to
+    # be dead, and a fork must not resurrect it.
     def after_fork_in_child
       return if @stopped
 
+      # The inherited Mutex may be held by a thread that no longer exists.
+      # Only this thread exists in a fresh child, so swapping it is safe.
+      @state_mutex = Mutex.new
+      drop_inherited_threaded_components!
+
       if @options.datadir
         start_datadir_watcher if @options.data_dir_auto_reload
+        log_child_rebuild(@datadir_watcher.nil? ? [] : ['datadir-watcher'])
         return
       end
 
       return if @config_loader.nil? # never finished network init (e.g. invalid key)
 
-      # SSE state machine carries flags that no longer apply in the child
-      # (the parent had connected, the parent had errored, etc.). Reset.
-      @state_mutex.synchronize do
-        @sse_state = :idle
-        @sse_ever_connected = false
-        @sse_terminal_failure = false
-      end
+      # SSE state machine carries flags that describe the PARENT's session
+      # (it had connected, it had errored, ...). None of them apply here.
+      @sse_state = :idle
+      @sse_ever_connected = false
+      @sse_terminal_failure = false
+      @sse_error_callback = nil
 
+      # Fresh aggregators. The parent flushes its own copy; a child that
+      # flushed inherited data would double-report it.
+      rebuild_aggregators_in_child!
+
+      rebuilt = []
       sse_started = @options.enable_sse && start_sse
-      start_polling if @options.fallback_poll_enabled && !sse_started
+      rebuilt << 'sse' if sse_started
+      if @options.fallback_poll_enabled && !sse_started
+        start_polling
+        rebuilt << 'polling' if @poll_supervisor
+      end
+      rebuilt << 'telemetry' if @telemetry_reporter
 
-      restart_telemetry_in_child
+      log_child_rebuild(rebuilt)
     end
 
     # quonfig_sdk_worker_restart_total counter (Tier 1 supervisor contract).
@@ -410,6 +447,12 @@ module Quonfig
       @state_mutex.synchronize do
         next :disconnected if @stopped
         next :falling_back if @poll_supervisor&.alive?
+        # Liveness beats the stored flag (qfg-lv4n.1). A client whose SSE
+        # session was torn down keeps a stale @sse_state; answering
+        # :connected off that flag is how a dark client reported healthy for
+        # 13 days. If this client is supposed to have a live SSE worker and
+        # does not, it is disconnected — whatever the flag says.
+        next :disconnected if sse_channel_expected? && !sse_worker_alive?
         next :connected if @sse_state == :connected
         next :disconnected if @sse_state == :error
 
@@ -471,10 +514,39 @@ module Quonfig
 
     private
 
-    # Close every threaded component and drop its reference. Used by both
-    # +stop+ (where @stopped is also flipped) and +before_fork_in_parent+
-    # (where @stopped is left alone so the child can restart).
+    # True when this client is a network-mode client that asked for SSE, i.e.
+    # one that is SUPPOSED to be holding a live stream. Datadir clients and
+    # store-injected (test/bootstrap) clients never are, so their
+    # +connection_state+ keeps deriving from envelope installs alone.
+    def sse_channel_expected?
+      return false if @options.datadir
+      return false unless @options.enable_sse
+
+      !@config_loader.nil?
+    end
+
+    # Is there an SSE worker thread actually running right now? Note this
+    # stays true across a reconnect: the worker owns the retry loop, so a
+    # blip does not read as "no channel".
+    def sse_worker_alive?
+      sse = @sse_client
+      return false if sse.nil?
+      return true unless sse.respond_to?(:alive?)
+
+      sse.alive?
+    end
+
+    # Close every threaded component and drop its reference. Used by +stop+
+    # (where @stopped is also flipped) and by the deprecated manual
+    # +before_fork_in_parent+ (where @stopped is left alone). NOT reachable
+    # from the fork hook any more — a fork never touches the process that
+    # forked (qfg-lv4n.1).
     def tear_down_threaded_components!
+      # The SSE state machine describes a session that no longer exists.
+      # Leaving @sse_state == :connected behind is how `connection_state`
+      # came to answer :connected for a client with nothing alive.
+      @state_mutex.synchronize { @sse_state = :idle }
+
       begin
         @sse_client&.close
       rescue StandardError => e
@@ -506,11 +578,41 @@ module Quonfig
       @datadir_watcher = nil
     end
 
-    # Rebuild the telemetry reporter in the child after fork. Mirrors the
-    # original initialize_telemetry path — fresh aggregators, fresh reporter.
-    def restart_telemetry_in_child
+    # Drop every inherited threaded component WITHOUT closing, stopping, or
+    # joining it. See the comment on +after_fork_in_child+ for why touching
+    # these objects in the child is actively harmful (shared socket fds,
+    # threads that do not exist). Reforge, LaunchDarkly, dd-trace-rb,
+    # redis-client and connection_pool all do exactly this.
+    def drop_inherited_threaded_components!
+      @sse_client = nil
+      @poll_supervisor = nil
+      @telemetry_reporter = nil
+      @datadir_watcher = nil
+      @fallback_engage_timer = nil
+    end
+
+    # Replace every aggregator with a fresh, empty one so the child never
+    # re-reports data the parent collected (and is still going to flush from
+    # its own copy). Mirrors what a brand-new Client.new would allocate.
+    def rebuild_aggregators_in_child!
+      @failover_aggregator = Quonfig::Telemetry::FailoverAggregator.new
+      # The ConfigLoader records hedge/guard/resolved-from at its failover
+      # call sites, so it has to point at the child's aggregator too — the
+      # inherited one is now the parent's private object.
+      @config_loader.failover_aggregator = @failover_aggregator if @config_loader.respond_to?(:failover_aggregator=)
+
+      # initialize_telemetry allocates fresh context/example/summaries
+      # aggregators and a fresh reporter.
       @telemetry_reporter = nil
       initialize_telemetry
+    end
+
+    # One line, at info, so a customer can see in their logs that the SDK
+    # noticed the fork and rebuilt. Deliberately not a warning: forking is
+    # normal and expected.
+    def log_child_rebuild(components)
+      list = components.empty? ? 'none' : components.join(',')
+      LOG.info "[quonfig] rebuilt after fork in child pid=#{Process.pid} components=#{list}"
     end
 
     # Stamp +last_successful_refresh+ at install time. Called by every code
@@ -1282,32 +1384,40 @@ module Quonfig
     end
   end
 
-  # qfg-ryov: hook into Process._fork so customers using Puma's clustered
-  # mode (or any preload/fork-worker server) don't have to wire
-  # +before_fork+/+on_worker_boot+ manually. Ruby 3.1+ routes every
-  # +Kernel#fork+/+Process.fork+ call through +Process._fork+, so a single
-  # prepend covers them all.
+  # qfg-ryov / qfg-lv4n.1: hook into Process._fork so customers using Puma's
+  # clustered mode (or any preload/fork-worker server, or a gem that forks
+  # inside a job) don't have to wire +before_fork+/+on_worker_boot+ manually.
+  # Ruby 3.1+ routes every +Kernel#fork+/+Process.fork+ call through
+  # +Process._fork+, so a single prepend covers them all.
   #
   # Process._fork's contract:
   #   - Called in the parent process before the fork syscall.
   #   - Returns 0 in the child, child's pid in the parent.
   #   - +super+ performs the actual fork.
   #
-  # The parent's view: SSE/polling/telemetry threads are torn down before
-  # the syscall so the child does not inherit a live Net::HTTP socket fd
-  # (which would corrupt both sides). The parent does NOT auto-restart —
-  # that mirrors the Puma master use case where the master process no
-  # longer serves requests after spawning workers.
+  # **The hook is child-only.** Nothing happens in the parent — not before
+  # the syscall, not after it. A fork is somebody else's business; the
+  # process that forked keeps its SSE stream, its poller, its telemetry
+  # reporter, and its live config. This is Reforge's model (+Reforge.fork+
+  # builds a new client in the child and never touches the old one) and
+  # matches dd-trace-rb, redis-client and connection_pool, which all branch
+  # on the child stage of +_fork+ only.
+  #
+  # It replaces the qfg-ryov shape, which tore the parent down before the
+  # syscall on the theory that the child must not inherit a live socket fd.
+  # That was wrong twice over: the child never touches the inherited fd (it
+  # drops the reference — see Client#after_fork_in_child), and a Sidekiq
+  # parent that forks a worker and keeps evaluating went dark for 13 days in
+  # production.
   module ForkSafety
     def _fork
-      Quonfig::Client.each_instance(&:before_fork_in_parent)
       pid = super
       Quonfig::Client.each_instance(&:after_fork_in_child) if pid.zero?
       pid
     rescue StandardError => e
       # Fork-hook failures must never break the customer's fork. Worst case
-      # the child inherits dead SSE threads (the pre-qfg-ryov behavior) —
-      # bad, but recoverable. Crashing the fork itself is not.
+      # the child holds dropped references and no live threads — bad, but
+      # recoverable. Crashing the fork itself is not.
       Quonfig::Client::LOG.error "Quonfig fork hook error: #{e.class}: #{e.message}"
       raise if pid.nil? # super never returned — propagate fork failures
 

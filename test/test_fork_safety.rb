@@ -241,7 +241,33 @@ class TestForkSafety < Minitest::Test
     ensure
       client.stop
       server.stop
-      assert_logged([/Initialization did not complete cleanly/, /rebuilt after fork/])
+      assert_logged([/Initialization did not complete cleanly/])
+    end
+  end
+
+  # The child logs exactly one info line saying it rebuilt, so a customer
+  # grepping their logs can see the SDK noticed the fork.
+  def test_after_fork_in_child_logs_one_info_line
+    server, = start_webrick_server(PORT_E2E, OneShotEndpoint)
+    Thread.new { server.start }
+
+    client = build_client_for_fork_tests(port: PORT_E2E)
+    original_level = Quonfig::Client::LOG.level
+    begin
+      wait_for -> { client.connection_state == :connected }, max_wait: 5
+
+      Quonfig::Client::LOG.level = :info
+      client.before_fork_in_parent
+      client.after_fork_in_child
+
+      assert_logged([
+                      /Initialization did not complete cleanly/,
+                      /rebuilt after fork in child pid=#{Process.pid} components=sse/
+                    ])
+    ensure
+      Quonfig::Client::LOG.level = original_level
+      client.stop
+      server.stop
     end
   end
 

@@ -129,6 +129,15 @@ module Quonfig
       @worker = Thread.new { run_loop(&on_envelope) }
     end
 
+    # True while the worker thread that owns the stream (and its reconnect
+    # loop) is running. Stays true across a reconnect — the worker owns the
+    # retry, so a blip is not "no channel". Used by Client#connection_state
+    # so that diagnostic derives from liveness rather than a stored flag
+    # (qfg-lv4n.1).
+    def alive?
+      @worker&.alive? || false
+    end
+
     # Shut down. Interrupts the in-flight stream by closing the underlying
     # socket from this thread — the worker thread observes the resulting
     # IOError, sees @stopped == true, and exits cleanly.
