@@ -39,6 +39,7 @@ class TestForkSafety < Minitest::Test
   PORT_CONCURRENT    = 4705
   PORT_REARM         = 4706
   PORT_STOP_RACE     = 4707
+  PORT_PARENT_CALL   = 4708
   PORT_DATADIR_SSE   = 4709
   PORT_RAISE         = 4711
   PORT_RAISE_SSE     = 4712
@@ -1342,6 +1343,74 @@ class TestForkSafety < Minitest::Test
       server.stop
       server_thread&.join(2)
       FileUtils.remove_entry(workspace) if workspace && Dir.exist?(workspace)
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # D4 — `after_fork_in_child` called in the PARENT must be a no-op.
+  #
+  # The 1.0-1.3 README told customers whose parent keeps evaluating to call
+  # `Quonfig.instance.after_fork_in_child` in the parent after `fork`
+  # returned; that is the incident customer's documented workaround and it is
+  # still out there in production code. On 1.4.0 the parent's components are
+  # ALIVE, so each such call orphans a live SSE worker and its stream, zeroes
+  # the store, and stops the owner's telemetry reporter.
+  # ------------------------------------------------------------------
+  def test_after_fork_in_child_called_in_the_parent_is_a_noop
+    server, = start_webrick_server(PORT_PARENT_CALL, StreamEndpoint, telemetry: true, configs: true)
+    server_thread = Thread.new { server.start }
+    client = build_telemetry_client_for_fork_tests(
+      port: PORT_PARENT_CALL,
+      telemetry_url: "http://127.0.0.1:#{PORT_PARENT_CALL}"
+    )
+
+    begin
+      assert wait_until(5) { client.get(CONFIG_KEY, nil) == 'v0' },
+             'parent never installed the initial envelope'
+      assert wait_until(5) { StreamEndpoint.live_streams >= 1 }, 'parent never opened its SSE stream'
+
+      reporter = client.telemetry_reporter
+      refute_nil reporter, 'this test needs a live telemetry reporter in the parent'
+      reporter_thread = reporter.instance_variable_get(:@thread)
+      assert reporter_thread&.alive?, 'this test needs a RUNNING telemetry reporter in the parent'
+
+      sse_before = client.instance_variable_get(:@sse_client)
+      worker_before = sse_before.instance_variable_get(:@worker)
+      sse_hits_before = StreamEndpoint.hits
+      config_hits_before = ConfigsEndpoint.hits
+      threads_before = sse_worker_thread_count
+
+      # The documented 1.3.0 workaround, three times over.
+      3.times { client.after_fork_in_child }
+
+      assert_equal 1, client.instance_variable_get(:@store).keys.size,
+                   'a parent-side after_fork_in_child wiped the live store'
+      assert_equal 'v0', client.get(CONFIG_KEY, nil)
+      assert_same sse_before, client.instance_variable_get(:@sse_client),
+                  'a parent-side after_fork_in_child dropped the live SSE client'
+      assert worker_before.alive?, 'the live SSE worker must survive a parent-side call'
+      assert_same reporter, client.telemetry_reporter
+      assert reporter_thread.alive?,
+             'a parent-side after_fork_in_child stopped the OWNER telemetry reporter ' \
+             '(discard_inherited! must never run in the owning process)'
+      assert_equal threads_before, sse_worker_thread_count,
+                   'a parent-side after_fork_in_child orphaned SSE worker threads'
+      assert_equal sse_hits_before, StreamEndpoint.hits,
+                   'a parent-side after_fork_in_child opened extra SSE streams'
+      assert_equal config_hits_before, ConfigsEndpoint.hits,
+                   'a parent-side after_fork_in_child forced the live parent to re-fetch'
+
+      # The live stream still delivers into the store the parent reads from.
+      StreamEndpoint.push(envelope_payload('v1', generation: 2))
+
+      assert wait_until(6) { client.get(CONFIG_KEY, nil) == 'v1' },
+             'the parent stopped receiving SSE updates after a parent-side after_fork_in_child'
+    ensure
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/explicit api_urls disables automatic failover/])
     end
   end
 

@@ -400,6 +400,7 @@ module Quonfig
     # most of them in a `Parallel.map` batch, costs nothing at all.
     def after_fork_in_child
       return if @stopped
+      return if live_components_in_this_process?
 
       # The inherited Mutexes may be held by threads that no longer exist.
       # Only this thread exists in a fresh child, so swapping them is safe.
@@ -556,6 +557,30 @@ module Quonfig
     end
 
     private
+
+    # True when THIS process still owns running SDK components — i.e. we are
+    # the parent, not a fork(2) child.
+    #
+    # Ruby threads do not survive fork(2), so in a real child every inherited
+    # worker's Thread is dead and the inherited reporter's +owner_pid+ is
+    # somebody else's; all three checks answer false. In the process that
+    # forked they answer true.
+    #
+    # This is what makes a stray +after_fork_in_child+ call in the PARENT a
+    # no-op. Releases 1.0-1.3 documented exactly that call as the workaround
+    # for the parent-keeps-evaluating topology, and that code is still out
+    # there: on 1.4.0 it would orphan the live SSE worker and its stream,
+    # zero the store, and stop the owner's telemetry reporter (qfg-lv4n.1 D4).
+    def live_components_in_this_process?
+      return false unless sse_worker_alive? ||
+                          @poll_supervisor&.alive? ||
+                          (@telemetry_reporter && @telemetry_reporter.owner_pid == Process.pid)
+
+      LOG.debug '[quonfig] after_fork_in_child called in a process that still owns live SDK ' \
+                "components (pid=#{Process.pid}); ignoring. Since 1.4.0 a fork never touches the " \
+                'process that forked, and the child-side rebuild is automatic on Ruby 3.1+.'
+      true
+    end
 
     # True when this client is a network-mode client that asked for SSE, i.e.
     # one that is SUPPOSED to be holding a live stream. Datadir clients and
