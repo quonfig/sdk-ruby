@@ -649,16 +649,30 @@ class TestForkSafety < Minitest::Test
 
       # (b) a child whose only interaction is `stop`.
       report = fork_and_capture do
+        # Sampled BEFORE `stop` — and before anything else touches the
+        # client. The server-side counters below cannot see a worker that was
+        # started but has not dialed yet, and a child that exits fast beats
+        # its own SSE worker to the socket, which is exactly why they passed
+        # against an eager post-fork rebuild. Counting threads inside the
+        # child is what pins "nothing was started": a fresh child has exactly
+        # one thread, its main one.
+        threads = Thread.list.size
+        thread_names = Thread.list.map { |t| t.name || t.inspect }
         started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         client.stop
         { 'stop_seconds' => Process.clock_gettime(Process::CLOCK_MONOTONIC) - started,
-          'sse_nil' => client.instance_variable_get(:@sse_client).nil? }
+          'sse_nil' => client.instance_variable_get(:@sse_client).nil?,
+          'threads' => threads,
+          'thread_names' => thread_names }
       end
 
       refute report['error'], "child errored: #{report['error']}"
       assert_operator report['stop_seconds'], :<, 2.0,
                       "stop in an unused child must return promptly (took #{report['stop_seconds']}s)"
       assert report['sse_nil'], 'stop must not have started anything in an unused child'
+      assert_equal 1, report['threads'],
+                   'a child that never used the client must run NO SDK threads ' \
+                   "(saw #{report['thread_names'].inspect})"
 
       # Neither child may have asked the server for a thing.
       assert_equal config_hits_before, ConfigsEndpoint.hits,
