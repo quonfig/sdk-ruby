@@ -43,13 +43,24 @@ all branch on the child stage of `_fork` only.
   The SSE stream, poller, telemetry reporter, and datadir watcher all keep
   running, so a process that forks workers and keeps evaluating stays
   current.
-- **In the child, after the syscall:** `after_fork_in_child` drops the
-  inherited references (`@sse_client`, `@poll_supervisor`,
+- **In the child, after the syscall:** `after_fork_in_child` does NO I/O. It
+  drops the inherited references (`@sse_client`, `@poll_supervisor`,
   `@telemetry_reporter`, `@datadir_watcher`, `@fallback_engage_timer`)
-  **without** calling `close`, `stop`, or `join` on them, swaps in a fresh
-  `@state_mutex`, resets the SSE state machine, allocates fresh telemetry +
-  failover aggregators, and starts fresh threads. One info line is logged.
-  Skipped if `stop` was called.
+  **without** calling `close`, `stop`, or `join` on them, swaps in fresh
+  mutexes, resets the SSE state machine, replaces `@store` (plus the
+  evaluator, resolver, and config loader that read it) with a brand-new empty
+  one, allocates fresh telemetry + failover aggregators, and sets
+  `@fork_rebuild_pending`. Skipped if `stop` was called.
+- **On the child's first use of the client:** `ensure_initialized_after_fork`
+  (called from `get`, `evaluate_details`, `defined?`, `keys`) runs what
+  `Client.new` runs — its own blocking config fetch under `init_timeout_ms` /
+  `on_init_failure`, then its own SSE (or fallback poller) and its own
+  telemetry reporter — and logs one info line. **The child never evaluates
+  from the parent's config snapshot**: its store starts empty and it fetches
+  its own. A child that never uses the client costs nothing (no fetch, no
+  socket, no thread), and `stop` in such a child returns immediately.
+  `connection_state` deliberately does NOT trigger the rebuild — a diagnostic
+  must not open a socket — and reports `:initializing` while one is pending.
 
 Two rules the child must never break:
 

@@ -210,11 +210,12 @@ Default is `false`; datadir mode is silent until you opt in.
 
 The auto-reload watcher uses a background thread, which — like any Ruby
 thread — does not survive `fork(2)`. **You do not need to wire this up
-manually on Ruby 3.1+.** The SDK's `Process._fork` hook (see [Rails
-integration](#rails-integration) below) starts a fresh watcher in each child
-after fork. The parent's watcher is left alone and keeps working. This covers
-Puma clustered mode, Unicorn, Resque, Spring, and manual `fork { ... }`
-calls — including a `fork` inside a Sidekiq job.
+manually on Ruby 3.1+.** After a fork, the child re-loads the workspace from
+disk and registers a fresh watcher on its first use of the client (see [Rails
+integration](#rails-integration) below); a child that never uses the client
+starts no watcher at all. The parent's watcher is left alone and keeps
+working. This covers Puma clustered mode, Unicorn, Resque, Spring, and manual
+`fork { ... }` calls — including a `fork` inside a Sidekiq job.
 
 On Ruby 3.0 (no `Process._fork`), follow the manual `on_worker_boot` pattern
 in the [Rails integration](#rails-integration) section — `Quonfig.fork`
@@ -418,10 +419,9 @@ threads do not survive `fork(2)`, so a child process inherits references to
 threads that no longer exist and silently stops receiving live updates.
 
 **On Ruby 3.1+ the SDK installs a `Process._fork` hook at load time** that
-rebuilds those threads in the child. This covers any `Process.fork` /
-`Kernel#fork` path — Puma's clustered mode, Unicorn, Spring, Resque, a
-`fork { ... }` inside a Sidekiq job, and the `parallel` gem. **No customer
-wiring is required.**
+handles this for you. It covers any `Process.fork` / `Kernel#fork` path —
+Puma's clustered mode, Unicorn, Spring, Resque, a `fork { ... }` inside a
+Sidekiq job, and the `parallel` gem. **No customer wiring is required.**
 
 **The hook is child-only. A fork never touches the process that forked.**
 The parent keeps its SSE stream, its poller, its telemetry reporter, and its
@@ -433,12 +433,25 @@ objects — it never closes the inherited socket, because `fork(2)` duplicates
 the file descriptor and closing the child's copy of a TLS connection would
 tear down the stream the **parent** is still using.
 
+**After a fork, the child re-initializes on its first use of the client,
+exactly like a newly constructed client: it fetches its own config and starts
+its own threads. It does not evaluate from the parent's snapshot.** The hook
+itself does no I/O — it drops what the child inherited and arms the
+re-initialization. So the first call in a forked child pays one fetch, and a
+child that never uses the client costs nothing: no fetch, no stream, no
+thread, no telemetry.
+
 Caveats:
 
 - Ruby 3.0 has no hookable choke point — fall back to manual wiring (below).
 - `system("fork-and-exec ...")` and `Process.spawn` are not covered (they do
   not go through `Process._fork`), but those execute a new program, so the
   in-process SSE state is moot.
+- The first lookup in a forked child **blocks** on that child's own config
+  fetch, under the same `init_timeout_ms` / `on_init_failure` options a fresh
+  client uses. If that fetch fails with `on_init_failure: :return`, the child
+  serves defaults until its stream or poller lands the first envelope —
+  again, exactly like a fresh client.
 - The child's telemetry aggregators start empty. The parent flushes the data
   it collected before the fork; the child reports only its own.
 
@@ -454,10 +467,11 @@ Quonfig.init(Quonfig::Options.new(sdk_key: ENV.fetch('QUONFIG_BACKEND_SDK_KEY'))
 ```
 
 If you use SemanticLogger you still need to reopen it in each worker — but
-do **not** call `Quonfig.fork` alongside it on 3.1+. The hook has already
-rebuilt the client by the time `on_worker_boot` runs, so a second rebuild
-leaves the worker holding two live SSE streams and two telemetry reporters,
-and the orphaned pair is never stopped:
+leave `Quonfig.fork` out of that block on 3.1+. The SDK has already handled
+the fork by the time `on_worker_boot` runs, so calling it there is
+unnecessary: it discards the client the hook prepared and builds a second one
+in its place (and if the worker has already used the client, the first one's
+stream and reporter are orphaned):
 
 ```ruby
 # config/puma.rb (Ruby 3.1+)

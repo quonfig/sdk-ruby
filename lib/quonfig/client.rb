@@ -84,6 +84,11 @@ module Quonfig
       @sse_ever_connected = false
       @fallback_engage_timer = nil
       @sse_terminal_failure = false
+      # Post-fork lazy re-initialization (qfg-lv4n.1). Set by
+      # +after_fork_in_child+; cleared by the first use of the client in the
+      # child. See #ensure_initialized_after_fork.
+      @fork_rebuild_pending = false
+      @fork_rebuild_mutex = Mutex.new
 
       # If the caller injected a store, we're in test/bootstrap mode; skip I/O.
       return if store
@@ -105,6 +110,7 @@ module Quonfig
     # ---- Lookup --------------------------------------------------------
 
     def get(key, default = NO_DEFAULT_PROVIDED, jit_context = NO_DEFAULT_PROVIDED)
+      ensure_initialized_after_fork
       ctx = build_context(jit_context)
       record_context_for_telemetry(ctx)
       result =
@@ -188,10 +194,12 @@ module Quonfig
     end
 
     def defined?(key)
+      ensure_initialized_after_fork
       !@store.get(key).nil?
     end
 
     def keys
+      ensure_initialized_after_fork
       @store.keys
     end
 
@@ -315,6 +323,9 @@ module Quonfig
 
     def stop
       @stopped = true
+      # A child that never used the client must be able to stop it without
+      # paying for a re-initialization it never asked for.
+      @fork_rebuild_pending = false
       tear_down_threaded_components!
     end
 
@@ -357,32 +368,21 @@ module Quonfig
     #
     # No-op if the client was already stopped — the customer asked for it to
     # be dead, and a fork must not resurrect it.
+    #
+    # The hook does NO I/O: no fetch, no socket, no thread. It throws away
+    # everything the child inherited — including the parent's config snapshot
+    # — and arms a flag. The child re-initializes on its FIRST use of the
+    # client (see #ensure_initialized_after_fork), exactly like a newly
+    # constructed client would. A child that never uses the client, which is
+    # most of them in a `Parallel.map` batch, costs nothing at all.
     def after_fork_in_child
       return if @stopped
 
-      # The inherited Mutex may be held by a thread that no longer exists.
-      # Only this thread exists in a fresh child, so swapping it is safe.
+      # The inherited Mutexes may be held by threads that no longer exist.
+      # Only this thread exists in a fresh child, so swapping them is safe.
       @state_mutex = Mutex.new
+      @fork_rebuild_mutex = Mutex.new
       drop_inherited_threaded_components!
-
-      if @options.datadir
-        # Datadir + an SDK key emits telemetry (qfg-5x9x, since 1.3.0), so the
-        # datadir child needs the same fresh aggregators and reporter as a
-        # network child — otherwise it records nothing of its own for the rest
-        # of its life (qfg-vquv). initialize_telemetry applies exactly the
-        # gating a fresh Client.new would: no SDK key, no aggregators, no
-        # reporter.
-        rebuild_aggregators_in_child!
-
-        rebuilt = []
-        start_datadir_watcher if @options.data_dir_auto_reload
-        rebuilt << 'datadir-watcher' if @datadir_watcher
-        rebuilt << 'telemetry' if @telemetry_reporter
-        log_child_rebuild(rebuilt)
-        return
-      end
-
-      return if @config_loader.nil? # never finished network init (e.g. invalid key)
 
       # SSE state machine carries flags that describe the PARENT's session
       # (it had connected, it had errored, ...). None of them apply here.
@@ -391,20 +391,65 @@ module Quonfig
       @sse_terminal_failure = false
       @sse_error_callback = nil
 
+      # A client that never finished network init has nothing to rebuild.
+      return if @config_loader.nil? && !@options.datadir
+
+      # A brand-new, EMPTY store. The child must not evaluate from whatever
+      # snapshot the parent happened to hold at the instant of the fork: it
+      # fetches (or loads) its own on first use.
+      reset_store_in_child!
+
       # Fresh aggregators. The parent flushes its own copy; a child that
-      # flushed inherited data would double-report it.
+      # flushed inherited data would double-report it. The reporter is BUILT
+      # here (so the child's config loader points at the child's failover
+      # aggregator) but NOT started — starting it is I/O, and that waits for
+      # first use.
       rebuild_aggregators_in_child!
 
-      rebuilt = []
-      sse_started = @options.enable_sse && start_sse
-      rebuilt << 'sse' if sse_started
-      if @options.fallback_poll_enabled && !sse_started
-        start_polling
-        rebuilt << 'polling' if @poll_supervisor
-      end
-      rebuilt << 'telemetry' if @telemetry_reporter
+      @forked_in_pid = Process.pid
+      @fork_rebuild_pending = true
+    end
 
-      log_child_rebuild(rebuilt)
+    # Lazy post-fork re-initialization. Called from every read entry point
+    # (+get+, +evaluate_details+, +defined?+, +keys+) — the flag read is a
+    # plain boolean, so the steady-state cost is one comparison per lookup.
+    #
+    # The first caller in the child does what +Client.new+ does: its own
+    # config fetch under the configured init timeout and +on_init_failure+
+    # policy, then its own SSE stream (or fallback poller) and its own
+    # telemetry reporter. It BLOCKS, so that first lookup already reflects
+    # the child's own current config.
+    #
+    # +connection_state+ deliberately does NOT trigger this: a diagnostic
+    # must never open a socket. It reports +:initializing+ while a rebuild is
+    # pending, which is exactly what the client is.
+    def ensure_initialized_after_fork
+      return unless @fork_rebuild_pending
+
+      @fork_rebuild_mutex.synchronize do
+        return unless @fork_rebuild_pending
+
+        # Cleared before the work, not after: a failed re-initialization must
+        # not turn every subsequent lookup into another blocking fetch.
+        @fork_rebuild_pending = false
+        return if @stopped
+
+        begin
+          rebuild_in_child!
+        rescue StandardError => e
+          # A fork must never break the customer's process. Unlike
+          # Client.new — which is allowed to raise under
+          # on_init_failure: :raise — this runs inside a `get`, so it logs
+          # and leaves the client serving defaults until the live channel
+          # (started below) heals the store.
+          LOG.error "[quonfig] post-fork re-initialization failed: #{e.class}: #{e.message}"
+          begin
+            start_update_channel if @sse_client.nil? && @poll_supervisor.nil?
+          rescue StandardError => inner
+            LOG.error "[quonfig] post-fork update channel failed to start: #{inner.class}: #{inner.message}"
+          end
+        end
+      end
     end
 
     # quonfig_sdk_worker_restart_total counter (Tier 1 supervisor contract).
@@ -457,6 +502,10 @@ module Quonfig
     def connection_state
       @state_mutex.synchronize do
         next :disconnected if @stopped
+        # Forked, not yet used: nothing has been fetched and nothing is
+        # running. Saying so is the honest answer, and a diagnostic must not
+        # be what triggers a blocking fetch.
+        next :initializing if @fork_rebuild_pending
         next :falling_back if @poll_supervisor&.alive?
         # Liveness beats the stored flag (qfg-lv4n.1). A client whose SSE
         # session was torn down keeps a stale @sse_state; answering
@@ -617,6 +666,46 @@ module Quonfig
       end
     end
 
+    # The child's own re-initialization, run on first use. Mirrors what
+    # +Client.new+ does for this client's mode, and logs one info line so a
+    # customer grepping their logs can see the SDK noticed the fork.
+    def rebuild_in_child!
+      components = []
+
+      if @options.datadir
+        load_datadir_into_store
+        components << 'datadir'
+        start_datadir_watcher if @options.data_dir_auto_reload
+        components << 'datadir-watcher' if @datadir_watcher
+      else
+        initialize_network_mode
+        components << 'config' if ready?
+        components << 'sse' if @sse_client
+        components << 'polling' if @poll_supervisor
+      end
+
+      @telemetry_reporter&.start
+      components << 'telemetry' if @telemetry_reporter
+
+      log_child_rebuild(components)
+    end
+
+    # A brand-new store (plus the evaluator, resolver, and config loader that
+    # read it) so the child starts from nothing and installs its own envelope.
+    # Two things this buys beyond "no stale config": the child's first
+    # envelope is ACCEPTED rather than dropped by the reject-older guard as
+    # same-generation, and a fork that lands mid-install can no longer hand
+    # the child a half-written store.
+    def reset_store_in_child!
+      @store = Quonfig::ConfigStore.new
+      @evaluator = Quonfig::Evaluator.new(@store, env_id: @options.environment)
+      @resolver = Quonfig::Resolver.new(@store, @evaluator)
+      @last_successful_refresh = nil
+      return if @options.datadir
+
+      @config_loader = Quonfig::ConfigLoader.new(@store, @options, failover_aggregator: @failover_aggregator)
+    end
+
     # Replace every aggregator with a fresh, empty one so the child never
     # re-reports data the parent collected (and is still going to flush from
     # its own copy). Mirrors what a brand-new Client.new would allocate.
@@ -628,9 +717,10 @@ module Quonfig
       @config_loader.failover_aggregator = @failover_aggregator if @config_loader.respond_to?(:failover_aggregator=)
 
       # initialize_telemetry allocates fresh context/example/summaries
-      # aggregators and a fresh reporter.
+      # aggregators and a fresh reporter. It is NOT started here: starting the
+      # reporter is I/O and a thread, and both wait for the child's first use.
       @telemetry_reporter = nil
-      initialize_telemetry
+      initialize_telemetry(start: false)
     end
 
     # One line, at info, so a customer can see in their logs that the SDK
@@ -638,7 +728,7 @@ module Quonfig
     # normal and expected.
     def log_child_rebuild(components)
       list = components.empty? ? 'none' : components.join(',')
-      LOG.info "[quonfig] rebuilt after fork in child pid=#{Process.pid} components=#{list}"
+      LOG.info "[quonfig] re-initialized after fork pid=#{Process.pid} components=#{list}"
     end
 
     # Stamp +last_successful_refresh+ at install time. Called by every code
@@ -796,7 +886,7 @@ module Quonfig
     # Construct and start the telemetry reporter if the options permit it.
     # The reporter runs on a background thread and periodically POSTs
     # context-shape and example-context batches to +telemetry_destination+.
-    def initialize_telemetry
+    def initialize_telemetry(start: true)
       shape_aggregator = nil
       example_aggregator = nil
       summaries_aggregator = nil
@@ -832,6 +922,7 @@ module Quonfig
       )
 
       return unless @telemetry_reporter.enabled?
+      return unless start
 
       @telemetry_reporter.start
     rescue StandardError => e
@@ -954,15 +1045,20 @@ module Quonfig
       warn_if_hedge_abort_exceeds_init_timeout
       warn_if_explicit_api_urls_disables_failover
 
-      @config_loader = Quonfig::ConfigLoader.new(@store, @options, failover_aggregator: @failover_aggregator)
+      # ||=: after a fork the child already built its loader over its fresh
+      # store (see #reset_store_in_child!).
+      @config_loader ||= Quonfig::ConfigLoader.new(@store, @options, failover_aggregator: @failover_aggregator)
 
       perform_initial_fetch
+      start_update_channel
+    end
 
+    # SSE if enabled and it comes up; otherwise the HTTP polling fallback.
+    # Polling is a fallback: if SSE is off or failed to start, poll. This
+    # avoids double-work when SSE is healthy but still refreshes the store in
+    # environments that block SSE (corporate proxies, Lambda, etc.).
+    def start_update_channel
       sse_started = @options.enable_sse && start_sse
-
-      # Polling is a fallback: if SSE is off or failed to start, poll. This
-      # avoids double-work when SSE is healthy but still refreshes the store
-      # in environments that block SSE (corporate proxies, Lambda, etc.).
       start_polling if @options.enable_polling && !sse_started
     end
 
@@ -1271,6 +1367,7 @@ module Quonfig
     # caller's context, after coercing/checking +expected_type+. Never
     # raises; all exceptions become ERROR details.
     def evaluate_details(key, expected_type, context)
+      ensure_initialized_after_fork
       jit = context == NO_DEFAULT_PROVIDED ? nil : context
       ctx = build_context(jit)
       record_context_for_telemetry(ctx)
