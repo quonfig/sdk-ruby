@@ -39,6 +39,7 @@ class TestForkSafety < Minitest::Test
   PORT_CONCURRENT    = 4705
   PORT_REARM         = 4706
   PORT_STOP_RACE     = 4707
+  PORT_DATADIR_SSE   = 4709
   PORT_RAISE         = 4711
   PORT_RAISE_SSE     = 4712
 
@@ -1250,6 +1251,97 @@ class TestForkSafety < Minitest::Test
       server.stop
       server_thread&.join(2)
       assert_logged([/explicit api_urls disables automatic failover/])
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # D3 — a DATADIR child whose rebuild fails must not dial the network.
+  #
+  # The failure path started the update channel unconditionally, so a child
+  # of a purely offline (datadir) client opened an SSE stream to
+  # `stream.primary.quonfig.com` on its first `get`. With no config loader
+  # behind it, every envelope that arrived logged "Error applying SSE
+  # envelope: undefined method `apply_envelope' for nil" — and because
+  # nothing re-armed the rebuild, repairing the file on disk never helped.
+  # ------------------------------------------------------------------
+  def test_datadir_child_rebuild_failure_does_not_dial_sse
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_DATADIR_SSE, StreamEndpoint, configs: true)
+    server_thread = Thread.new { server.start }
+    workspace = build_datadir_workspace('d0')
+    manifest = File.join(workspace, 'quonfig.json')
+    good_manifest = File.read(manifest)
+
+    client = Quonfig::Client.new(
+      Quonfig::Options.new(
+        sdk_key: '1-fork-test-key',
+        datadir: workspace,
+        environment: 'test',
+        api_urls: ["http://127.0.0.1:#{PORT_DATADIR_SSE}"],
+        enable_sse: true,
+        enable_polling: false,
+        # Auto-reload OFF, so the only way a repaired workspace can reach the
+        # child is the rebuild being re-armed for the next call.
+        data_dir_auto_reload: false,
+        # D7 (:raise parity) is exercised on its own below; keep this test
+        # about where the failure path DIALS, not about how it reports.
+        on_init_failure: :return,
+        context_upload_mode: :none,
+        collect_evaluation_summaries: false
+      ).tap do |opts|
+        # Keep any (buggy) dial LOCAL and observable. Without this override a
+        # red run reaches out to the real stream.primary host.
+        opts.instance_variable_set(:@sse_api_urls, ["http://127.0.0.1:#{PORT_DATADIR_SSE}"])
+      end
+    )
+
+    begin
+      assert_equal 'd0', client.get(CONFIG_KEY, nil)
+      sse_hits_before = StreamEndpoint.hits
+
+      report = fork_and_capture(
+        gate: true,
+        after_fork: lambda {
+          write_datadir_value(workspace, 'd1')
+          File.write(manifest, '{ not json')
+        }
+      ) do
+        first = client.get(CONFIG_KEY, 'DEFAULT')
+        sse_started = !client.instance_variable_get(:@sse_client).nil?
+        # Repair the workspace, then use the client again: a re-armed rebuild
+        # picks the file back up.
+        File.write(manifest, good_manifest)
+        second = client.get(CONFIG_KEY, 'DEFAULT')
+        {
+          'first' => first,
+          'sse_started' => sse_started,
+          'sse_worker_threads' => sse_worker_thread_count,
+          'second' => second,
+          'apply_envelope_errors' => $logs.string.scan('Error applying SSE envelope').size
+        }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert_equal 'DEFAULT', report['first'],
+                   'a datadir child whose load failed has nothing to serve but the default'
+      refute report['sse_started'],
+             'a DATADIR child must never open an SSE stream when its rebuild fails ' \
+             '(the client is configured offline; there is no config loader behind the stream)'
+      assert_equal 0, report['sse_worker_threads']
+      assert_equal 0, report['apply_envelope_errors'],
+                   'the child dialed SSE and then failed to apply what arrived'
+      assert_equal 'd1', report['second'],
+                   'once the workspace is repaired the next call must pick it up'
+      assert_equal sse_hits_before, StreamEndpoint.hits,
+                   'a datadir child must not dial the SSE server at all'
+    ensure
+      client.stop
+      StreamEndpoint.close_all!
+      server.stop
+      server_thread&.join(2)
+      FileUtils.remove_entry(workspace) if workspace && Dir.exist?(workspace)
     end
   end
 

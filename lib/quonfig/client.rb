@@ -734,10 +734,14 @@ module Quonfig
     def handle_child_rebuild_failure(err)
       LOG.error "[quonfig] post-fork re-initialization failed: #{err.class}: #{err.message}"
 
-      begin
-        start_update_channel if @sse_client.nil? && @poll_supervisor.nil?
-      rescue StandardError => e
-        LOG.error "[quonfig] post-fork update channel failed to start: #{e.class}: #{e.message}"
+      if @options.datadir
+        recover_datadir_child_after_failed_rebuild
+      else
+        begin
+          start_update_channel if @sse_client.nil? && @poll_supervisor.nil?
+        rescue StandardError => e
+          LOG.error "[quonfig] post-fork update channel failed to start: #{e.class}: #{e.message}"
+        end
       end
 
       return unless @options.on_init_failure == Quonfig::Options::ON_INITIALIZATION_FAILURE::RAISE
@@ -747,6 +751,25 @@ module Quonfig
       # lookup.
       @fork_rebuild_error = err
       raise err
+    end
+
+    # A datadir client is configured OFFLINE: it has no config loader, so
+    # opening an SSE stream here dials the network on a customer who asked
+    # for none and then blows up on every envelope that arrives
+    # ("undefined method `apply_envelope' for nil"). The healing path for a
+    # datadir child is the filesystem: start the watcher if auto-reload is on
+    # so a repaired workspace is picked up, and otherwise re-arm the rebuild
+    # so the next use retries the load (qfg-lv4n.1 D3).
+    def recover_datadir_child_after_failed_rebuild
+      begin
+        start_datadir_watcher if @options.data_dir_auto_reload && @datadir_watcher.nil?
+      rescue StandardError => e
+        LOG.error "[quonfig] post-fork datadir watcher failed to start: #{e.class}: #{e.message}"
+      end
+
+      return unless @datadir_watcher.nil?
+
+      @fork_rebuild_pending = true
     end
 
     # The child's own re-initialization, run on first use. Mirrors what
