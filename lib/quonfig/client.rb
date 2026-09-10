@@ -89,6 +89,14 @@ module Quonfig
       # child. See #ensure_initialized_after_fork.
       @fork_rebuild_pending = false
       @fork_rebuild_mutex = Mutex.new
+      # The thread currently running the rebuild, so a re-entrant read (a
+      # SemanticLoggerFilter or stdlib formatter that calls +get+ from inside
+      # the rebuild's own logging) does not deadlock on the non-reentrant
+      # Mutex above.
+      @fork_rebuild_owner = nil
+      # Sticky init error under +on_init_failure: :raise+ (see
+      # #raise_sticky_fork_init_error).
+      @fork_rebuild_error = nil
 
       # If the caller injected a store, we're in test/bootstrap mode; skip I/O.
       return if store
@@ -322,11 +330,26 @@ module Quonfig
     end
 
     def stop
+      # Order matters (qfg-lv4n.1 D5). The flag goes up BEFORE we queue for
+      # the rebuild lock, so a post-fork rebuild already in flight sees it and
+      # skips starting an update channel and a telemetry reporter at all —
+      # otherwise it builds an SSE worker after we have finished tearing down
+      # and nothing is left holding a reference to close it.
       @stopped = true
       # A child that never used the client must be able to stop it without
       # paying for a re-initialization it never asked for.
       @fork_rebuild_pending = false
-      tear_down_threaded_components!
+      @fork_rebuild_error = nil
+
+      # ...and the teardown itself is serialized against the rebuild, so it
+      # can never interleave with component construction. Re-entrancy: if the
+      # rebuild is what called `stop` (a customer on_update/logger hook), this
+      # thread already holds the lock.
+      if @fork_rebuild_owner == Thread.current
+        tear_down_threaded_components!
+      else
+        @fork_rebuild_mutex.synchronize { tear_down_threaded_components! }
+      end
     end
 
     # @deprecated Since 1.4.0 the +Process._fork+ hook NO LONGER CALLS THIS.
@@ -382,6 +405,8 @@ module Quonfig
       # Only this thread exists in a fresh child, so swapping them is safe.
       @state_mutex = Mutex.new
       @fork_rebuild_mutex = Mutex.new
+      @fork_rebuild_owner = nil
+      @fork_rebuild_error = nil
       drop_inherited_threaded_components!
 
       # SSE state machine carries flags that describe the PARENT's session
@@ -638,32 +663,90 @@ module Quonfig
     # must never open a socket. It reports +:initializing+ while a rebuild is
     # pending, which is exactly what the client is.
     def ensure_initialized_after_fork
-      return unless @fork_rebuild_pending
+      # Hot path: two ivar reads and no lock. Both are falsy for every client
+      # that has never been through a fork.
+      return unless @fork_rebuild_pending || @fork_rebuild_error
+      # Re-entrancy guard: a customer logger (SemanticLoggerFilter, stdlib
+      # formatter) that evaluates a config from inside the rebuild would
+      # otherwise deadlock on the non-reentrant Mutex. Such a call sees the
+      # half-built client, which is the same thing Client.new gives a logger
+      # that fires during construction.
+      return if @fork_rebuild_owner == Thread.current
 
+      run_pending_child_rebuild if @fork_rebuild_pending
+      raise_sticky_fork_init_error if @fork_rebuild_error
+    end
+
+    # Run the rebuild under the lock, or block until whoever is running it is
+    # done. The flag stays TRUE for the whole rebuild, which is what makes
+    # every other first-use caller take the mutex and WAIT rather than sail
+    # past on the unlocked fast path and evaluate against the empty store.
+    def run_pending_child_rebuild
       @fork_rebuild_mutex.synchronize do
+        # Lost the race: the winner already rebuilt (or `stop` disarmed us).
         return unless @fork_rebuild_pending
-
-        # Cleared before the work, not after: a failed re-initialization must
-        # not turn every subsequent lookup into another blocking fetch.
-        @fork_rebuild_pending = false
         return if @stopped
 
+        @fork_rebuild_owner = Thread.current
         begin
           rebuild_in_child!
         rescue StandardError => e
-          # A fork must never break the customer's process. Unlike
-          # Client.new — which is allowed to raise under
-          # on_init_failure: :raise — this runs inside a `get`, so it logs
-          # and leaves the client serving defaults until the live channel
-          # (started below) heals the store.
-          LOG.error "[quonfig] post-fork re-initialization failed: #{e.class}: #{e.message}"
-          begin
-            start_update_channel if @sse_client.nil? && @poll_supervisor.nil?
-          rescue StandardError => inner
-            LOG.error "[quonfig] post-fork update channel failed to start: #{inner.class}: #{inner.message}"
-          end
+          # Handled: the child gets whatever healing path its mode allows, so
+          # the next lookup must not re-run the blocking fetch. (The datadir
+          # recovery path may deliberately re-arm — see
+          # #recover_datadir_child_after_failed_rebuild.)
+          @fork_rebuild_pending = false
+          handle_child_rebuild_failure(e)
+        ensure
+          @fork_rebuild_owner = nil
+          # #rebuild_in_child! disarms the flag itself the moment the child
+          # has a live path to config. Anything that escapes before that —
+          # including a non-StandardError such as rack-timeout's
+          # RequestTimeoutException, Ruby 3.3's Timeout::ExitException, or a
+          # Thread#kill, none of which the rescue above can see — leaves the
+          # flag armed so the NEXT call retries instead of leaving the child
+          # dark forever (qfg-lv4n.1 D2).
+          @fork_rebuild_pending = false if @stopped
         end
       end
+    end
+
+    # Under +on_init_failure: :raise+ a failed rebuild raises out of the call
+    # that triggered it, exactly as +Client.new+ would — and keeps raising on
+    # subsequent calls (without re-fetching) until the update channel heals
+    # the store. Under +:return+ nothing is stored here and this never fires.
+    def raise_sticky_fork_init_error
+      err = @fork_rebuild_error
+      return if err.nil?
+
+      if ready?
+        # The SSE stream (or the poller) installed an envelope: the client is
+        # serving real config again, so the init failure is history.
+        @fork_rebuild_error = nil
+        return
+      end
+
+      raise err
+    end
+
+    # A rebuild that raised. Log it, give the child whatever healing path its
+    # mode has, and honor +on_init_failure+.
+    def handle_child_rebuild_failure(err)
+      LOG.error "[quonfig] post-fork re-initialization failed: #{err.class}: #{err.message}"
+
+      begin
+        start_update_channel if @sse_client.nil? && @poll_supervisor.nil?
+      rescue StandardError => e
+        LOG.error "[quonfig] post-fork update channel failed to start: #{e.class}: #{e.message}"
+      end
+
+      return unless @options.on_init_failure == Quonfig::Options::ON_INITIALIZATION_FAILURE::RAISE
+
+      # Parity with a fresh Client.new, which raises under :raise. Stored so
+      # later calls keep raising rather than re-running the fetch on every
+      # lookup.
+      @fork_rebuild_error = err
+      raise err
     end
 
     # The child's own re-initialization, run on first use. Mirrors what
@@ -684,8 +767,16 @@ module Quonfig
         components << 'polling' if @poll_supervisor
       end
 
-      @telemetry_reporter&.start
-      components << 'telemetry' if @telemetry_reporter
+      # The child now has a live path to config (a stream/poller, or a loaded
+      # datadir). Disarm HERE, not in the caller: everything above is
+      # retryable and must stay armed if it is interrupted, and everything
+      # below must never re-run the fetch or dial a second stream.
+      @fork_rebuild_pending = false
+
+      unless @stopped
+        @telemetry_reporter&.start
+        components << 'telemetry' if @telemetry_reporter
+      end
 
       log_child_rebuild(components)
     end
@@ -1058,6 +1149,10 @@ module Quonfig
     # avoids double-work when SSE is healthy but still refreshes the store in
     # environments that block SSE (corporate proxies, Lambda, etc.).
     def start_update_channel
+      # A `stop` that raced the post-fork rebuild must win: never dial a
+      # stream for a client the customer has already killed (qfg-lv4n.1).
+      return if @stopped
+
       sse_started = @options.enable_sse && start_sse
       start_polling if @options.enable_polling && !sse_started
     end
@@ -1183,6 +1278,7 @@ module Quonfig
     # Returns true if SSE started successfully, false otherwise. A false here
     # signals the caller to fall back to polling.
     def start_sse
+      return false if @stopped
       return false if @options.sse_api_urls.nil? || @options.sse_api_urls.empty?
 
       @sse_client = Quonfig::SSEConfigClient.new(

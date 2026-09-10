@@ -5,6 +5,7 @@ require 'webrick'
 require 'json'
 require 'tmpdir'
 require 'fileutils'
+require 'timeout'
 
 # qfg-lv4n.1 / qfg-ryov: fork safety.
 #
@@ -35,6 +36,17 @@ class TestForkSafety < Minitest::Test
   PORT_DATADIR_TEL   = 4702
   PORT_UNUSED_CHILD  = 4703
   PORT_GUARD         = 4704
+  PORT_CONCURRENT    = 4705
+  PORT_REARM         = 4706
+  PORT_STOP_RACE     = 4707
+  PORT_RAISE         = 4711
+  PORT_RAISE_SSE     = 4712
+
+  # rack-timeout's RequestTimeoutException and Ruby 3.3's
+  # Timeout::ExitException are both Exception (not StandardError) subclasses,
+  # so they cross a `rescue StandardError` untouched. This is the shape that
+  # left a child dark forever when it fired mid-rebuild.
+  class RackTimeoutLike < Exception; end # rubocop:disable Lint/InheritException
 
   # Minimal SSE endpoint that sends one event per connection then FINs. The
   # SDK reconnect loop will redial; we just need to observe "the worker
@@ -161,23 +173,46 @@ class TestForkSafety < Minitest::Test
   class ConfigsEndpoint < WEBrick::HTTPServlet::AbstractServlet
     @mutex = Mutex.new
     @hits = 0
+    @mode = :ok
+    @delay_s = 0
 
     class << self
       def reset!
-        @mutex.synchronize { @hits = 0 }
+        @mutex.synchronize do
+          @hits = 0
+          @mode = :ok
+          @delay_s = 0
+        end
       end
 
       def hits
         @mutex.synchronize { @hits }
       end
 
+      # :ok serves the current envelope; :fail answers 500 (so the child's
+      # own fetch fails the way a real outage does). +delay_s+ holds the
+      # response open, which is what makes "a second caller arrives while the
+      # first is still fetching" deterministic.
+      def mode!(mode, delay_s: 0)
+        @mutex.synchronize do
+          @mode = mode
+          @delay_s = delay_s
+        end
+      end
+
       def hit!
-        @mutex.synchronize { @hits += 1 }
+        @mutex.synchronize { [@hits += 1, @mode, @delay_s] }
       end
     end
 
     def do_GET(_request, response)
-      self.class.hit!
+      _, mode, delay = self.class.hit!
+      sleep delay if delay.positive?
+      if mode == :fail
+        response.status = 500
+        response.body = 'nope'
+        return
+      end
       response.status = 200
       response['Content-Type'] = 'application/json'
       response.body = TestForkSafety::StreamEndpoint.current.to_s
@@ -1021,7 +1056,349 @@ class TestForkSafety < Minitest::Test
     end
   end
 
+  # ------------------------------------------------------------------
+  # D1 — every thread that reaches the client first in a forked child must
+  # BLOCK on the one in-flight rebuild and then see the fetched config.
+  #
+  # The unlocked fast path (`return unless @fork_rebuild_pending`) combined
+  # with clearing the flag BEFORE doing the work meant only the winner of the
+  # mutex blocked: every other thread read `false`, skipped the mutex
+  # entirely, and evaluated against the brand-new EMPTY store. In a Puma
+  # worker (or any threaded child) that is a burst of nils/defaults on the
+  # first request after boot.
+  #
+  # Exactly one fetch and one SSE dial: the waiters must not each start their
+  # own rebuild either.
+  # ------------------------------------------------------------------
+  def test_concurrent_first_use_in_a_child_all_wait_for_the_one_rebuild
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_CONCURRENT, StreamEndpoint, configs: true)
+    server_thread = Thread.new { server.start }
+    client = build_client_for_fork_tests(
+      port: PORT_CONCURRENT,
+      api_urls: ["http://127.0.0.1:#{PORT_CONCURRENT}"]
+    )
+
+    begin
+      assert wait_until(5) { client.get(CONFIG_KEY, nil) == 'v0' },
+             'parent never installed the initial envelope'
+      assert wait_until(5) { StreamEndpoint.live_streams >= 1 }, 'parent never opened its SSE stream'
+
+      config_hits_before = ConfigsEndpoint.hits
+      sse_hits_before = StreamEndpoint.hits
+      # Hold the child's fetch open long enough that all 16 threads are
+      # inside `get` at the same time.
+      ConfigsEndpoint.mode!(:ok, delay_s: 0.4)
+
+      report = fork_and_capture(
+        gate: true,
+        after_fork: -> { StreamEndpoint.push(envelope_payload('v1', generation: 2)) }
+      ) do
+        start = Queue.new
+        values = Queue.new
+        threads = 16.times.map do
+          Thread.new do
+            start.pop
+            values << client.get(CONFIG_KEY, nil)
+          end
+        end
+        16.times { start << true }
+        threads.each { |t| t.join(15) }
+        collected = 16.times.map { values.empty? ? 'MISSING' : values.pop }
+        { 'values' => collected.tally, 'state' => client.connection_state.to_s }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert_equal({ 'v1' => 16 }, report['values'],
+                   'every concurrent first-use caller must block on the in-flight rebuild and see ' \
+                   "the child's own fetched config (got #{report['values'].inspect})")
+      assert_equal 'connected', report['state']
+      assert_equal 1, ConfigsEndpoint.hits - config_hits_before,
+                   '16 concurrent first-use callers must produce exactly ONE config fetch'
+      assert_equal 1, StreamEndpoint.hits - sse_hits_before,
+                   '16 concurrent first-use callers must produce exactly ONE SSE dial'
+    ensure
+      ConfigsEndpoint.mode!(:ok)
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/explicit api_urls disables automatic failover/])
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # D2 — a non-StandardError raised mid-rebuild must not leave the child dark
+  # forever.
+  #
+  # rack-timeout's RequestTimeoutException, Ruby 3.3's
+  # Timeout::ExitException, and Thread#kill all cross `rescue StandardError`.
+  # With the pending flag cleared BEFORE the work, one of those firing during
+  # the first `get` in a child meant every later call returned nil against an
+  # empty store, with no SSE, no poller and no reporter — permanently.
+  # ------------------------------------------------------------------
+  def test_non_standard_error_mid_rebuild_leaves_the_child_retryable
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_REARM, StreamEndpoint, configs: true)
+    server_thread = Thread.new { server.start }
+    client = build_client_for_fork_tests(
+      port: PORT_REARM,
+      api_urls: ["http://127.0.0.1:#{PORT_REARM}"]
+    )
+
+    begin
+      assert wait_until(5) { client.get(CONFIG_KEY, nil) == 'v0' },
+             'parent never installed the initial envelope'
+
+      config_hits_before = ConfigsEndpoint.hits
+      ConfigsEndpoint.mode!(:ok, delay_s: 0.5)
+
+      report = fork_and_capture(
+        gate: true,
+        after_fork: -> { StreamEndpoint.push(envelope_payload('v1', generation: 2)) }
+      ) do
+        first =
+          begin
+            Timeout.timeout(0.15, TestForkSafety::RackTimeoutLike) { client.get(CONFIG_KEY, 'DEFAULT') }
+            'no raise'
+          rescue TestForkSafety::RackTimeoutLike
+            'raised'
+          end
+        second = client.get(CONFIG_KEY, 'DEFAULT')
+        sse = client.instance_variable_get(:@sse_client)
+        {
+          'first' => first,
+          'second' => second,
+          'ready' => client.ready?,
+          'state' => client.connection_state.to_s,
+          'sse_alive' => sse&.alive? || false
+        }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert_equal 'raised', report['first'],
+                   'the probe must actually interrupt the rebuild with a non-StandardError'
+      assert_equal 'v1', report['second'],
+                   'after a non-StandardError aborted the rebuild the NEXT call must retry it ' \
+                   "and return the child's own config (got #{report['second'].inspect})"
+      assert report['ready'], 'the retried rebuild must leave the child ready'
+      assert_equal 'connected', report['state']
+      assert report['sse_alive'], 'the retried rebuild must start the update channel'
+      assert_equal 2, ConfigsEndpoint.hits - config_hits_before,
+                   'expected the aborted fetch plus exactly one retry'
+    ensure
+      ConfigsEndpoint.mode!(:ok)
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/explicit api_urls disables automatic failover/])
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # D5 — `stop` racing an in-flight post-fork rebuild must not orphan an SSE
+  # worker. `stop` cleared the pending flag and tore down without taking the
+  # rebuild lock, so a rebuild already past that point went on to build a
+  # stream `stop` had no reference to and could never close.
+  # ------------------------------------------------------------------
+  def test_stop_racing_an_in_flight_rebuild_leaves_no_sse_worker
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_STOP_RACE, StreamEndpoint, configs: true)
+    server_thread = Thread.new { server.start }
+    client = build_client_for_fork_tests(
+      port: PORT_STOP_RACE,
+      api_urls: ["http://127.0.0.1:#{PORT_STOP_RACE}"]
+    )
+
+    begin
+      assert wait_until(5) { client.get(CONFIG_KEY, nil) == 'v0' },
+             'parent never installed the initial envelope'
+
+      ConfigsEndpoint.mode!(:ok, delay_s: 0.6)
+
+      report = fork_and_capture do
+        rebuilder = Thread.new { client.get(CONFIG_KEY, 'DEFAULT') }
+        sleep 0.2 # let the rebuild get into its blocking fetch
+        client.stop
+        rebuilder.join(10)
+        settled = wait_until(5) { sse_worker_thread_count.zero? }
+        {
+          'sse_worker_threads' => sse_worker_thread_count,
+          'settled' => settled,
+          'sse_client_nil' => client.instance_variable_get(:@sse_client).nil?,
+          'state' => client.connection_state.to_s
+        }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert report['sse_client_nil'],
+             'stop during an in-flight rebuild left an SSE client the child can never close'
+      assert_equal 0, report['sse_worker_threads'],
+                   'stop during an in-flight rebuild orphaned an SSE worker thread'
+      assert_equal 'disconnected', report['state']
+    ensure
+      ConfigsEndpoint.mode!(:ok)
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/explicit api_urls disables automatic failover/])
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # D7 — `on_init_failure` parity. A fresh Client.new raises under `:raise`;
+  # the child's first-use rebuild swallowed the error and returned defaults,
+  # so the README's "exactly like a newly constructed client" was false for
+  # the one option whose entire job is to decide raise-vs-return. Reforge
+  # raises the init error out of `get` itself (config_client.rb#_get waits on
+  # the init latch on every call), so raising IS the reference behavior.
+  #
+  # Subsequent calls keep raising — without re-running the fetch.
+  # ------------------------------------------------------------------
+  def test_raise_policy_child_raises_out_of_the_first_use_and_does_not_refetch
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_RAISE, StreamEndpoint, configs: true)
+    server_thread = Thread.new { server.start }
+    client = build_client_for_fork_tests(
+      port: PORT_RAISE,
+      api_urls: ["http://127.0.0.1:#{PORT_RAISE}"],
+      on_init_failure: :raise,
+      # No update channel: the child cannot heal, so "keeps raising" is
+      # deterministic rather than a race with the stream.
+      enable_sse: false,
+      enable_polling: false
+    )
+
+    begin
+      assert_equal 'v0', client.get(CONFIG_KEY, nil), 'parent never installed the initial envelope'
+
+      config_hits_before = ConfigsEndpoint.hits
+      ConfigsEndpoint.mode!(:fail)
+
+      report = fork_and_capture do
+        first =
+          begin
+            "returned #{client.get(CONFIG_KEY, 'DEFAULT').inspect}"
+          rescue StandardError => e
+            "raised #{e.class}"
+          end
+        second =
+          begin
+            "returned #{client.get(CONFIG_KEY, 'DEFAULT').inspect}"
+          rescue StandardError => e
+            "raised #{e.class}"
+          end
+        { 'first' => first, 'second' => second }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert_equal 'raised RuntimeError', report['first'],
+                   'under on_init_failure: :raise the first use in a child must raise the init ' \
+                   'error, exactly as a freshly constructed client would'
+      assert_equal 'raised RuntimeError', report['second'],
+                   'under :raise a child that never became ready must keep raising'
+      assert_equal 1, ConfigsEndpoint.hits - config_hits_before,
+                   'a child that is already known to have failed init must not re-fetch on every call'
+    ensure
+      ConfigsEndpoint.mode!(:ok)
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      # The "post-fork re-initialization failed" line is logged in the CHILD,
+      # so it never reaches this process's $logs.
+      assert_logged([/explicit api_urls disables automatic failover/])
+    end
+  end
+
+  # ...and the update channel is still started on the way out, so the child
+  # heals as soon as the stream delivers an envelope — at which point `get`
+  # stops raising. `:return` is unchanged: default returned, one line logged.
+  def test_raise_policy_child_still_starts_the_update_channel_and_heals
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_RAISE_SSE, StreamEndpoint, configs: true)
+    server_thread = Thread.new { server.start }
+    raiser = build_client_for_fork_tests(
+      port: PORT_RAISE_SSE,
+      api_urls: ["http://127.0.0.1:#{PORT_RAISE_SSE}"],
+      on_init_failure: :raise
+    )
+    returner = build_client_for_fork_tests(
+      port: PORT_RAISE_SSE,
+      api_urls: ["http://127.0.0.1:#{PORT_RAISE_SSE}"],
+      on_init_failure: :return
+    )
+
+    begin
+      assert wait_until(5) { raiser.get(CONFIG_KEY, nil) == 'v0' && returner.get(CONFIG_KEY, nil) == 'v0' },
+             'parents never installed the initial envelope'
+
+      ConfigsEndpoint.mode!(:fail)
+
+      report = fork_and_capture do
+        first =
+          begin
+            "returned #{raiser.get(CONFIG_KEY, 'DEFAULT').inspect}"
+          rescue StandardError => e
+            "raised #{e.class}"
+          end
+        sse_started = !raiser.instance_variable_get(:@sse_client).nil?
+        healed = wait_until(6) do
+          raiser.get(CONFIG_KEY, 'DEFAULT') == 'v0'
+        rescue StandardError
+          false
+        end
+        # :return is untouched — default back, no raise.
+        returned =
+          begin
+            "returned #{returner.get(CONFIG_KEY, 'DEFAULT').inspect}"
+          rescue StandardError => e
+            "raised #{e.class}"
+          end
+        { 'first' => first, 'sse_started' => sse_started, 'healed' => healed, 'return_mode' => returned }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert_equal 'raised RuntimeError', report['first']
+      assert report['sse_started'],
+             'the update channel must still be started when the rebuild fails, so the child can heal'
+      assert report['healed'],
+             'once the stream installed an envelope the child must stop raising and serve config'
+      assert_equal 'returned "DEFAULT"', report['return_mode'],
+                   'on_init_failure: :return must be unchanged — default returned, nothing raised'
+    ensure
+      ConfigsEndpoint.mode!(:ok)
+      StreamEndpoint.close_all!
+      raiser.stop
+      returner.stop
+      server.stop
+      server_thread&.join(2)
+      # The "post-fork re-initialization failed" line is logged in the CHILD,
+      # so it never reaches this process's $logs.
+      assert_logged([/explicit api_urls disables automatic failover/])
+    end
+  end
+
   private
+
+  # Threads currently executing inside the SSE client. Counting by backtrace
+  # rather than by our own reference is the point: an ORPHANED worker is one
+  # nothing holds a reference to any more.
+  def sse_worker_thread_count
+    Thread.list.count { |t| t.backtrace&.any? { |line| line.include?('sse_config_client.rb') } }
+  end
 
   def wait_until(timeout = 5)
     deadline = Time.now + timeout
