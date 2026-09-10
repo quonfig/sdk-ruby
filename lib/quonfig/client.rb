@@ -45,8 +45,7 @@ module Quonfig
       end
     end
 
-    attr_reader :options, :resolver, :store, :evaluator, :instance_hash,
-                :config_loader, :telemetry_reporter
+    attr_reader :options, :instance_hash, :telemetry_reporter
 
     def initialize(options = nil, store: nil, **option_kwargs)
       @options =
@@ -546,6 +545,45 @@ module Quonfig
       return false unless sse.respond_to?(:failed_over_to_secondary?)
 
       sse.failed_over_to_secondary?
+    end
+
+    # ---- Component readers ---------------------------------------------
+    #
+    # Public since 1.0 and kept public for semver. Each one routes through
+    # the post-fork chokepoint: in a forked child that has not been used yet
+    # the raw components read an EMPTY store (+store.get+ answered nil,
+    # +resolver.get+ raised MissingDefaultError), so handing them back
+    # without re-initializing is handing back a component that lies
+    # (qfg-lv4n.1 D6).
+
+    # @return [Quonfig::ConfigStore] the store backing this client.
+    # @note In a forked child, reading this triggers the lazy post-fork
+    #   re-initialization (see #after_fork_in_child) — it can block on the
+    #   child's own config fetch.
+    def store
+      ensure_initialized_after_fork
+      @store
+    end
+
+    # @return [Quonfig::Resolver]
+    # @note (see #store)
+    def resolver
+      ensure_initialized_after_fork
+      @resolver
+    end
+
+    # @return [Quonfig::Evaluator]
+    # @note (see #store)
+    def evaluator
+      ensure_initialized_after_fork
+      @evaluator
+    end
+
+    # @return [Quonfig::ConfigLoader, nil] nil in datadir mode.
+    # @note (see #store)
+    def config_loader
+      ensure_initialized_after_fork
+      @config_loader
     end
 
     def fork

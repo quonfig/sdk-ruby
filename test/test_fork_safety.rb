@@ -41,6 +41,7 @@ class TestForkSafety < Minitest::Test
   PORT_STOP_RACE     = 4707
   PORT_PARENT_CALL   = 4708
   PORT_DATADIR_SSE   = 4709
+  PORT_READERS       = 4710
   PORT_RAISE         = 4711
   PORT_RAISE_SSE     = 4712
 
@@ -1405,6 +1406,57 @@ class TestForkSafety < Minitest::Test
 
       assert wait_until(6) { client.get(CONFIG_KEY, nil) == 'v1' },
              'the parent stopped receiving SSE updates after a parent-side after_fork_in_child'
+    ensure
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/explicit api_urls disables automatic failover/])
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # D6 — the public `store` / `resolver` / `evaluator` / `config_loader`
+  # readers are part of the 1.x surface and bypassed the post-fork
+  # chokepoint: in a pending child `client.store.get(k)` answered nil and
+  # `client.resolver.get(k, {})` raised MissingDefaultError against the empty
+  # store.
+  # ------------------------------------------------------------------
+  def test_public_component_readers_trigger_the_post_fork_rebuild
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_READERS, StreamEndpoint, configs: true)
+    server_thread = Thread.new { server.start }
+    client = build_client_for_fork_tests(
+      port: PORT_READERS,
+      api_urls: ["http://127.0.0.1:#{PORT_READERS}"]
+    )
+
+    begin
+      assert wait_until(5) { client.get(CONFIG_KEY, nil) == 'v0' },
+             'parent never installed the initial envelope'
+
+      %w[store resolver evaluator config_loader].each do |reader|
+        report = fork_and_capture do
+          value =
+            case reader
+            when 'store'    then client.store.get(CONFIG_KEY) ? 'present' : 'nil'
+            when 'resolver' then client.resolver.get(CONFIG_KEY, {}).to_s
+            when 'evaluator' then client.evaluator.class.to_s
+            else client.config_loader.held_generation.to_s
+            end
+          { 'value' => value,
+            'pending' => client.instance_variable_get(:@fork_rebuild_pending),
+            'store_keys' => client.instance_variable_get(:@store).keys.size }
+        end
+
+        refute report['error'], "client.#{reader} in a pending child errored: #{report['error']}"
+        refute report['pending'],
+               "client.#{reader} must route through the post-fork chokepoint (the rebuild never ran)"
+        assert_equal 1, report['store_keys'],
+                     "client.#{reader} returned a component reading an EMPTY post-fork store"
+      end
     ensure
       StreamEndpoint.close_all!
       client.stop
