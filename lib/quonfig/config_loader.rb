@@ -399,15 +399,15 @@ module Quonfig
             # SSE message path (apply_envelope) — every network install funnels
             # here. Only a STRICTLY older payload is counted (qfg-rr5b): that is
             # the one thing `guardRejected` is meant to report, "a leg tried to
-            # move us backwards", and it is what the sdk_failover signal alerts
-            # on.
+            # move us backwards", which is what the sdk_failover dashboard panel
+            # is for.
             @failover_aggregator&.record_guard_rejected
           else
             # Equal generation: a re-delivery of the envelope we already hold, and
             # a silent no-op (qfg-rr5b). Two server behaviors produce it in normal
             # steady state — api-delivery's SSE `sendInitialConfig` re-sends the
-            # current envelope on every connect (SDK clients send no
-            # Last-Event-Id), and a config poll on an empty per-leg ETag slot (a
+            # current envelope on every connect regardless of the Last-Event-Id
+            # we send, and a config poll on an empty per-leg ETag slot (a
             # fresh transport, a reconnect, the fallback poller's engage fetch)
             # returns a full 200 at the same generation. Counting those as
             # `guardRejected` made a healthy client report failover activity from

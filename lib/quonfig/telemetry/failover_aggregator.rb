@@ -45,8 +45,10 @@ module Quonfig
         end
       end
 
-      # Count one install dropped by the reject-older ordering guard (an
-      # equal-or-older snapshot on any install path — HTTP config-fetch or SSE).
+      # Count one install dropped by the reject-older ordering guard because it
+      # was STRICTLY older than the held generation, on any install path (HTTP
+      # config-fetch or SSE). An equal-generation re-delivery is dropped too but
+      # is not counted (qfg-rr5b).
       def record_guard_rejected
         @mutex.synchronize do
           @start_at_ms ||= Quonfig::TimeHelpers.now_in_ms
