@@ -494,6 +494,13 @@ Caveats:
 - In datadir mode a child whose workspace fails to load never dials the
   network: it logs the failure and, if `data_dir_auto_reload` is on, watches
   for a repaired workspace; otherwise the next use retries the load.
+- **A child forked from inside an `on_update` callback must exit.**
+  `on_update` runs on the SDK's SSE reader thread, so a child created with
+  non-block `fork` (no block) from inside that callback must `exit!` (or
+  `exec`) rather than return from the callback — a child that returns lets the
+  inherited reader thread resume on the parent's socket, where it consumes
+  frames the parent never sees. Block-form `fork { ... }` and any child that
+  exits are unaffected.
 
 ### Puma (clustered mode)
 
