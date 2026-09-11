@@ -31,6 +31,12 @@ module Quonfig
     #                     SSE does not change it).
     attr_reader :held_generation, :install_count
 
+    # Repoint the failover-telemetry sink. The one caller is
+    # Client#after_fork_in_child: a forked child gets fresh aggregators (the
+    # parent still owns and flushes its own), and the loader has to record
+    # into the child's copy rather than the inherited one (qfg-lv4n.1).
+    attr_writer :failover_aggregator
+
     # +store+: the Quonfig::ConfigStore to populate on successful fetch.
     # +options+: a Quonfig::Options instance (supplies sdk_key + config_api_urls).
     # +logger+: optional logger override (defaults to module LOG).

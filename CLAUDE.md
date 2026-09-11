@@ -32,26 +32,99 @@ integration suite cannot resolve its YAML specs.
 
 The SDK installs a `Process._fork` hook (`Quonfig::ForkSafety` in
 `lib/quonfig/client.rb`) at load time. Every `Quonfig::Client` instance is
-tracked in an `ObjectSpace::WeakMap` on the class; on fork the hook fans out:
+tracked in an `ObjectSpace::WeakMap` on the class.
 
-- **In the parent, before the syscall:** close SSE worker, polling
-  supervisor, telemetry reporter. `@stopped` is NOT set — the client object
-  stays usable, just thread-less.
-- **In the child, after the syscall:** rebuild SSE, polling, and telemetry
-  on the same `Client` object. Skipped if `stop` was called or the client is
-  in datadir mode.
+**The hook is child-only. The parent is never touched.** This is Reforge's
+model (`Reforge.fork` builds a new client in the child and never touches the
+old one) and matches dd-trace-rb, redis-client, and connection_pool, which
+all branch on the child stage of `_fork` only.
+
+- **In the parent:** nothing happens. Not before the syscall, not after it.
+  The SSE stream, poller, telemetry reporter, and datadir watcher all keep
+  running, so a process that forks workers and keeps evaluating stays
+  current.
+- **In the child, after the syscall:** `after_fork_in_child` does NO I/O. It
+  drops the inherited references (`@sse_client`, `@poll_supervisor`,
+  `@telemetry_reporter`, `@datadir_watcher`, `@fallback_engage_timer`)
+  **without** calling `close`, `stop`, or `join` on them, swaps in fresh
+  mutexes, resets the SSE state machine, replaces `@store` (plus the
+  evaluator, resolver, and config loader that read it) with a brand-new empty
+  one, allocates fresh telemetry + failover aggregators, and sets
+  `@fork_rebuild_pending`. Skipped if `stop` was called.
+- **On the child's first use of the client:** `ensure_initialized_after_fork`
+  (called from `get`, `evaluate_details`, `defined?`, `keys`, and the public
+  `store` / `resolver` / `evaluator` / `config_loader` readers) runs what
+  `Client.new` runs — its own blocking config fetch under `init_timeout_ms` /
+  `on_init_failure`, then its own SSE (or fallback poller) and its own
+  telemetry reporter — and logs one info line. **The child never evaluates
+  from the parent's config snapshot**: its store starts empty and it fetches
+  its own. A child that never uses the client costs nothing (no fetch, no
+  socket, no thread), and `stop` in such a child returns immediately.
+  `connection_state` deliberately does NOT trigger the rebuild — a diagnostic
+  must not open a socket — and reports `:initializing` while one is pending.
+
+Four rules that keep the lazy rebuild honest (qfg-lv4n.1, second adversarial
+pass):
+
+- **`@fork_rebuild_pending` stays TRUE for the whole rebuild.** It is cleared
+  inside `rebuild_in_child!`, at the point the child has a live path to
+  config — not by the caller before the work. That is what makes concurrent
+  first-use callers block on the mutex instead of sailing past on the
+  unlocked fast path and reading the empty store, and it is what re-arms the
+  rebuild when a non-`StandardError` (`Timeout::ExitException`, rack-timeout,
+  `Thread#kill`) escapes. `@fork_rebuild_owner` is the same-thread guard so a
+  logger that evaluates a config from inside the rebuild cannot deadlock.
+- **`stop` raises `@stopped` BEFORE it queues for `@fork_rebuild_mutex`**, so
+  an in-flight rebuild skips `start_update_channel` and the reporter
+  entirely; the teardown then runs under that lock so it never interleaves
+  with construction.
+- **The failure path is mode-aware.** Network clients start the update
+  channel so SSE can heal; datadir clients must NOT (they have no config
+  loader — every envelope would raise) and instead start the watcher or
+  re-arm the rebuild.
+- **`after_fork_in_child` early-returns in the process that OWNS the
+  client.** Ownership is a pid stamp (`@owner_pid`), taken in `initialize`
+  and re-taken in `rebuild_in_child!` when a child takes over — not a
+  liveness check. `Process.pid != @owner_pid` is *proof* of a `fork(2)`
+  child; a match is proof that nobody forked. That makes the 1.0–1.3 "call it
+  in the parent" workaround a harmless no-op instead of an orphaned stream
+  per call. Asking "is a worker thread alive / is the reporter mine?" instead
+  was wrong at both ends (qfg-lv4n.1 E1/E4): `on_update` runs *on* the SSE
+  worker thread, so a child forked from that callback inherits it as its one
+  surviving thread and was misread as the parent; and a datadir client with
+  auto-reload off and no SDK key has no threads at all, so a genuine
+  parent-side call sailed straight through the guard and wiped the live
+  store.
+
+Two rules the child must never break:
+
+- **Never close the inherited SSE socket.** `fork(2)` duplicates the fd, so
+  the child's copy points at the connection the *parent* is streaming on.
+  Closing a TLS socket writes `close_notify` onto that shared connection and
+  kills the parent's stream. (Verified: closing a child's copy of a plain TCP
+  socket leaves the parent's connection working; TLS does not have that
+  property.)
+- **Never join an inherited thread.** It does not exist in the child, so the
+  join blocks forever — LaunchDarkly ruby-server-sdk PR #430.
 
 Coverage and limits:
 
 - Covers any path that goes through `Process._fork` (Ruby's `Process.fork`,
-  `Kernel#fork`). Does NOT cover `Process.spawn` or `system("...")` — those
-  exec a new program, so in-process SDK state does not carry across.
-- Ruby 3.0 lacks `Process._fork`; on 3.0 customers must wire Puma's
-  `before_fork` / `on_worker_boot` manually (see README "Rails integration").
-- The parent's threads stay closed after fork (mirrors the Puma master case,
-  where the master no longer serves requests). If a topology needs the
-  parent to keep streaming, customers can call
-  `Quonfig.instance.after_fork_in_child` manually in the parent.
+  `Kernel#fork`, the `parallel` gem, a `fork { }` inside a Sidekiq job).
+  Does NOT cover `Process.spawn` or `system("...")` — those exec a new
+  program, so in-process SDK state does not carry across.
+- Ruby 3.0 lacks `Process._fork`; on 3.0 customers wire `Quonfig.fork` into
+  Puma's `on_worker_boot` (or the top of the forked block) manually — see
+  README "Rails integration".
+- `Client#before_fork_in_parent` still exists for semver but is
+  `@deprecated`: the hook no longer calls it. Use `stop` if you want a client
+  dead.
+- `connection_state` derives from **liveness**, not from the stored
+  `@sse_state`. A network client that is supposed to hold an SSE stream and
+  has no live worker reports `:disconnected`. Regression history: the
+  pre-1.4.0 hook left `@sse_state == :connected` behind after tearing the
+  parent down, and a customer's dark Sidekiq process reported healthy for 13
+  days (qfg-lv4n).
 
 ## Local development
 

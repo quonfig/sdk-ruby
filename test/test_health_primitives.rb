@@ -17,7 +17,28 @@ require 'test_helper'
 # and amplify transient blips into restart cascades.
 class TestHealthPrimitives < Minitest::Test
   def make_client(**options)
-    Quonfig::Client.new(Quonfig::Options.new(**options), store: Quonfig::ConfigStore.new)
+    client = Quonfig::Client.new(Quonfig::Options.new(**options), store: Quonfig::ConfigStore.new)
+    (@made_clients ||= []) << client
+    client
+  end
+
+  # Every client built here is store-injected (no config loader) and several
+  # tests drive a connected->error edge on it, which arms the fallback-engage
+  # grace timer: 2 x fallback_poll_interval, i.e. 120s at the default. A
+  # client that is not stopped leaks that timer thread; 120s later it engages
+  # a poller that calls `fetch!` on a nil loader and logs errors into whatever
+  # test happens to be running, which fails THAT test's teardown. It bit CI
+  # (Ruby 3.3, seed 516) once the suite grew past 120s.
+  def teardown
+    clients = @made_clients || []
+    timers = clients.map { |c| c.instance_variable_get(:@fallback_engage_timer) }.compact
+    clients.each(&:stop)
+    timers.each do |t|
+      t.join(1)
+      refute t.alive?, 'a fallback-engage grace timer thread outlived the test (client not stopped)'
+    end
+  ensure
+    super
   end
 
   # ------------------------------------------------------------------
@@ -239,6 +260,18 @@ class TestHealthPrimitives < Minitest::Test
     client.instance_variable_set(:@config_loader, fake)
   end
 
+  # qfg-lv4n.1: `connection_state` derives from LIVENESS, not from the stored
+  # @sse_state flag — a network client that is supposed to be holding an SSE
+  # stream cannot report :connected unless a worker is actually running.
+  # These tests drive the state machine's edges by hand (there is no real SSE
+  # worker), so they need a stand-in for the live one.
+  def stub_live_sse!(client)
+    fake = Object.new
+    def fake.alive? = true
+    def fake.close = nil
+    client.instance_variable_set(:@sse_client, fake)
+  end
+
   def test_fallback_engages_immediately_on_initial_sse_error
     # No prior :connected — the SDK never reached SSE, so the fallback
     # engages now (initial-fail path, same as initialize_network_mode's
@@ -287,6 +320,7 @@ class TestHealthPrimitives < Minitest::Test
     # channels live.
     client = make_client(poll_interval: 0.05)
     stub_config_loader!(client)
+    stub_live_sse!(client)
 
     client.send(:handle_sse_state_change, :connected)
     client.send(:handle_sse_state_change, :error)
@@ -311,6 +345,7 @@ class TestHealthPrimitives < Minitest::Test
     # engage at all.
     client = make_client(poll_interval: 0.1)
     stub_config_loader!(client)
+    stub_live_sse!(client)
 
     client.send(:handle_sse_state_change, :connected)
     client.send(:handle_sse_state_change, :error)

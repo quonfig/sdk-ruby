@@ -51,6 +51,9 @@ module Quonfig
         @stopped = Concurrent::AtomicBoolean.new(false)
         @thread = nil
         @at_exit_registered = false
+        # Set on #start. Everything that can EMIT is gated on it so a forked
+        # child never speaks for the process that created this reporter.
+        @owner_pid = nil
       end
 
       def enabled?
@@ -80,6 +83,11 @@ module Quonfig
         return if @thread&.alive?
         return unless enabled?
 
+        # Claim ownership for THIS process. fork(2) copies the reporter, its
+        # aggregators, and the process-wide at_exit closure registered below;
+        # the pid recorded here is what lets the copy know it is not the
+        # owner and must stay silent (qfg-lv4n.1, dd-trace-rb's pattern).
+        @owner_pid = Process.pid
         @stopped.make_false
         register_at_exit_handler
         @thread = Thread.new do
@@ -106,6 +114,8 @@ module Quonfig
       end
 
       def stop
+        return if foreign_process?('stop')
+
         @stopped.make_true
         thread = @thread
         @thread = nil
@@ -121,7 +131,13 @@ module Quonfig
 
       # Drain all aggregators and POST the batch. Public so tests can
       # trigger a sync without waiting for the background loop.
+      #
+      # Silent in any process other than the one that started the reporter:
+      # after a fork the child holds a full copy of the PARENT's un-flushed
+      # window, and the parent is still going to flush it itself.
       def sync
+        return if foreign_process?('sync')
+
         events = []
         if (summaries_event = @evaluation_summaries_aggregator&.drain_event)
           events << summaries_event
@@ -151,7 +167,40 @@ module Quonfig
         @at_exit_registered
       end
 
+      # Pid of the process that started this reporter, or nil if it was never
+      # started. Visible for tests / diagnostics.
+      attr_reader :owner_pid
+
+      # Called on the INHERITED reporter in a forked child, from
+      # +Quonfig::Client#after_fork_in_child+, once the child has dropped its
+      # reference to it. Makes the copied window unreachable so nothing can
+      # ever emit it — belt to the +@owner_pid+ braces.
+      #
+      # Deliberately does NOT stop, close, or join anything: the thread does
+      # not exist in the child, and the HTTP connection's fd is shared with
+      # the parent.
+      def discard_inherited!
+        @stopped.make_true
+        @thread = nil
+        @context_shape_aggregator = nil
+        @example_contexts_aggregator = nil
+        @evaluation_summaries_aggregator = nil
+        @failover_aggregator = nil
+      end
+
       private
+
+      # True when this reporter belongs to a different process — i.e. we are
+      # a fork(2) copy. Never true before #start (nothing has been claimed,
+      # and nothing was registered at_exit either).
+      def foreign_process?(operation)
+        return false if @owner_pid.nil?
+        return false if @owner_pid == Process.pid
+
+        LOG.debug "[quonfig] Telemetry #{operation} skipped in forked child " \
+                  "pid=#{Process.pid} owner_pid=#{@owner_pid}"
+        true
+      end
 
       # Rails / Passenger / Puma workers often terminate via SIGTERM without
       # a chance to call Client#stop. Register a Kernel.at_exit hook on
@@ -174,6 +223,8 @@ module Quonfig
       # no-op. Bounded so a stuck reporter thread or dead telemetry
       # endpoint can't hang process exit.
       def final_drain_on_exit
+        return if foreign_process?('at_exit drain')
+
         @stopped.make_true
         thread = @thread
         @thread = nil

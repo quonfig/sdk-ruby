@@ -282,9 +282,18 @@ class TestDatadirAutoReload < Minitest::Test
     assert_nil client.instance_variable_get(:@datadir_watcher),
                'before_fork_in_parent must drop the watcher reference'
 
+    simulate_fork_child_pid!(client)
     client.after_fork_in_child
+
+    assert_nil client.instance_variable_get(:@datadir_watcher),
+               'the fork hook itself must not start the watcher — re-initialization is lazy (qfg-lv4n.1)'
+
+    # First use of the client in the child is what re-initializes it: reload
+    # the workspace from disk, then re-register the watcher.
+    client.get('welcome')
+
     new_watcher = client.instance_variable_get(:@datadir_watcher)
-    refute_nil new_watcher, 'after_fork_in_child must rebuild the watcher'
+    refute_nil new_watcher, 'the first use after a fork must rebuild the watcher'
     refute_same original_watcher, new_watcher,
                 'after_fork_in_child must allocate a fresh watcher instance'
 
