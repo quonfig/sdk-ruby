@@ -17,7 +17,28 @@ require 'test_helper'
 # and amplify transient blips into restart cascades.
 class TestHealthPrimitives < Minitest::Test
   def make_client(**options)
-    Quonfig::Client.new(Quonfig::Options.new(**options), store: Quonfig::ConfigStore.new)
+    client = Quonfig::Client.new(Quonfig::Options.new(**options), store: Quonfig::ConfigStore.new)
+    (@made_clients ||= []) << client
+    client
+  end
+
+  # Every client built here is store-injected (no config loader) and several
+  # tests drive a connected->error edge on it, which arms the fallback-engage
+  # grace timer: 2 x fallback_poll_interval, i.e. 120s at the default. A
+  # client that is not stopped leaks that timer thread; 120s later it engages
+  # a poller that calls `fetch!` on a nil loader and logs errors into whatever
+  # test happens to be running, which fails THAT test's teardown. It bit CI
+  # (Ruby 3.3, seed 516) once the suite grew past 120s.
+  def teardown
+    clients = @made_clients || []
+    timers = clients.map { |c| c.instance_variable_get(:@fallback_engage_timer) }.compact
+    clients.each(&:stop)
+    timers.each do |t|
+      t.join(1)
+      refute t.alive?, 'a fallback-engage grace timer thread outlived the test (client not stopped)'
+    end
+  ensure
+    super
   end
 
   # ------------------------------------------------------------------
