@@ -46,6 +46,7 @@ class TestForkSafety < Minitest::Test
   PORT_RAISE_SSE     = 4712
   PORT_ON_UPDATE     = 4713
   PORT_ORPHAN        = 4714
+  PORT_FORK_SELF     = 4715
 
   # rack-timeout's RequestTimeoutException and Ruby 3.3's
   # Timeout::ExitException are both Exception (not StandardError) subclasses,
@@ -1877,6 +1878,75 @@ class TestForkSafety < Minitest::Test
     ensure
       client.stop
       FileUtils.rm_rf(workspace)
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # qfg-4t5o — `Quonfig.fork` / `Client#fork` inside a child the hook has
+  # already prepared. The 1.0–1.3 README taught `on_worker_boot { Quonfig.fork }`
+  # and that line is still deployed on 3.1+, where the hook has already done
+  # exactly what the call asks for. It must therefore hand back the SAME
+  # client: before first use, a fresh `Client.new` would discard the prepared
+  # client and pay an eager second fetch; after first use it would leave the
+  # worker holding two live SSE streams and two reporters, the first pair
+  # orphaned where `stop` can never reach it. The parent path is unchanged
+  # (see test_thread_safety.rb): outside a hook-prepared child, `fork` still
+  # builds a fresh client, which is the whole Ruby 3.0 story.
+  # ------------------------------------------------------------------
+  def test_client_fork_in_a_hook_prepared_child_returns_the_same_client
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_FORK_SELF, StreamEndpoint, configs: true)
+    server_thread = Thread.new { server.start }
+    client = build_client_for_fork_tests(
+      port: PORT_FORK_SELF,
+      api_urls: ["http://127.0.0.1:#{PORT_FORK_SELF}"]
+    )
+
+    begin
+      assert wait_until(5) { client.get(CONFIG_KEY, nil) == 'v0' },
+             'parent never installed the initial envelope'
+      config_hits_before = ConfigsEndpoint.hits
+
+      report = fork_and_capture do
+        before_first_use = client.fork
+        value = client.get(CONFIG_KEY, nil)
+        after_first_use = client.fork
+        {
+          'before_first_use_same' => before_first_use.equal?(client),
+          'after_first_use_same' => after_first_use.equal?(client),
+          'value' => value,
+          'live_sse_clients' => live_sse_client_count,
+          'state' => client.connection_state.to_s
+        }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert report['before_first_use_same'],
+             'Client#fork in a hook-prepared child (before first use) built a second client instead of ' \
+             'returning the one the hook prepared'
+      assert report['after_first_use_same'],
+             'Client#fork in a hook-prepared child (after first use) built a second client — the first ' \
+             "one's stream and reporter are now orphans"
+      assert_equal 'v0', report['value']
+      assert_equal 'connected', report['state']
+      assert_equal 1, report['live_sse_clients'],
+                   "the child must hold exactly ONE live SSE client (saw #{report['live_sse_clients']})"
+      assert_equal 1, ConfigsEndpoint.hits - config_hits_before,
+                   "the child must pay exactly one config fetch (saw #{ConfigsEndpoint.hits - config_hits_before})"
+
+      # The parent is not a hook-prepared child: fork there still builds a
+      # fresh client, exactly as before.
+      parent_forked = client.fork
+      refute_same client, parent_forked, 'in the process that owns the client, fork must build a fresh one'
+      parent_forked.stop
+    ensure
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/explicit api_urls disables automatic failover/])
     end
   end
 

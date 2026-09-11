@@ -599,7 +599,26 @@ module Quonfig
       @config_loader
     end
 
+    # A client to use in a forked child.
+    #
+    # On Ruby 3.1+ the +Process._fork+ hook has already prepared THIS client
+    # in the child by the time any user code runs there (inherited threads
+    # and store dropped, re-initialization armed for first use). A call here
+    # in that child — the +on_worker_boot { Quonfig.fork }+ line the 1.0–1.3
+    # README taught — therefore returns +self+: the hook already did what the
+    # caller is asking for. Building a second client instead would discard
+    # the prepared one and pay an eager second fetch, or, after first use,
+    # leave the worker holding two live SSE streams and two reporters with
+    # the first pair orphaned where +stop+ can never reach it (qfg-4t5o).
+    #
+    # Everywhere else — the owning process, Ruby 3.0 where there is no hook,
+    # a client that was +stop+ped before the fork — this builds a fresh
+    # client, which is the Ruby 3.0 manual-wiring path. The old client is
+    # never stopped: on 3.0 it is the inherited one, and stopping it would
+    # close the inherited socket and tear down the PARENT's stream.
     def fork
+      return self if @forked_in_pid == Process.pid
+
       self.class.new(@options.for_fork)
     end
 
