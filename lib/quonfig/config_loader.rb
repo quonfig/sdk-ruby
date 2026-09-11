@@ -392,11 +392,29 @@ module Quonfig
         # ordering info, so it is never rejected as "older"; freezing the client
         # on stale config would be worse (mirrors sdk-node).
         unless @held_generation.nil? || incoming_gen <= 0 || incoming_gen > @held_generation
-          @logger.debug "Reject-older guard: dropping incoming generation #{incoming_gen} <= held #{@held_generation} (source=#{source})"
-          # Failover observability (qfg-41nh.18): count the guard rejection. This
-          # single guard covers BOTH the HTTP config-fetch path and the SSE
-          # message path (apply_envelope) — every network install funnels here.
-          @failover_aggregator&.record_guard_rejected
+          if incoming_gen < @held_generation
+            @logger.debug "Reject-older guard: dropping incoming generation #{incoming_gen} < held #{@held_generation} (source=#{source})"
+            # Failover observability (qfg-41nh.18): count the guard rejection.
+            # This single guard covers BOTH the HTTP config-fetch path and the
+            # SSE message path (apply_envelope) — every network install funnels
+            # here. Only a STRICTLY older payload is counted (qfg-rr5b): that is
+            # the one thing `guardRejected` is meant to report, "a leg tried to
+            # move us backwards", and it is what the sdk_failover signal alerts
+            # on.
+            @failover_aggregator&.record_guard_rejected
+          else
+            # Equal generation: a re-delivery of the envelope we already hold, and
+            # a silent no-op (qfg-rr5b). Two server behaviors produce it in normal
+            # steady state — api-delivery's SSE `sendInitialConfig` re-sends the
+            # current envelope on every connect (SDK clients send no
+            # Last-Event-Id), and a config poll on an empty per-leg ETag slot (a
+            # fresh transport, a reconnect, the fallback poller's engage fetch)
+            # returns a full 200 at the same generation. Counting those as
+            # `guardRejected` made a healthy client report failover activity from
+            # init alone. Not installed, not counted — but still :not_modified, so
+            # the caller's liveness stamp is unchanged.
+            @logger.debug "Same-generation re-delivery: ignoring incoming generation #{incoming_gen} (source=#{source})"
+          end
           return :not_modified
         end
 
