@@ -47,6 +47,7 @@ class TestForkSafety < Minitest::Test
   PORT_ON_UPDATE     = 4713
   PORT_ORPHAN        = 4714
   PORT_FORK_SELF     = 4715
+  PORT_INSTANCE_HASH = 4716
 
   # rack-timeout's RequestTimeoutException and Ruby 3.3's
   # Timeout::ExitException are both Exception (not StandardError) subclasses,
@@ -811,6 +812,73 @@ class TestForkSafety < Minitest::Test
              'child evaluation-summaries aggregator must start empty'
       assert report['loader_uses_child_failover'],
              "the child's config loader must record into the child's failover aggregator, not the parent's"
+    ensure
+      StreamEndpoint.close_all!
+      client.stop
+      server.stop
+      server_thread&.join(2)
+      assert_logged([/Initialization did not complete cleanly/])
+    end
+  end
+
+  # ------------------------------------------------------------------
+  # qfg-xcym — the child mints a FRESH instance_hash, and its rebuilt
+  # telemetry reporter carries that hash.
+  #
+  # Before this, `@instance_hash` was minted once in `Client#initialize` and
+  # survived the fork, so every worker of a Puma/Unicorn cluster (and every
+  # `parallel`-gem child) POSTed telemetry under the PARENT's hash.
+  # app-quonfig groups SDK last-seen by `sdk_instance_hash`, so an 8-worker
+  # cluster collapsed to one Debugger row with the parent's and children's
+  # windows interleaved. Reforge has never had this: `Reforge.fork` builds a
+  # whole new Client, which mints its own hash.
+  #
+  # Asserting the REPORTER's hash (not just the client's) is the point: the
+  # reporter captures the hash at construction, so a mint that lands after
+  # the rebuild would leave the wire payload on the parent's hash.
+  # ------------------------------------------------------------------
+  def test_child_mints_a_fresh_instance_hash_for_its_telemetry
+    skip 'Process.fork unavailable on this platform' unless Process.respond_to?(:fork)
+    skip "Process._fork requires Ruby 3.1+ (got #{RUBY_VERSION})" unless Process.respond_to?(:_fork)
+
+    server, = start_webrick_server(PORT_INSTANCE_HASH, StreamEndpoint)
+    server_thread = Thread.new { server.start }
+    client = build_telemetry_client_for_fork_tests(port: PORT_INSTANCE_HASH)
+    stub_telemetry_transport(client)
+
+    begin
+      assert wait_until(5) { client.get(CONFIG_KEY, nil) == 'v0' },
+             'parent never installed the initial SSE envelope'
+      refute_nil client.telemetry_reporter, 'this test needs a live telemetry reporter in the parent'
+
+      parent_hash = client.instance_hash
+      refute_nil parent_hash
+      assert_equal parent_hash, client.telemetry_reporter.instance_variable_get(:@instance_hash),
+                   "the parent's reporter must carry the parent's hash"
+
+      report = fork_and_capture do
+        # First use re-initializes the client in the child (lazy since 1.4.0).
+        client.get(CONFIG_KEY, nil)
+        child_reporter = client.telemetry_reporter
+        {
+          'hash' => client.instance_hash,
+          'reporter_hash' => child_reporter&.instance_variable_get(:@instance_hash),
+          'reporter_present' => !child_reporter.nil?
+        }
+      end
+
+      refute report['error'], "child errored: #{report['error']}"
+      assert report['reporter_present'], 'the child must rebuild a telemetry reporter'
+      refute_nil report['hash'], 'the child must have an instance_hash'
+      refute_equal parent_hash, report['hash'],
+                   'a forked child must mint its OWN instance_hash, not inherit the parent\'s'
+      assert_equal report['hash'], report['reporter_hash'],
+                   "the child's rebuilt telemetry reporter must POST under the CHILD's instance_hash"
+
+      assert_equal parent_hash, client.instance_hash,
+                   'forking must never change the PARENT\'s instance_hash'
+      assert_equal parent_hash, client.telemetry_reporter.instance_variable_get(:@instance_hash),
+                   "forking must never change the parent reporter's instance_hash"
     ensure
       StreamEndpoint.close_all!
       client.stop

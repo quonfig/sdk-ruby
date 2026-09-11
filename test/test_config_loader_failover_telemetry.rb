@@ -139,6 +139,100 @@ class TestConfigLoaderFailoverTelemetry < Minitest::Test
     assert_operator f['guardRejected'], :>=, 1, 'the slow older primary was guard-rejected'
   end
 
+  # qfg-rr5b — an EQUAL-generation re-delivery is a silent no-op, not a guard
+  # rejection. Two server behaviors re-deliver the held envelope constantly:
+  # api-delivery's SSE `sendInitialConfig` re-sends the current envelope on
+  # every connect (SDK clients send no Last-Event-Id), and a config poll on an
+  # empty per-leg ETag slot (fresh transport, reconnect, fallback-poller engage
+  # fetch) returns a full 200 at the same generation. Counting those as
+  # `guardRejected` polluted the sdk_failover alerting signal, which is
+  # supposed to mean "a leg tried to move us BACKWARDS" — a steady-state client
+  # showed guardRejected >= 1 from init alone. The drop itself is unchanged:
+  # still not installed, still :not_modified, still advances liveness.
+  def test_same_generation_redelivery_is_not_counted_as_guard_rejected
+    aggregator = Quonfig::Telemetry::FailoverAggregator.new
+    primary = start_upstream(10, delay_s: 0)
+
+    loader = build_loader([primary], aggregator)
+    loader.fetch! # establishes held_generation = 10
+
+    assert_equal 10, loader.held_generation
+
+    # Drain the resolved-from-primary from the initial install so we isolate
+    # the guard signal.
+    aggregator.drain_event
+
+    # The same envelope the client already holds, re-delivered (SSE reconnect
+    # resend / cold-ETag poll). Twice, so a counter that ticks is unmissable.
+    same = Quonfig::ConfigEnvelope.new(
+      configs: [config_for(10)],
+      meta: { 'version' => 'gen-10', 'environment' => 'production', 'generation' => 10 }
+    )
+
+    assert_equal :not_modified, loader.apply_envelope(same),
+                 'an equal-generation envelope must still be a no-op install'
+    assert_equal :not_modified, loader.apply_envelope(same)
+    assert_equal 10, loader.held_generation, 'an equal-generation re-delivery must not move the client'
+
+    event = aggregator.drain_event
+    guard_rejected = event ? event['failover']['guardRejected'] : 0
+
+    assert_equal 0, guard_rejected,
+                 'an equal-generation re-delivery must NOT be counted as guardRejected'
+  end
+
+  # The other half of qfg-rr5b: a STRICTLY older payload is still the thing
+  # guardRejected exists to report, and it still counts — exactly once.
+  def test_strictly_older_redelivery_is_counted_as_guard_rejected
+    aggregator = Quonfig::Telemetry::FailoverAggregator.new
+    primary = start_upstream(10, delay_s: 0)
+
+    loader = build_loader([primary], aggregator)
+    loader.fetch!
+
+    assert_equal 10, loader.held_generation
+    aggregator.drain_event
+
+    older = Quonfig::ConfigEnvelope.new(
+      configs: [config_for(9)],
+      meta: { 'version' => 'gen-9', 'environment' => 'production', 'generation' => 9 }
+    )
+
+    assert_equal :not_modified, loader.apply_envelope(older)
+    assert_equal 10, loader.held_generation, 'a stale snapshot must not regress the client'
+
+    event = aggregator.drain_event
+
+    refute_nil event, 'a strictly older payload must still record a failover signal'
+    assert_equal 1, event['failover']['guardRejected'],
+                 'a STRICTLY older payload is exactly what guardRejected is for'
+  end
+
+  # An UNVERSIONED snapshot (generation <= 0) carries no ordering info, so the
+  # carve-out lets it through untouched — it is neither dropped as older nor
+  # counted. Pinned here so the strict-older narrowing cannot quietly change it.
+  def test_unversioned_snapshot_is_not_guard_rejected
+    aggregator = Quonfig::Telemetry::FailoverAggregator.new
+    primary = start_upstream(10, delay_s: 0)
+
+    loader = build_loader([primary], aggregator)
+    loader.fetch!
+
+    assert_equal 10, loader.held_generation
+    aggregator.drain_event
+
+    unversioned = Quonfig::ConfigEnvelope.new(
+      configs: [config_for(0)],
+      meta: { 'version' => 'gen-0', 'environment' => 'production', 'generation' => 0 }
+    )
+    loader.apply_envelope(unversioned)
+
+    event = aggregator.drain_event
+    guard_rejected = event ? event['failover']['guardRejected'] : 0
+
+    assert_equal 0, guard_rejected, 'the unversioned carve-out must never be counted as guardRejected'
+  end
+
   # A stale SSE snapshot (older generation) against an established client is
   # dropped by the same reject-older guard — proving the SSE message path also
   # records guardRejected (source_index nil, so no resolved-from is counted).
