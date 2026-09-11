@@ -437,6 +437,18 @@ module Quonfig
       # fetches (or loads) its own on first use.
       reset_store_in_child!
 
+      # A fresh instance hash (qfg-xcym). `@instance_hash` identifies this
+      # SDK instance in every telemetry payload, and app-quonfig's Debugger
+      # groups SDK last-seen by it — so a child that keeps the parent's hash
+      # collapses an 8-worker Puma cluster into ONE row with the parent's and
+      # the children's windows interleaved. Reforge does not have this
+      # problem: `Reforge.fork` builds a whole new Client, which mints its
+      # own. This MUST run before +rebuild_aggregators_in_child!+: the
+      # reporter captures the hash at construction, so minting after the
+      # rebuild would leave the child POSTing under the parent's identity.
+      # The parent's hash is untouched — the hook never runs there.
+      @instance_hash = SecureRandom.uuid
+
       # Fresh aggregators. The parent flushes its own copy; a child that
       # flushed inherited data would double-report it. The reporter is BUILT
       # here (so the child's config loader points at the child's failover
