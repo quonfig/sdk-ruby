@@ -458,12 +458,16 @@ Caveats:
   in-process SSE state is moot.
 - The first lookup in a forked child **blocks** on that child's own config
   fetch, under the same `init_timeout_ms` and `on_init_failure` options a
-  fresh client uses. With the default `on_init_failure: :return` a failed
-  fetch logs one line and the child serves defaults until its stream or
-  poller lands the first envelope. With `on_init_failure: :raise` the failure
-  **raises out of that first lookup**, exactly as `Client.new` would, and
-  later lookups keep raising — without re-fetching — until the update channel
-  lands an envelope, at which point the client serves config normally again.
+  fresh client uses. **The default is `on_init_failure: :raise`**, so if the
+  child's fetch fails against every `api_urls` leg (primary and secondary
+  both unreachable) the failure **raises out of that first lookup**, exactly
+  as `Client.new` would at boot, and later lookups keep raising — without
+  re-fetching — until the update channel lands an envelope, at which point
+  the client serves config normally again. On 1.3.0 and earlier a child in
+  that situation silently served the parent's snapshot instead. If you would
+  rather a forked child serve defaults through an outage, set
+  `on_init_failure: :return`: a failed fetch then logs one line and the child
+  serves defaults until its stream or poller lands the first envelope.
 - **Other threads wait.** Every thread that reaches the client while that
   first fetch is in flight blocks on it and then sees the fetched config. One
   fetch, one stream dial, and one telemetry reporter per child, however many
@@ -503,11 +507,10 @@ Quonfig.init(Quonfig::Options.new(sdk_key: ENV.fetch('QUONFIG_BACKEND_SDK_KEY'))
 ```
 
 If you use SemanticLogger you still need to reopen it in each worker — but
-leave `Quonfig.fork` out of that block on 3.1+. The SDK has already handled
-the fork by the time `on_worker_boot` runs, so calling it there is
-unnecessary: it discards the client the hook prepared and builds a second one
-in its place (and if the worker has already used the client, the first one's
-stream and reporter are orphaned):
+`Quonfig.fork` is not needed in that block on 3.1+. The SDK has already
+handled the fork by the time `on_worker_boot` runs, and since 1.4.0 a
+`Quonfig.fork` call in a child the hook has already prepared simply returns
+the same client (so a leftover call from older docs is harmless):
 
 ```ruby
 # config/puma.rb (Ruby 3.1+)
