@@ -2,7 +2,7 @@
 
 Ruby SDK for [Quonfig](https://quonfig.com) — Feature Flags, Live Config, and Dynamic Log Levels.
 
-> **Note:** This SDK is pre-1.0 and the API is not yet stable.
+> **Note:** This SDK is stable (v1) and follows [Semantic Versioning](https://semver.org): breaking changes to the public API land only in a major (`x.0.0`) release.
 
 ## Installation
 
