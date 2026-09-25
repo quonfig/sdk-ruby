@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.5.0 - 2026-09-25
 
 - **Telemetry transport policy (qfg-y8je.8).** The telemetry POST had no timeout of its own (Faraday's defaults, 60s connect + 60s read); it now has a 15s overall deadline (`telemetry_timeout_ms`) and a 5s connect + TLS deadline (`telemetry_connect_timeout_ms`). A failed batch is kept byte-for-byte and resent (never merged with newer data, so the server dedups a resend of a batch that did land). Resends happen no sooner than 30s after a failure and honor `Retry-After` up to 10 min. The retained queue is capped at 5 batches / 2MB / 5 min (oldest dropped). At most one POST is in flight. 401/403/404 disable telemetry for the process with one ERROR; any other 4xx drops that batch with one ERROR. Before this, a failed batch was simply lost.
 - **Oversize batches are dropped on failure.** A single batch larger than the 2MB byte cap (`telemetry_max_retained_bytes`) is POSTed once and, if that POST fails, dropped rather than kept; the drop counts toward the warning below. This fires for Ruby in practice: in a 24h production sample, sdk-ruby was the only SDK sending large batches (p95 874KB, p99 1.73MB, max 5.2MB, all example-context data) and 0.07% of its POSTs were over 2MB. Most of that size came from the old interval (next item), which let a window grow for up to 10 minutes; at 60s batches should be much smaller. To keep batches small regardless, use `context_upload_mode: :shapes_only` or a lower `context_max_size`.
