@@ -284,6 +284,16 @@ Quonfig::Client.new(
 | `data_dir_auto_reload`              | `Boolean`         | `false`                                                             | Datadir mode only. When `true`, the SDK watches the datadir and re-reads the envelope when files change. See [Datadir mode: auto-reload on file changes](#datadir-mode-auto-reload-on-file-changes). |
 | `data_dir_auto_reload_debounce_ms`  | `Integer` (ms)    | `200`                                                               | Debounce window for the auto-reload watcher — events arriving inside the window are coalesced into a single re-read. Ignored when `data_dir_auto_reload` is `false`. |
 | `logger`          | Logger-like object         | `nil`                                                               | Optional host-app logger (e.g. `Rails.logger`). Must respond to `debug`/`info`/`warn`/`error`. When set, all SDK warnings/errors flow through this logger instead of the default stderr / SemanticLogger backend. |
+| `collect_evaluation_summaries`      | `Boolean`         | `true`                                                              | Send per-flag evaluation counts. See [Telemetry](#telemetry). |
+| `collect_max_evaluation_summaries`  | `Integer`         | `10_000`                                                            | Distinct flags/configs counted per telemetry window; a key already seen keeps counting at the cap. |
+| `context_upload_mode`               | `Symbol`          | `:periodic_example`                                                 | `:periodic_example` (context shapes + example contexts), `:shapes_only`, or `:none`. |
+| `context_max_size`                  | `Integer`         | `10_000`                                                            | Context-shape fields, and separately example contexts, kept per telemetry window. |
+| `collect_sync_interval`             | `Numeric` (s)     | `60`                                                                | Seconds between telemetry POSTs. |
+| `telemetry_timeout_ms`              | `Integer` (ms)    | `15_000`                                                            | Overall deadline for one telemetry POST. |
+| `telemetry_connect_timeout_ms`      | `Integer` (ms)    | `5_000`                                                             | TCP connect + TLS deadline for one telemetry POST. |
+| `telemetry_max_retained_batches`    | `Integer`         | `5`                                                                 | Failed telemetry batches kept for resend. |
+| `telemetry_max_retained_bytes`      | `Integer`         | `2_097_152`                                                         | Byte cap (2MB) on kept batches; a single batch larger than this is sent once and never kept. |
+| `telemetry_max_retained_age_ms`     | `Integer` (ms)    | `300_000`                                                           | A kept batch older than this is discarded. |
 
 ## Failover & `QUONFIG_DOMAIN`
 
@@ -633,6 +643,58 @@ Compose your own threshold from the two getters if you need a dashboard signal
 process.
 
 There is intentionally no `client.healthy?` primitive.
+
+## Telemetry
+
+With an SDK key the client sends usage telemetry to `telemetry_url` so the
+Quonfig dashboard can show which flags and configs are evaluated and with what
+contexts. Telemetry never affects flag evaluation: every failure below is
+contained in the background reporter thread.
+
+**What is sent.** Evaluation summaries (per flag/config: counts per rule and
+value), context shapes (context field names and types), example contexts (up to
+one per context key per hour) and failover counters. Opt out with
+`collect_evaluation_summaries: false` and `context_upload_mode: :shapes_only`
+(no example contexts) or `:none` (no context data). With both off, no reporter
+runs.
+
+**How it is sent.**
+
+- One POST every `collect_sync_interval` seconds (60), with at most one POST in
+  flight. A tick that fires while a POST is still out is skipped and its data
+  rolls into the next window.
+- Each POST has an overall deadline of `telemetry_timeout_ms` (15s) and a
+  connect + TLS deadline of `telemetry_connect_timeout_ms` (5s).
+- When a POST fails (timeout, network error, 408, 429 or 5xx), the serialized
+  batch is kept byte-for-byte and resent unchanged, never merged with newer
+  data, so the server can recognize a resend of a batch that did land. Up to 5
+  batches / 2MB are kept for up to 5 minutes; beyond that the oldest is
+  dropped. A single batch larger than 2MB is sent once and never kept: if that
+  one POST fails, the batch is dropped. Large batches come from example
+  contexts; `context_upload_mode: :shapes_only` or a lower `context_max_size`
+  keeps batches small.
+- Resends happen no sooner than 30s after a failure and after any
+  `Retry-After` (honored up to 10 minutes), oldest first, then the current
+  window.
+- A 401, 403 or 404 means the SDK key or `telemetry_url` is wrong: the SDK logs
+  one error and disables telemetry for the rest of the process. Any other 4xx
+  drops that one batch with an error (the server rejected the payload) and
+  telemetry continues.
+
+**Logging.** A failed POST logs at debug only. The first batch actually dropped
+logs one warning with the last POST result and queue depth; further drops log
+at debug with a summary warning at most every 10 minutes; the first success
+after failures logs one info line. The SDK's default logger prints warnings and
+errors only; pass `logger:` to receive the debug and info lines.
+
+**Shutdown.** `stop` (and the `at_exit` hook the reporter registers) sends the
+current window once with a 5s deadline, does not resend kept batches, and never
+blocks process exit longer than that.
+
+**Memory.** Everything is bounded: at most 10,000 evaluation-summary keys,
+10,000 context-shape fields and 10,000 example contexts per window (keys
+already seen keep counting at the cap), a 100,000-entry example-context
+rate-limit map, and the 2MB retained queue.
 
 ## Documentation
 
