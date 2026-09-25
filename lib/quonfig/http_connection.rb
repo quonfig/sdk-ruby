@@ -34,10 +34,16 @@ module Quonfig
     # Options#config_fetch_timeout_ms (sequential) or the hedge abort (hedged
     # legs) so a hung OR drip-feeding upstream aborts fast instead of blocking
     # the caller's whole init budget.
-    def initialize(uri, sdk_key, timeout_ms: nil)
+    #
+    # +open_timeout_ms+ (qfg-y8je.8): a separate, usually shorter, bound on the
+    # connect (open) phase — TCP connect plus TLS handshake. nil uses
+    # +timeout_ms+ for it, as before. The telemetry reporter passes 5s here and
+    # 15s as +timeout_ms+.
+    def initialize(uri, sdk_key, timeout_ms: nil, open_timeout_ms: nil)
       @uri = uri
       @sdk_key = sdk_key
       @timeout_ms = timeout_ms
+      @open_timeout_ms = open_timeout_ms
     end
 
     attr_reader :uri
@@ -46,8 +52,11 @@ module Quonfig
       with_wall_clock_deadline { connection(headers).get(path) }
     end
 
+    # A String +body+ is sent verbatim (the telemetry reporter resends a
+    # retained batch byte-for-byte); anything else is serialized as JSON.
     def post(path, body)
-      with_wall_clock_deadline { connection.post(path, body.to_json) }
+      payload = body.is_a?(String) ? body : body.to_json
+      with_wall_clock_deadline { connection.post(path, payload) }
     end
 
     def connection(headers = {})
@@ -63,6 +72,7 @@ module Quonfig
           conn.options.open_timeout = seconds
           conn.options.timeout = seconds
         end
+        conn.options.open_timeout = @open_timeout_ms / 1000.0 if @open_timeout_ms
       end
     end
 

@@ -204,7 +204,7 @@ class TestOptions < Minitest::Test
   end
 
   def test_collect_max_evaluation_summaries
-    assert_equal 100_000, Quonfig::Options.new(sdk_key: SDK_KEY).collect_max_evaluation_summaries
+    assert_equal 10_000, Quonfig::Options.new(sdk_key: SDK_KEY).collect_max_evaluation_summaries
     assert_equal 0,
                  Quonfig::Options.new(sdk_key: SDK_KEY,
                                       collect_evaluation_summaries: false).collect_max_evaluation_summaries

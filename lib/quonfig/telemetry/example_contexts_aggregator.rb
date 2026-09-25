@@ -10,11 +10,16 @@ module Quonfig
     # matching sdk-node and sdk-go. This is NOT the old Prefab protobuf.
     class ExampleContextsAggregator
       ONE_HOUR_SECONDS = 60 * 60
+      # Bound on the once-per-hour rate-limit map (P6 of the telemetry
+      # transport policy, qfg-y8je.8): a new key arriving when it is full
+      # prunes expired entries, and is not recorded if it is still full.
+      SEEN_CAP = 100_000
 
       attr_reader :data, :cache
 
-      def initialize(max_contexts:, rate_limit_seconds: ONE_HOUR_SECONDS)
+      def initialize(max_contexts:, rate_limit_seconds: ONE_HOUR_SECONDS, seen_cap: SEEN_CAP)
         @max_contexts = max_contexts
+        @seen_cap = seen_cap
         @data = Concurrent::Array.new
         @cache = Quonfig::RateLimitCache.new(rate_limit_seconds)
       end
@@ -30,6 +35,7 @@ module Quonfig
         return if key.nil? || key.empty?
 
         return unless @data.size < @max_contexts && !@cache.fresh?(key)
+        return unless room_in_cache?
 
         @cache.set(key)
         @data.push([Quonfig::TimeHelpers.now_in_ms, context])
@@ -58,6 +64,13 @@ module Quonfig
       end
 
       private
+
+      def room_in_cache?
+        return true if @cache.data.size < @seen_cap
+
+        @cache.prune
+        @cache.data.size < @seen_cap
+      end
 
       def grouped_key_for(context)
         return context.grouped_key if context.respond_to?(:grouped_key)

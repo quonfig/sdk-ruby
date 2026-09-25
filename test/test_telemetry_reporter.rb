@@ -13,8 +13,10 @@ class TestTelemetryReporter < Minitest::Test
       @posts = []
     end
 
+    # The reporter POSTs the serialized batch verbatim (a String); parse it
+    # back so assertions can read the payload.
     def post(path, body)
-      @posts << [path, body]
+      @posts << [path, JSON.parse(body)]
       FakeResponse.new(200)
     end
   end

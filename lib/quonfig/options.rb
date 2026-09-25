@@ -8,7 +8,9 @@ module Quonfig
     attr_reader :sdk_key, :environment, :api_urls, :sse_api_urls, :telemetry_destination, :config_api_urls,
                 :on_no_default, :init_timeout_ms, :on_init_failure, :collect_sync_interval, :datadir, :enable_sse, :fallback_poll_enabled, :fallback_poll_interval_ms, :global_context, :logger_key, :logger, :enable_quonfig_user_context,
                 :data_dir_auto_reload, :data_dir_auto_reload_debounce_ms, :config_fetch_timeout_ms,
-                :config_fetch_hedge_delay_ms, :config_fetch_hedge_abort_ms, :api_urls_explicit
+                :config_fetch_hedge_delay_ms, :config_fetch_hedge_abort_ms, :api_urls_explicit,
+                :telemetry_timeout_ms, :telemetry_connect_timeout_ms, :telemetry_max_retained_batches,
+                :telemetry_max_retained_bytes, :telemetry_max_retained_age_ms
     attr_accessor :is_fork
 
     # Default fallback poll interval, in milliseconds. The SDK polls api-delivery
@@ -85,9 +87,28 @@ module Quonfig
     end
 
     DEFAULT_MAX_PATHS = 1_000
-    DEFAULT_MAX_KEYS = 100_000
-    DEFAULT_MAX_EXAMPLE_CONTEXTS = 100_000
-    DEFAULT_MAX_EVAL_SUMMARIES = 100_000
+    # Telemetry aggregator caps per flush window (P6 of the telemetry transport
+    # policy, qfg-y8je.8): the uniform server-SDK cap. Were 100,000 before 1.5.0.
+    DEFAULT_MAX_KEYS = 10_000
+    DEFAULT_MAX_EXAMPLE_CONTEXTS = 10_000
+    DEFAULT_MAX_EVAL_SUMMARIES = 10_000
+
+    # Telemetry transport defaults (qfg-y8je.8; policy P1-P5 in
+    # project/plans/2026-09-24-sdk-telemetry-transport-policy.md).
+    # Seconds between telemetry POSTs (a fixed cadence; was an 8s interval
+    # that grew to 600s).
+    DEFAULT_COLLECT_SYNC_INTERVAL = 60
+    # Overall deadline for one telemetry POST.
+    DEFAULT_TELEMETRY_TIMEOUT_MS = 15_000
+    # TCP connect + TLS deadline for one telemetry POST.
+    DEFAULT_TELEMETRY_CONNECT_TIMEOUT_MS = 5_000
+    # Failed batches kept for resend: at most this many...
+    DEFAULT_TELEMETRY_MAX_RETAINED_BATCHES = 5
+    # ...and at most this many serialized bytes (2MB); a single batch larger
+    # than this is POSTed once and never kept.
+    DEFAULT_TELEMETRY_MAX_RETAINED_BYTES = 2 * 1024 * 1024
+    # A kept batch older than this is discarded.
+    DEFAULT_TELEMETRY_MAX_RETAINED_AGE_MS = 300_000
 
     # Hardcoded fallback domain. Overridden by ENV['QUONFIG_DOMAIN'].
     DEFAULT_DOMAIN = 'quonfig.com'
@@ -213,6 +234,22 @@ module Quonfig
     #     Debounce window in milliseconds. Filesystem events arriving
     #     inside the window are coalesced into a single re-read. Ignored
     #     when +:data_dir_auto_reload+ is +false+.
+    #   @option options [Numeric] :collect_sync_interval (60)
+    #     Seconds between telemetry POSTs, on a fixed cadence. At most one POST
+    #     is in flight; a tick that fires while one is out is skipped and its
+    #     data rolls into the next window.
+    #   @option options [Integer] :telemetry_timeout_ms (15000)
+    #     Overall deadline for one telemetry POST.
+    #   @option options [Integer] :telemetry_connect_timeout_ms (5000)
+    #     TCP connect + TLS deadline for one telemetry POST.
+    #   @option options [Integer] :telemetry_max_retained_batches (5)
+    #     Failed batches kept (byte-for-byte) for resend; the oldest is dropped
+    #     beyond this.
+    #   @option options [Integer] :telemetry_max_retained_bytes (2097152)
+    #     Byte cap on kept batches. A single batch larger than this is POSTed
+    #     once and dropped if that POST fails.
+    #   @option options [Integer] :telemetry_max_retained_age_ms (300000)
+    #     A kept batch older than this is discarded.
     #   @option options [Boolean] :allow_telemetry_in_local_mode (false)
     #     @deprecated No-op since 1.3.0 (qfg-5x9x). Telemetry is gated on SDK-key
     #       presence alone, so datadir mode no longer suppresses it and this flag
@@ -240,6 +277,11 @@ module Quonfig
       config_fetch_hedge_abort_ms: nil,
       collect_max_paths: DEFAULT_MAX_PATHS,
       collect_sync_interval: nil,
+      telemetry_timeout_ms: nil,
+      telemetry_connect_timeout_ms: nil,
+      telemetry_max_retained_batches: nil,
+      telemetry_max_retained_bytes: nil,
+      telemetry_max_retained_age_ms: nil,
       context_upload_mode: :periodic_example, # :periodic_example, :shapes_only, :none
       context_max_size: DEFAULT_MAX_EVAL_SUMMARIES,
       collect_evaluation_summaries: true,
@@ -303,7 +345,15 @@ module Quonfig
       @config_fetch_hedge_abort_ms = config_fetch_hedge_abort_ms || DEFAULT_CONFIG_FETCH_HEDGE_ABORT_MS
 
       @collect_max_paths = collect_max_paths
-      @collect_sync_interval = collect_sync_interval
+      @collect_sync_interval = collect_sync_interval.nil? ? DEFAULT_COLLECT_SYNC_INTERVAL : collect_sync_interval
+      # Telemetry transport (qfg-y8je.8). nil, non-numeric or <= 0 -> default.
+      @telemetry_timeout_ms = positive_or(telemetry_timeout_ms, DEFAULT_TELEMETRY_TIMEOUT_MS)
+      @telemetry_connect_timeout_ms = positive_or(telemetry_connect_timeout_ms, DEFAULT_TELEMETRY_CONNECT_TIMEOUT_MS)
+      @telemetry_max_retained_batches = positive_or(telemetry_max_retained_batches,
+                                                    DEFAULT_TELEMETRY_MAX_RETAINED_BATCHES)
+      @telemetry_max_retained_bytes = positive_or(telemetry_max_retained_bytes, DEFAULT_TELEMETRY_MAX_RETAINED_BYTES)
+      @telemetry_max_retained_age_ms = positive_or(telemetry_max_retained_age_ms,
+                                                   DEFAULT_TELEMETRY_MAX_RETAINED_AGE_MS)
       @collect_evaluation_summaries = collect_evaluation_summaries
       @collect_max_evaluation_summaries = collect_max_evaluation_summaries
       # Retained for back-compat only; nothing reads it (qfg-5x9x).
@@ -377,6 +427,10 @@ module Quonfig
     # `isTelemetryEnabled` and sdk-go's `Options.TelemetryEnabled()`.
     def telemetry_allowed?(option)
       option && sdk_key?
+    end
+
+    def positive_or(value, default)
+      value.is_a?(Numeric) && value.positive? && value.finite? ? value : default
     end
 
     def remove_trailing_slash(url)

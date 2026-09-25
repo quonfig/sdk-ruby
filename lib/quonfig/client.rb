@@ -1123,40 +1123,12 @@ module Quonfig
     # The reporter runs on a background thread and periodically POSTs
     # context-shape and example-context batches to +telemetry_destination+.
     def initialize_telemetry(start: true)
-      shape_aggregator = nil
-      example_aggregator = nil
-      summaries_aggregator = nil
-
-      if @options.collect_max_shapes.to_i.positive?
-        shape_aggregator = Quonfig::Telemetry::ContextShapeAggregator.new(
-          max_shapes: @options.collect_max_shapes
-        )
-      end
-
-      if @options.collect_max_example_contexts.to_i.positive?
-        example_aggregator = Quonfig::Telemetry::ExampleContextsAggregator.new(
-          max_contexts: @options.collect_max_example_contexts
-        )
-      end
-
-      if @options.collect_max_evaluation_summaries.to_i.positive?
-        summaries_aggregator = Quonfig::Telemetry::EvaluationSummariesAggregator.new(
-          max_keys: @options.collect_max_evaluation_summaries
-        )
-      end
-
-      return if shape_aggregator.nil? && example_aggregator.nil? && summaries_aggregator.nil?
-
-      @telemetry_reporter = Quonfig::Telemetry::TelemetryReporter.new(
+      @telemetry_reporter = Quonfig::Telemetry::TelemetryReporter.build(
         options: @options,
         instance_hash: @instance_hash,
-        context_shape_aggregator: shape_aggregator,
-        example_contexts_aggregator: example_aggregator,
-        evaluation_summaries_aggregator: summaries_aggregator,
-        failover_aggregator: @failover_aggregator,
-        sync_interval: @options.collect_sync_interval
+        failover_aggregator: @failover_aggregator
       )
-
+      return if @telemetry_reporter.nil?
       return unless @telemetry_reporter.enabled?
       return unless start
 
