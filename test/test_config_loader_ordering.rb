@@ -150,9 +150,14 @@ class TestConfigLoaderOrdering < Minitest::Test
     assert_equal 42, loader.held_generation, 'must establish on gen 42'
 
     # Server now serves an unversioned (generation 0) snapshot.
+    installs_before = loader.install_count
     current_gen = 0
     loader.fetch!
-    assert_equal 0, loader.held_generation,
+    assert_equal installs_before + 1, loader.install_count,
                  'gen-0 carve-out: an unversioned snapshot must install, not freeze the client on 42'
+    # qfg-9dxb.3 Fix A: the unversioned install carries no ordering info, so it
+    # must not LOWER the held generation (an established client never goes backward).
+    assert_equal 42, loader.held_generation,
+                 'an unversioned install must keep the prior max held generation'
   end
 end

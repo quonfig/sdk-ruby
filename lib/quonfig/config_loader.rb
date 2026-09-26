@@ -339,6 +339,12 @@ module Quonfig
         @logger.info "Config fetch failed: status #{response.status} from #{source}"
         :failed
       end
+    rescue NonEnvelopeError => e
+      # qfg-9dxb.3: a non-envelope 200 is a leg error, NOT an install — the
+      # hedge/failover proceeds and this leg's ETag is never stored (so a junk
+      # 200 cannot pin itself through later 304s).
+      @logger.warn "Config fetch from #{source} returned a non-envelope 200 (#{e.message}); treating as a failed leg"
+      :failed
     rescue Faraday::ConnectionFailed => e
       @logger.debug "Connection failure fetching configs from #{source}: #{e.message}"
       :failed
@@ -355,8 +361,14 @@ module Quonfig
       @etag_mutex.synchronize { @etags[index || 0] = value }
     end
 
+    # Raised by #parse_envelope for a 200 whose body is not a config envelope
+    # (qfg-9dxb.3). Caught in #fetch_from as a leg error.
+    class NonEnvelopeError < StandardError; end
+
     def parse_envelope(body)
       data = body.is_a?(String) ? JSON.parse(body) : body
+      raise NonEnvelopeError, 'missing meta.version' unless Quonfig::ConfigEnvelope.wire_envelope?(data)
+
       Quonfig::ConfigEnvelope.new(
         configs: data['configs'] || [],
         meta: data['meta'] || {}
@@ -431,7 +443,11 @@ module Quonfig
         @version = meta['version'] || meta[:version] || @version
         @environment_id = meta['environment'] || meta[:environment] || @environment_id
 
-        @held_generation = incoming_gen
+        # qfg-9dxb.3 Fix A: an unversioned install (generation <= 0) carries no
+        # ordering info — it still installs (carve-out above), but it must never
+        # LOWER a positive held generation, or a later older snapshot could
+        # regress an established client. A fresh client seeds off it as usual.
+        @held_generation = incoming_gen if @held_generation.nil? || incoming_gen.positive?
         @install_count += 1
         @resolved_from_index = source_index unless source_index.nil?
         # Failover observability (qfg-41nh.18): record which leg served this

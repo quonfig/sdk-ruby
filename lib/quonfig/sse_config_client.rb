@@ -604,6 +604,14 @@ module Quonfig
           return nil
         end
 
+        # qfg-9dxb.3: drop a JSON event that is not a config envelope (no meta
+        # object with a non-empty version) exactly like malformed JSON — it must
+        # never reach install and wipe an established client's keys.
+        unless Quonfig::ConfigEnvelope.wire_envelope?(parsed)
+          (@logger || LOG).error 'SSE Streaming Error: non-envelope event (missing meta.version); dropped'
+          return nil
+        end
+
         envelope = Quonfig::ConfigEnvelope.new(
           configs: parsed['configs'] || [],
           meta: parsed['meta'] || {}

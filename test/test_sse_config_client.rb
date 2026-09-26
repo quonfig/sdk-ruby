@@ -754,6 +754,22 @@ class TestSSEConfigClient < Minitest::Test
     assert_logged([/SSE Streaming Error.*malformed JSON/])
   end
 
+  # qfg-9dxb.3 Fix B: a JSON event that is not a config envelope (no meta
+  # object with a non-empty version) is dropped like malformed JSON — it must
+  # never reach install and wipe an established client's keys.
+  def test_parser_drops_non_envelope_events
+    parser = Quonfig::SSEConfigClient::EventParser.new
+    events = []
+    parser.feed("data: {}\n\n") { |e| events << e }
+    parser.feed("data: {\"error\":\"x\"}\n\n") { |e| events << e }
+    parser.feed("data: {\"configs\":[],\"meta\":{\"version\":\"\"}}\n\n") { |e| events << e }
+    parser.feed("data: []\n\n") { |e| events << e }
+    parser.feed("data: #{SAMPLE_JSON_PAYLOAD}\n\n") { |e| events << e }
+    assert_equal 1, events.size, 'non-envelope events dropped, next valid event still delivered'
+
+    assert_logged([/SSE Streaming Error.*non-envelope/])
+  end
+
   def test_parser_handles_optional_space_after_field_colon
     parser = Quonfig::SSEConfigClient::EventParser.new
     events = []
