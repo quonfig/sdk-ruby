@@ -387,23 +387,37 @@ module Quonfig
       incoming_gen = extract_generation(meta)
 
       @install_mutex.synchronize do
-        # Reject-older install guard (canonical ordering, §5f). A fresh client
-        # (no held generation) seeds off whatever arrives first — even an older
-        # or gen-0 snapshot. An established client installs ONLY when the incoming
-        # generation strictly advances the held one: a same-generation snapshot is
-        # a no-op (no store churn, no install-count bump, no resolved-from change)
-        # so a duplicate leg never flaps an established client, and an OLDER
-        # snapshot (a stale secondary reached on failover) is dropped so the client
-        # never regresses. Reject-older is the whole rule — no source ranking; a
-        # newer primary landing late heals forward automatically. Applies on every
-        # network install path (initial fetch, failover/poll fetch, SSE snapshot,
-        # SSE update, fallback poller); datadir install bypasses this (it is the
-        # local source of truth and goes through Client#apply_datadir_envelope).
-        # Carve-out: an UNVERSIONED snapshot (generation <= 0 — a server that
-        # predates the watermark, or one whose rev-count failed) carries no
-        # ordering info, so it is never rejected as "older"; freezing the client
-        # on stale config would be worse (mirrors sdk-node).
-        unless @held_generation.nil? || incoming_gen <= 0 || incoming_gen > @held_generation
+        # Reject-older install guard (canonical ordering, §5f; mirrors sdk-go
+        # shouldInstall). The rule:
+        #   - fresh client (nothing installed yet)  -> install, whatever arrives
+        #   - incoming generation <= 0 (unversioned) -> install ONLY if the held
+        #     generation is 0 (the client has never held a real generation)
+        #   - otherwise -> install iff incoming strictly exceeds held
+        # A same-generation snapshot is a no-op (no store churn, no install-count
+        # bump, no resolved-from change) so a duplicate leg never flaps an
+        # established client, and an OLDER snapshot (a stale secondary reached on
+        # failover) is dropped so the client never regresses. Reject-older is the
+        # whole rule — no source ranking; a newer primary landing late heals
+        # forward automatically. Applies on every network install path (initial
+        # fetch, failover/poll fetch, SSE snapshot, SSE update, fallback poller);
+        # datadir install bypasses this (it is the local source of truth and goes
+        # through Client#apply_datadir_envelope).
+        #
+        # Unversioned payloads (qfg-9dxb.9): the pre-watermark servers that sent
+        # gen 0 on every payload are long gone. Today gen 0 comes only from a
+        # server whose git store is damaged (rev-count failed) — the least
+        # trustworthy source — so it must not override a held real generation.
+        # A client that has only ever seen gen 0 (e.g. `qfg serve`) keeps
+        # installing each gen 0 payload.
+        unless should_install?(incoming_gen)
+          if incoming_gen <= 0
+            # Unversioned payload while a real generation is held: not provably
+            # older (it carries no ordering info), so a silent no-op — NOT
+            # counted as guardRejected.
+            @logger.debug "Unversioned payload ignored: held generation #{@held_generation} (source=#{source})"
+            return :not_modified
+          end
+
           if incoming_gen < @held_generation
             @logger.debug "Reject-older guard: dropping incoming generation #{incoming_gen} < held #{@held_generation} (source=#{source})"
             # Failover observability (qfg-41nh.18): count the guard rejection.
@@ -444,9 +458,9 @@ module Quonfig
         @environment_id = meta['environment'] || meta[:environment] || @environment_id
 
         # qfg-9dxb.3 Fix A: an unversioned install (generation <= 0) carries no
-        # ordering info — it still installs (carve-out above), but it must never
-        # LOWER a positive held generation, or a later older snapshot could
-        # regress an established client. A fresh client seeds off it as usual.
+        # ordering info and must never LOWER a positive held generation. Under
+        # the qfg-9dxb.9 rule it only installs when held is nil/0 anyway, so
+        # this keeps held at 0 there; a fresh client seeds off it as usual.
         @held_generation = incoming_gen if @held_generation.nil? || incoming_gen.positive?
         @install_count += 1
         @resolved_from_index = source_index unless source_index.nil?
@@ -471,6 +485,14 @@ module Quonfig
           @store.set(key, cfg)
         end
       end
+    end
+
+    # The install decision for a network payload (see #install_envelope).
+    def should_install?(incoming_gen)
+      return true if @held_generation.nil?
+      return @held_generation.zero? if incoming_gen <= 0
+
+      incoming_gen > @held_generation
     end
 
     # Read Meta.generation (qfg-7h5d.1.1) — the monotonic per-branch commit

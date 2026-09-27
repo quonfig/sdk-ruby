@@ -135,12 +135,12 @@ class TestConfigLoaderOrdering < Minitest::Test
     assert_equal seed_installs + 1, loader.install_count
   end
 
-  # qfg-7h5d.1.18: an established client must still install an UNVERSIONED
-  # snapshot (generation 0 — a server that predates the watermark, or one whose
-  # rev-count failed). It carries no ordering information, so the guard must not
-  # reject it as "older"; freezing the client on stale config would be worse.
-  # Mirrors sdk-node's long-standing carve-out.
-  def test_unversioned_snapshot_installs_carve_out
+  # qfg-9dxb.9 (supersedes the qfg-7h5d.1.18 carve-out): an established
+  # client holding a real generation must NOT install an unversioned
+  # (generation 0) snapshot. Gen 0 today only comes from a server whose rev-count
+  # failed (damaged git store); installing it would move the client backward and
+  # then strand it when the healthy gen 42 re-delivers as a same-gen no-op.
+  def test_unversioned_snapshot_does_not_override_held_generation
     current_gen = 42
     url = start_server(SINGLE_PORT, -> { current_gen })
 
@@ -149,15 +149,17 @@ class TestConfigLoaderOrdering < Minitest::Test
     assert_equal :updated, loader.fetch!
     assert_equal 42, loader.held_generation, 'must establish on gen 42'
 
-    # Server now serves an unversioned (generation 0) snapshot.
     installs_before = loader.install_count
     current_gen = 0
+    assert_equal :not_modified, loader.fetch!
+    assert_equal installs_before, loader.install_count,
+                 'an unversioned snapshot must not install over a held real generation'
+    assert_equal 42, loader.held_generation
+
+    # The healthy server comes back at 42: a same-generation no-op, still 42.
+    current_gen = 42
     loader.fetch!
-    assert_equal installs_before + 1, loader.install_count,
-                 'gen-0 carve-out: an unversioned snapshot must install, not freeze the client on 42'
-    # qfg-9dxb.3 Fix A: the unversioned install carries no ordering info, so it
-    # must not LOWER the held generation (an established client never goes backward).
-    assert_equal 42, loader.held_generation,
-                 'an unversioned install must keep the prior max held generation'
+    assert_equal installs_before, loader.install_count
+    assert_equal 42, loader.held_generation
   end
 end

@@ -208,9 +208,9 @@ class TestConfigLoaderFailoverTelemetry < Minitest::Test
                  'a STRICTLY older payload is exactly what guardRejected is for'
   end
 
-  # An UNVERSIONED snapshot (generation <= 0) carries no ordering info, so the
-  # carve-out lets it through untouched — it is neither dropped as older nor
-  # counted. Pinned here so the strict-older narrowing cannot quietly change it.
+  # An UNVERSIONED snapshot (generation <= 0) against a client holding a real
+  # generation is dropped (qfg-9dxb.9) — but it carries no ordering info, so it
+  # is not provably older and must NOT be counted as guardRejected.
   def test_unversioned_snapshot_is_not_guard_rejected
     aggregator = Quonfig::Telemetry::FailoverAggregator.new
     primary = start_upstream(10, delay_s: 0)
@@ -225,12 +225,14 @@ class TestConfigLoaderFailoverTelemetry < Minitest::Test
       configs: [config_for(0)],
       meta: { 'version' => 'gen-0', 'environment' => 'production', 'generation' => 0 }
     )
-    loader.apply_envelope(unversioned)
+    assert_equal :not_modified, loader.apply_envelope(unversioned),
+                 'an unversioned snapshot must not install over held gen 10'
+    assert_equal 10, loader.held_generation
 
     event = aggregator.drain_event
     guard_rejected = event ? event['failover']['guardRejected'] : 0
 
-    assert_equal 0, guard_rejected, 'the unversioned carve-out must never be counted as guardRejected'
+    assert_equal 0, guard_rejected, 'a dropped unversioned snapshot must never be counted as guardRejected'
   end
 
   # A stale SSE snapshot (older generation) against an established client is
