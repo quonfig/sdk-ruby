@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'digest'
+require 'set'
 
 module Quonfig
   # Public-API resolver: looks up a config by key in a ConfigStore and runs
@@ -16,6 +17,7 @@ module Quonfig
   # production read path (with config_loader, SSE updates, telemetry), see
   # Quonfig::ConfigResolver — the two coexist during the JSON migration.
   class Resolver
+    LOG = Quonfig::InternalLogger.new(self)
     TRUE_VALUES = %w[true 1 t yes].freeze
     # Prefix the eval-summary aggregator stamps onto redacted confidential
     # values before the 5-char MD5 hash. Matches CONFIDENTIAL_PREFIX in
@@ -29,6 +31,9 @@ module Quonfig
     def initialize(store, evaluator)
       @store = store
       @evaluator = evaluator
+      # Config keys already warned about a missing hash property (qfg-9dxb.8).
+      @hash_missing_warned = Set.new
+      @hash_missing_mutex = Mutex.new
     end
 
     def raw(key)
@@ -50,7 +55,8 @@ module Quonfig
       return nil if eval_result.nil?
 
       weighted_index = nil
-      resolved_value = resolve_value(eval_result.value, config, context) do |idx|
+      hash_missing = []
+      resolved_value = resolve_value_on_path(eval_result.value, config, context, [], hash_missing) do |idx|
         weighted_index = idx
       end
       EvalResult.new(
@@ -58,7 +64,8 @@ module Quonfig
         rule_index: eval_result.rule_index,
         config: config,
         weighted_value_index: weighted_index,
-        reportable_value: redacted_reportable_value(eval_result.value)
+        reportable_value: redacted_reportable_value(eval_result.value),
+        hash_property_missing: !hash_missing.empty?
       )
     end
 
@@ -82,15 +89,17 @@ module Quonfig
     # resolve_value plus +key_path+: the config keys already being resolved
     # above this one through decryptWith, so a decryptWith cycle raises a
     # DecryptionError instead of recursing until SystemStackError
-    # (qfg-9dxb.7, matching sdk-go qfg-9dxb.4).
-    def resolve_value_on_path(value, config, context, key_path, &on_weighted_index)
+    # (qfg-9dxb.7, matching sdk-go qfg-9dxb.4). +hash_missing+, when given,
+    # gets an entry for each weighted rollout whose hash property was missing
+    # from the context (qfg-9dxb.8).
+    def resolve_value_on_path(value, config, context, key_path, hash_missing = nil, &on_weighted_index)
       return nil if value.nil?
 
       type = vget(value, :type, 'type')
 
       return resolve_provided(value, config) if type == 'provided'
 
-      return resolve_weighted(value, config, context, key_path, &on_weighted_index) if type == 'weighted_values'
+      return resolve_weighted(value, config, context, key_path, hash_missing, &on_weighted_index) if type == 'weighted_values'
 
       confidential = vget(value, :confidential, 'confidential')
       decrypt_with = vget(value, :decryptWith, 'decryptWith', :decrypt_with, 'decrypt_with')
@@ -170,7 +179,12 @@ module Quonfig
     # (or fall back to a per-call random) into [0,1), then walk the variant
     # weights until cumulative weight >= bucket. Recurses through
     # resolve_value so nested provided/encrypted variants work too.
-    def resolve_weighted(value, config, context, key_path, &on_weighted_index)
+    #
+    # A hash property that is configured but missing from the context (or
+    # nil) hashes an empty value, the same bucket as a present "", and warns
+    # once per config key (qfg-9dxb.8). With no hash property configured the
+    # pick stays random per call.
+    def resolve_weighted(value, config, context, key_path, hash_missing = nil, &on_weighted_index)
       payload = vget(value, :value, 'value') || {}
       weighted = vget(payload, :weightedValues, 'weightedValues', :weighted_values, 'weighted_values')
       return value unless weighted.is_a?(Array) && !weighted.empty?
@@ -190,11 +204,23 @@ module Quonfig
       end
 
       cfg_key = config_key(config)
+      if hash_value.nil? && !hash_property.to_s.empty?
+        hash_value = ''
+        hash_missing&.push(true)
+        warn_hash_property_missing(cfg_key, hash_property)
+      end
       picker = Quonfig::WeightedValueResolver.new(weighted, cfg_key, hash_value)
       variant, index = picker.resolve
       on_weighted_index&.call(index)
       variant_value = vget(variant, :value, 'value')
-      resolve_value_on_path(variant_value, config, context, key_path, &on_weighted_index)
+      resolve_value_on_path(variant_value, config, context, key_path, hash_missing, &on_weighted_index)
+    end
+
+    def warn_hash_property_missing(cfg_key, hash_property)
+      return unless @hash_missing_mutex.synchronize { @hash_missing_warned.add?(cfg_key) }
+
+      LOG.warn "quonfig: weighted rollout for \"#{cfg_key}\" hashes on \"#{hash_property}\" " \
+               'which is missing from context; hashing an empty value instead'
     end
 
     # Recursively resolve the decryption-key config (it may itself be a

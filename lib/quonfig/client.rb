@@ -1636,13 +1636,15 @@ module Quonfig
       end
 
       reason = result.of_reason
+      flag_metadata = build_flag_metadata(
+        config_id, config_type, result.rule_index, result.weighted_value_index, reason
+      )
+      flag_metadata['hashPropertyMissing'] = true if result.hash_property_missing
       Quonfig::EvaluationDetails.new(
         value: coerced,
         reason: reason,
         variant: build_variant(reason, result.rule_index, result.weighted_value_index),
-        flag_metadata: build_flag_metadata(
-          config_id, config_type, result.rule_index, result.weighted_value_index, reason
-        )
+        flag_metadata: flag_metadata
       )
     rescue StandardError => e
       Quonfig::EvaluationDetails.new(
