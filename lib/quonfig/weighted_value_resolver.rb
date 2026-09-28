@@ -10,10 +10,12 @@ module Quonfig
       @context_hash_value = context_hash_value
     end
 
+    # With no hash value (hash property missing from the context) serve the
+    # first variant, matching sdk-net / sdk-java bucket 0 (qfg-9dxb.8).
     def resolve
-      percent = @context_hash_value ? user_percent : rand
+      return [@weights[0], 0] unless @context_hash_value
 
-      index = variant_index(percent)
+      index = variant_index(user_percent)
 
       [@weights[index], index]
     end

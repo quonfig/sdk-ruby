@@ -435,14 +435,18 @@ module Quonfig
     REASON_TARGETING_MATCH  = 2
     REASON_SPLIT            = 3
 
-    attr_reader :value, :rule_index, :config, :reportable_value
+    attr_reader :value, :rule_index, :config, :reportable_value, :hash_property_missing
     attr_accessor :weighted_value_index
 
-    def initialize(value:, rule_index:, config:, weighted_value_index: nil, reportable_value: nil)
+    def initialize(value:, rule_index:, config:, weighted_value_index: nil, reportable_value: nil,
+                   hash_property_missing: false)
       @value = value
       @rule_index = rule_index
       @config = config
       @weighted_value_index = weighted_value_index
+      # True when a weighted rollout's hash property was missing from the
+      # context and the first variant was served (qfg-9dxb.8).
+      @hash_property_missing = hash_property_missing
       # Telemetry-safe substitute for #unwrapped_value. Set by Resolver when
       # the underlying Value was confidential / decryptWith, so callers
       # (the eval-summary aggregator) never see the plaintext. Mirrors

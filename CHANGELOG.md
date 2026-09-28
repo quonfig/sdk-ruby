@@ -5,6 +5,7 @@
 - **Fix: a segment or `decryptWith` key that references itself (directly or through a chain) no longer crashes with `SystemStackError` (qfg-9dxb.7).** The looping segment reference evaluates as a missing segment. A `decryptWith` loop raises `DecryptionError`.
 - **Fix: an HTTP 200 or SSE event that is not a config payload (for example `{}` from a proxy) is ignored instead of deleting all configs (qfg-9dxb.3).** Over HTTP the SDK tries the next server.
 - **Change: once the client holds a numbered config generation, a payload with generation 0 is ignored and the client keeps its current config (qfg-9dxb.9).** Only a delivery server with a damaged git store sends one. In 1.5.0 such a payload installed and could move the client back to older config. `held_generation` never goes backward. A client that has never received a real generation (for example one talking to `qfg serve`) still installs every payload.
+- **Change: a weighted rollout that hashes on a property missing from the context now always serves the first variant (qfg-9dxb.8).** Before, such evaluations got a random variant on every call. The reason is still `SPLIT`. The `flag_metadata` of `get_*_details` results includes `'hashPropertyMissing' => true` when this happens, and the SDK logs one warning per flag. Users whose context has the property keep the same variant as in 1.5.0.
 
 ## 1.5.0 - 2026-09-25
 
