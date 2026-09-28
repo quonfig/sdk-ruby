@@ -49,6 +49,13 @@ class TestTelemetry < Minitest::Test
     IntegrationTestHelpers.assert_aggregator_post(self, aggregator, :evaluation_summary, [{ 'key' => 'feature-flag.weighted', 'type' => 'FEATURE_FLAG', 'value' => 2, 'value_type' => 'int', 'count' => 1, 'reason' => 3, 'selected_value' => { 'int' => 2 }, 'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0, 'weighted_value_index' => 2 } }], endpoint: '/api/v1/telemetry')
   end
 
+  # reason is SPLIT for weighted value landing in bucket 0
+  def test_reason_is_split_for_weighted_value_landing_in_bucket_0
+    aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
+    IntegrationTestHelpers.feed_aggregator(aggregator, :evaluation_summary, { 'keys' => ['feature-flag.weighted'] }, contexts: { 'user' => { 'tracking_id' => '3e9459d6' } })
+    IntegrationTestHelpers.assert_aggregator_post(self, aggregator, :evaluation_summary, [{ 'key' => 'feature-flag.weighted', 'type' => 'FEATURE_FLAG', 'value' => 1, 'value_type' => 'int', 'count' => 1, 'reason' => 3, 'selected_value' => { 'int' => 1 }, 'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0, 'weighted_value_index' => 0 } }], endpoint: '/api/v1/telemetry')
+  end
+
   # reason is TARGETING_MATCH for feature flag fallthrough with targeting rules
   def test_reason_is_targeting_match_for_feature_flag_fallthrough_with_targeting_rules
     aggregator = IntegrationTestHelpers.build_aggregator(:evaluation_summary, {})
