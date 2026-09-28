@@ -162,4 +162,56 @@ class TestConfigLoaderOrdering < Minitest::Test
     assert_equal installs_before, loader.install_count
     assert_equal 42, loader.held_generation
   end
+
+  # qfg-9dxb.9 follow-up: an ignored gen-0 200 must not leave its ETag behind.
+  # The ETag is the git sha; the server can repair the generation for the SAME
+  # sha, so a remembered ETag would turn every later poll into a 304 and strand
+  # the client on the old config until the next commit.
+  def test_ignored_unversioned_payload_does_not_pin_its_etag
+    [1, 2].each do |leg_count|
+      state = { key: 'a.flag', gen: 5, etag: 'shaA' }
+      url = start_etag_server(state)
+      urls = leg_count == 1 ? [url] : [url, 'http://127.0.0.1:1']
+      loader = build_loader(urls)
+
+      assert_equal :updated, loader.fetch!
+      assert_equal 5, loader.held_generation
+
+      state.merge!(key: 'b.flag', gen: 0, etag: 'shaB')
+      assert_equal :not_modified, loader.fetch!
+      assert_equal ['a.flag'], loader.calc_config.keys, 'gen-0 payload is ignored'
+
+      state[:gen] = 6 # repaired generation, same sha / ETag
+      loader.fetch!
+      assert_equal 6, loader.held_generation, "legs=#{leg_count}: repaired gen must install"
+      assert_equal ['b.flag'], loader.calc_config.keys
+    end
+  end
+
+  def start_etag_server(state)
+    server = WEBrick::HTTPServer.new(Port: 0, Logger: WEBrick::Log.new(StringIO.new), AccessLog: [])
+    server.mount_proc '/api/v2/configs' do |req, res|
+      res['ETag'] = state[:etag]
+      if req['If-None-Match'] == state[:etag]
+        res.status = 304
+        next
+      end
+      res.status = 200
+      res['Content-Type'] = 'application/json'
+      res.body = JSON.generate(
+        'configs' => [{ 'id' => state[:key], 'key' => state[:key], 'type' => 'config',
+                        'valueType' => 'bool', 'default' => { 'rules' => [] } }],
+        'meta' => { 'version' => state[:etag], 'environment' => 'production', 'generation' => state[:gen] }
+      )
+    end
+    Thread.new { server.start }
+    port = server.config[:Port]
+    50.times do
+      break if tcp_open?(port)
+
+      sleep 0.05
+    end
+    @servers << server
+    "http://127.0.0.1:#{port}"
+  end
 end

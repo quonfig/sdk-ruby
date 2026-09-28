@@ -325,7 +325,11 @@ module Quonfig
         envelope = parse_envelope(response.body)
         result = install_envelope(envelope, source: source, source_index: index)
         # Write this leg's ETag back AFTER the response (per-leg, race-free).
-        set_etag_for(index, new_etag)
+        # Exception (qfg-9dxb.9): an ignored gen<=0 payload keeps the previous
+        # ETag. Its ETag is the git sha, and the server may later repair the
+        # generation for the SAME sha; remembering it would 304 that repair.
+        ignored_unversioned = result == :not_modified && extract_generation(envelope.meta || {}) <= 0
+        set_etag_for(index, new_etag) unless ignored_unversioned
         # install_envelope returns :not_modified when the reject-older guard drops
         # an equal/older payload — surface that so the caller doesn't double-count.
         result == :not_modified ? :not_modified : :updated
