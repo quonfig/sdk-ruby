@@ -118,6 +118,53 @@ class TestWeightedHashPropertyMissing < Minitest::Test
     end
   end
 
+  # No hash property configured at all (hashByPropertyName unset or empty):
+  # first variant every time, no 'hashPropertyMissing' metadata, no WARN.
+  def no_hash_client(hash_property, first_weight: 1)
+    wv = {
+      'weightedValues' => [
+        { 'value' => { 'type' => 'string', 'value' => 'first' }, 'weight' => first_weight },
+        { 'value' => { 'type' => 'string', 'value' => 'second' }, 'weight' => 99 }
+      ]
+    }
+    wv['hashByPropertyName'] = hash_property unless hash_property.nil?
+    config = {
+      'id' => 'cid-no-hash', 'key' => 'no-hash', 'type' => 'feature_flag',
+      'valueType' => 'string', 'sendToClientSdk' => false, 'environment' => nil,
+      'default' => { 'rules' => [{ 'criteria' => [{ 'operator' => 'ALWAYS_TRUE' }],
+                                   'value' => { 'type' => 'weighted_values', 'value' => wv } }] }
+    }
+    store = Quonfig::ConfigStore.new
+    store.set('no-hash', config)
+    Quonfig::Client.new(Quonfig::Options.new, store: store)
+  end
+
+  def test_no_hash_property_serves_first_variant_every_time
+    [nil, ''].each do |hash_property|
+      client = no_hash_client(hash_property)
+      [nil, { user: { key: 'u1', tracking_id: 't1' } }].each do |ctx|
+        warns = capture_warns do
+          50.times do
+            assert_equal 'first', client.get('no-hash', nil, ctx)
+            details = client.get_string_details('no-hash', context: ctx)
+            assert_equal 'first', details.value
+            refute details.flag_metadata.key?('hashPropertyMissing')
+          end
+        end
+        assert_empty warns, "hash_property=#{hash_property.inspect} ctx=#{ctx.inspect}"
+      end
+    end
+  end
+
+  # Zero-weight first variant: ruby returns weights[0] directly when there
+  # is no hash value, the same variant sdk-net/sdk-java pick at fraction 0.0.
+  def test_no_hash_property_zero_weight_first_variant_still_picked
+    [nil, ''].each do |hash_property|
+      client = no_hash_client(hash_property, first_weight: 0)
+      50.times { assert_equal 'first', client.get('no-hash', nil, { user: { key: 'u1' } }) }
+    end
+  end
+
   def test_weighted_value_resolver_nil_hash_value_picks_first_variant
     values = [{ 'weight' => 1, 'value' => 'a' }, { 'weight' => 99, 'value' => 'b' }]
     50.times do
