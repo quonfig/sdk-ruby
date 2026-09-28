@@ -68,22 +68,7 @@ module Quonfig
     # - confidential + decryptWith → look up the key config, decrypt
     # - everything else passes through unchanged
     def resolve_value(value, config, context = nil, &on_weighted_index)
-      return nil if value.nil?
-
-      type = vget(value, :type, 'type')
-
-      return resolve_provided(value, config) if type == 'provided'
-
-      return resolve_weighted(value, config, context, &on_weighted_index) if type == 'weighted_values'
-
-      confidential = vget(value, :confidential, 'confidential')
-      decrypt_with = vget(value, :decryptWith, 'decryptWith', :decrypt_with, 'decrypt_with')
-      if confidential && decrypt_with && !decrypt_with.to_s.empty?
-        return resolve_decryption(value, config, context,
-                                  decrypt_with)
-      end
-
-      value
+      resolve_value_on_path(value, config, context, [], &on_weighted_index)
     end
 
     # Integration shims for code that expects a ConfigResolver. Keep these
@@ -93,6 +78,29 @@ module Quonfig
     end
 
     private
+
+    # resolve_value plus +key_path+: the config keys already being resolved
+    # above this one through decryptWith, so a decryptWith cycle raises a
+    # DecryptionError instead of recursing until SystemStackError
+    # (qfg-9dxb.7, matching sdk-go qfg-9dxb.4).
+    def resolve_value_on_path(value, config, context, key_path, &on_weighted_index)
+      return nil if value.nil?
+
+      type = vget(value, :type, 'type')
+
+      return resolve_provided(value, config) if type == 'provided'
+
+      return resolve_weighted(value, config, context, key_path, &on_weighted_index) if type == 'weighted_values'
+
+      confidential = vget(value, :confidential, 'confidential')
+      decrypt_with = vget(value, :decryptWith, 'decryptWith', :decrypt_with, 'decrypt_with')
+      if confidential && decrypt_with && !decrypt_with.to_s.empty?
+        return resolve_decryption(value, config, context,
+                                  decrypt_with, key_path)
+      end
+
+      value
+    end
 
     # If +value+ is confidential or has a decryptWith key, return the
     # `*****<5-hex>` redacted string the eval-summary telemetry aggregator
@@ -162,7 +170,7 @@ module Quonfig
     # (or fall back to a per-call random) into [0,1), then walk the variant
     # weights until cumulative weight >= bucket. Recurses through
     # resolve_value so nested provided/encrypted variants work too.
-    def resolve_weighted(value, config, context, &on_weighted_index)
+    def resolve_weighted(value, config, context, key_path, &on_weighted_index)
       payload = vget(value, :value, 'value') || {}
       weighted = vget(payload, :weightedValues, 'weightedValues', :weighted_values, 'weighted_values')
       return value unless weighted.is_a?(Array) && !weighted.empty?
@@ -186,19 +194,26 @@ module Quonfig
       variant, index = picker.resolve
       on_weighted_index&.call(index)
       variant_value = vget(variant, :value, 'value')
-      resolve_value(variant_value, config, context, &on_weighted_index)
+      resolve_value_on_path(variant_value, config, context, key_path, &on_weighted_index)
     end
 
     # Recursively resolve the decryption-key config (it may itself be a
     # provided ENV_VAR), then AES-GCM decrypt the value with that key.
-    def resolve_decryption(value, config, context, decrypt_with)
+    def resolve_decryption(value, config, context, decrypt_with, key_path)
+      key_path += [config_key(config).to_s]
+      if key_path.include?(decrypt_with.to_s)
+        raise Quonfig::Errors::DecryptionError.new(
+          config_key(config), %(decryption key config "#{decrypt_with}" is part of a decryptWith cycle)
+        )
+      end
+
       key_cfg = @store.get(decrypt_with)
       raise Quonfig::Error, %(Decryption key config "#{decrypt_with}" not found) if key_cfg.nil?
 
       key_match = @evaluator.evaluate_config(key_cfg, context, resolver: self)
       raise Quonfig::Error, %(Decryption key config "#{decrypt_with}" did not match) if key_match.nil?
 
-      resolved_key = resolve_value(key_match.value, key_cfg, context)
+      resolved_key = resolve_value_on_path(key_match.value, key_cfg, context, key_path)
       secret_key = vget(resolved_key, :value, 'value').to_s
       raise Quonfig::Error, %(Decryption key from "#{decrypt_with}" is empty) if secret_key.empty?
 

@@ -131,10 +131,15 @@ module Quonfig
 
     # --- Rule evaluation ------------------------------------------------
 
-    def evaluate_rules(rules, context, config)
+    # +seg_path+ holds the keys of the configs being evaluated above this one
+    # through IN_SEG / NOT_IN_SEG, so segment resolution can detect a
+    # reference cycle instead of recursing until SystemStackError
+    # (qfg-9dxb.7). It is a path, not a global visited set, so a diamond (two
+    # segments that both reference a third) still resolves.
+    def evaluate_rules(rules, context, config, seg_path = [])
       rules.each_with_index do |rule, index|
         criteria = Array(hget(rule, :criteria) || [])
-        next unless all_criteria_match?(criteria, context, config)
+        next unless all_criteria_match?(criteria, context, config, seg_path)
 
         value_hash = hget(rule, :value)
         return EvalResult.new(value: value_hash, rule_index: index, config: config)
@@ -142,8 +147,8 @@ module Quonfig
       nil
     end
 
-    def all_criteria_match?(criteria, context, config)
-      criteria.all? { |c| evaluate_criterion(c, context, config) }
+    def all_criteria_match?(criteria, context, config, seg_path)
+      criteria.all? { |c| evaluate_criterion(c, context, config, seg_path) }
     end
 
     # --- Per-operator evaluation ---------------------------------------
@@ -151,7 +156,7 @@ module Quonfig
     # Faithful port of sdk-node/src/operators.ts evaluateCriterion. Matches
     # context-exists / missing-context semantics (e.g. PROP_IS_NOT_ONE_OF is
     # true when context is missing).
-    def evaluate_criterion(criterion, context, _config)
+    def evaluate_criterion(criterion, context, config, seg_path)
       property_name = hget(criterion, :propertyName) || ''
       operator = hget(criterion, :operator)
       match_value = hget(criterion, :valueToMatch)
@@ -296,7 +301,7 @@ module Quonfig
       when OP_IN_SEG, OP_NOT_IN_SEG
         if match_value
           segment_key = to_s_nil(hget(match_value, :value))
-          found, result = resolve_segment(segment_key, context)
+          found, result = resolve_segment(segment_key, context, config, seg_path)
           return operator == OP_NOT_IN_SEG unless found
 
           return result == (operator == OP_IN_SEG)
@@ -319,8 +324,14 @@ module Quonfig
 
     # --- Segment resolution -------------------------------------------
 
-    def resolve_segment(segment_key, context)
+    def resolve_segment(segment_key, context, config, seg_path)
       return [false, false] if segment_key.nil? || segment_key.empty?
+
+      # A reference back onto the current evaluation path is a cycle. Treat
+      # it like a missing segment (IN_SEG false, NOT_IN_SEG true), matching
+      # sdk-go (qfg-9dxb.4).
+      current_key = hget(config, :key).to_s
+      return [false, false] if segment_key == current_key || seg_path.include?(segment_key)
 
       seg_config = @store.get(segment_key)
       return [false, false] if seg_config.nil?
@@ -328,7 +339,7 @@ module Quonfig
       # Segments have no environment-specific rules in the JSON shape; we
       # evaluate against default rules only (mirrors sdk-node behaviour —
       # evaluate_config with env_id='' falls through to default).
-      match = evaluate_rules(default_rules_of(seg_config), context, seg_config)
+      match = evaluate_rules(default_rules_of(seg_config), context, seg_config, seg_path + [current_key])
       return [false, false] if match.nil?
 
       raw = match.raw_value
