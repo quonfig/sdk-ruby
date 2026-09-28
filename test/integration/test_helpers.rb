@@ -82,6 +82,8 @@ module IntegrationTestHelpers
         nil
       end
 
+    acknowledge_hash_property_missing_warn
+
     actual = if result.nil?
                nil
              elsif result.respond_to?(:unwrapped_value)
@@ -105,6 +107,22 @@ module IntegrationTestHelpers
                         "#{key}: expected type #{expected_type}, got #{result.value_type}"
     end
     actual
+  end
+
+  HASH_PROPERTY_MISSING_WARN = /which is missing from context; hashing an empty value instead/
+
+  # A weighted rollout whose hash property is missing from context WARNs once
+  # per config key per resolver (qfg-9dxb.8). The shared YAML cases exercise
+  # that path on purpose, and the harness teardown rejects any unhandled log
+  # line, so drop the expected WARN here (qfg-46e1). The warn-once contract
+  # itself is pinned in test/test_weighted_hash_property_missing.rb.
+  def self.acknowledge_hash_property_missing_warn
+    return unless $logs.respond_to?(:string)
+
+    kept = $logs.string.lines.grep_v(HASH_PROPERTY_MISSING_WARN)
+    $logs.truncate(0)
+    $logs.rewind
+    $logs.write(kept.join)
   end
 
   # function: enabled semantics — Quonfig::Client#enabled? returns the
