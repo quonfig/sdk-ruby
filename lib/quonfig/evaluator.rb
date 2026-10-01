@@ -556,8 +556,9 @@ module Quonfig
       when Numeric
         raw.to_i
       when String
-        seconds = Quonfig::Duration.parse(raw)
-        (seconds * 1000).round
+        # nil for a malformed value, so get() never returns the raw string or
+        # a made-up number; Client#get_duration applies the default.
+        Quonfig::Duration.parse_millis(raw)
       when Hash
         secs = (raw['seconds'] || raw[:seconds] || 0).to_f
         nanos = (raw['nanos'] || raw[:nanos] || 0).to_f

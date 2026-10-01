@@ -274,6 +274,8 @@ module Quonfig
       when 'string_list'
         env_value.split(/\s*,\s*/)
       when 'duration'
+        raise ArgumentError, 'invalid ISO-8601 duration' unless Quonfig::Duration.valid?(env_value)
+
         env_value
       else
         env_value

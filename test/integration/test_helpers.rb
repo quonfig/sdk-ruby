@@ -174,16 +174,19 @@ module IntegrationTestHelpers
   # A real Quonfig::Client over +store+, evaluating the 'Production'
   # environment like build_resolver does. Used by the DURATION path so the
   # customer-facing typed getter is what gets asserted (qfg-2agi.4).
-  def self.build_client(store)
-    Quonfig::Client.new(store: store, environment: ENV_ID)
+  def self.build_client(store, **opts)
+    Quonfig::Client.new(store: store, environment: ENV_ID, **opts)
   end
 
   # type: DURATION cases (qfg-2agi.4). Assert through the PUBLIC
   # Client#get_duration, the getter a customer calls, not the internal
   # resolver. Comparison is integer-exact: the result must be an Integer
   # millisecond count equal to +expected_millis+ (no tolerance, no Float).
-  def self.assert_duration(test, store, key, context, expected_millis, default: Quonfig::NO_DEFAULT_PROVIDED)
-    client = build_client(store)
+  # +on_no_default:+ mirrors the case's client_overrides.on_no_default
+  # (2 -> :return_nil) for the malformed no-default cases (qfg-2agi.6/.7).
+  def self.assert_duration(test, store, key, context, expected_millis, default: Quonfig::NO_DEFAULT_PROVIDED,
+                           on_no_default: nil)
+    client = on_no_default ? build_client(store, on_no_default: on_no_default) : build_client(store)
     ctx_arg =
       if context.nil? || (context.respond_to?(:empty?) && context.empty?)
         Quonfig::NO_DEFAULT_PROVIDED

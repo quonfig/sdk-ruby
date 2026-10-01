@@ -12,26 +12,26 @@ class DurationTest < Minitest::Test
     ['PT6M', 6 * MINUTES_IN_SECONDS],
     ['PT90S', 90],
     ['P1D', DAYS_IN_SECONDS],
-    ['PT1.5M', 1.5 * MINUTES_IN_SECONDS],
-    ['P0.75D', 0.75 * DAYS_IN_SECONDS],
     ['PT1M90.3S', MINUTES_IN_SECONDS + 90.3],
     ['PT1H', HOURS_IN_SECONDS],
-    ['PT1.3H', 1.3 * HOURS_IN_SECONDS],
-    ['P1.5DT1.5M', (1.5 * DAYS_IN_SECONDS) + (MINUTES_IN_SECONDS * 1.5)],
-    ['P1.5DT1.5H1.5M', (1.5 * DAYS_IN_SECONDS) + (1.5 * HOURS_IN_SECONDS) + (MINUTES_IN_SECONDS * 1.5)],
-    ['P1.5DT1.5H1.5M3.5S', (1.5 * DAYS_IN_SECONDS) + (1.5 * HOURS_IN_SECONDS) + (MINUTES_IN_SECONDS * 1.5) + 3.5],
     ['P1DT2H3M4S', DAYS_IN_SECONDS + (2 * HOURS_IN_SECONDS) + (3 * MINUTES_IN_SECONDS) + 4],
     ['PT1H30M', HOURS_IN_SECONDS + (30 * MINUTES_IN_SECONDS)],
-    ['P0.5DT0.25H', (0.5 * DAYS_IN_SECONDS) + (0.25 * HOURS_IN_SECONDS)],
     ['PT15M30S', (15 * MINUTES_IN_SECONDS) + 30],
-    ['PT0.000347222H', 0.000347222 * HOURS_IN_SECONDS],
-    ['PT23H59M59S', (23 * HOURS_IN_SECONDS) + (59 * MINUTES_IN_SECONDS) + 59],
-    ['P0.25DT3.75H', (0.25 * DAYS_IN_SECONDS) + (3.75 * HOURS_IN_SECONDS)]
+    ['PT23H59M59S', (23 * HOURS_IN_SECONDS) + (59 * MINUTES_IN_SECONDS) + 59]
   ].freeze
+
+  # Fractions are allowed on S only (qfg-2agi decision 1).
+  INVALID = ['PT1.5M', 'P0.75D', 'PT1.3H', 'P1.5DT1.5M', 'garbage', 'xxPT5Sxx', 'PT5M3H', '-PT5S'].freeze
 
   def test_parsing
     TESTS.each do |test|
-      assert_equal test[1], Quonfig::Duration.parse(test[0]), "Failed parsing #{test[0]}"
+      assert_in_delta test[1], Quonfig::Duration.parse(test[0]), 1e-9, "Failed parsing #{test[0]}"
+    end
+  end
+
+  def test_parse_raises_on_invalid
+    INVALID.each do |value|
+      assert_raises(ArgumentError, value) { Quonfig::Duration.parse(value) }
     end
   end
 end

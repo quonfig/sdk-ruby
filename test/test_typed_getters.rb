@@ -27,6 +27,22 @@ class TestTypedGetters < Minitest::Test
     }
   end
 
+  def provided_duration_client
+    config = make_config(value: nil, type: 'duration')
+    config['default']['rules'][0]['value'] = {
+      'type' => 'provided', 'value' => { 'source' => 'ENV_VAR', 'lookup' => 'QFG_TYPED_GETTER_DURATION' }
+    }
+    store = Quonfig::ConfigStore.new
+    store.set(KEY, config)
+    Quonfig::Client.new(Quonfig::Options.new, store: store)
+  end
+
+  def capture_client_warns(&block)
+    warns = []
+    Quonfig::Client::LOG.stub(:warn, ->(msg = nil, &_) { warns << msg }, &block)
+    warns
+  end
+
   def client_with_value(value:, type:)
     store = Quonfig::ConfigStore.new
     store.set(KEY, make_config(value: value, type: type))
@@ -110,9 +126,75 @@ class TestTypedGetters < Minitest::Test
     assert_equal 1000, client.get_duration(KEY)
   end
 
-  def test_get_duration_passes_through_numeric
-    client = client_with_value(value: 5000, type: 'int')
-    assert_equal 5000, client.get_duration(KEY)
+  # get_duration type-checks like get_int (qfg-2agi.10): a config whose
+  # valueType is not duration is a TypeMismatchError, not a pass-through.
+  def test_get_duration_raises_on_int_config
+    assert_raises(Quonfig::Errors::TypeMismatchError) do
+      client_with_value(value: 5000, type: 'int').get_duration(KEY)
+    end
+  end
+
+  def test_get_duration_raises_on_double_config
+    assert_raises(Quonfig::Errors::TypeMismatchError) do
+      client_with_value(value: 1.9, type: 'double').get_duration(KEY)
+    end
+  end
+
+  def test_get_duration_raises_on_string_config
+    assert_raises(Quonfig::Errors::TypeMismatchError) do
+      client_with_value(value: 'PT5S', type: 'string').get_duration(KEY)
+    end
+  end
+
+  # Round half up to integer ms (qfg-2agi decision 2), stored path.
+  def test_get_duration_rounds_half_up_stored
+    assert_equal 1005, client_with_value(value: 'PT1.005S', type: 'duration').get_duration(KEY)
+    assert_equal 2000, client_with_value(value: 'PT1.9999S', type: 'duration').get_duration(KEY)
+    assert_equal 1, client_with_value(value: 'PT0.0005S', type: 'duration').get_duration(KEY)
+    assert_equal 0, client_with_value(value: 'PT0.0004S', type: 'duration').get_duration(KEY)
+  end
+
+  # Same rounding on the ENV_VAR-provided path (it used to truncate: 1999).
+  def test_get_duration_rounds_half_up_env_var
+    with_env('QFG_TYPED_GETTER_DURATION', 'PT1.9999S') do
+      assert_equal 2000, provided_duration_client.get_duration(KEY)
+    end
+  end
+
+  # Malformed stored value: default + one warning per key; no default under
+  # :return_nil -> nil; under the default :raise policy -> coercion error.
+  def test_get_duration_malformed_stored_returns_default_and_warns_once
+    client = client_with_value(value: '30s', type: 'duration')
+    warns = capture_client_warns do
+      assert_equal 7000, client.get_duration(KEY, default: 7000)
+      assert_equal 7000, client.get_duration(KEY, default: 7000)
+    end
+    assert_equal 1, warns.size, warns.inspect
+    assert_includes warns.first, KEY
+  end
+
+  def test_get_duration_malformed_stored_no_default
+    store = Quonfig::ConfigStore.new
+    store.set(KEY, make_config(value: 'PT0.5H', type: 'duration'))
+    nil_client = Quonfig::Client.new(Quonfig::Options.new(on_no_default: :return_nil), store: store)
+    raise_client = Quonfig::Client.new(Quonfig::Options.new, store: store)
+    capture_client_warns do
+      assert_nil nil_client.get_duration(KEY)
+      assert_raises(Quonfig::Errors::EnvVarParseError) { raise_client.get_duration(KEY) }
+    end
+  end
+
+  def test_get_duration_malformed_env_var_returns_default
+    with_env('QFG_TYPED_GETTER_DURATION', 'P1DT') do
+      capture_client_warns do
+        assert_equal 7000, provided_duration_client.get_duration(KEY, default: 7000)
+      end
+    end
+  end
+
+  def test_get_duration_never_returns_the_raw_string_from_get
+    client = client_with_value(value: 'garbage', type: 'duration')
+    assert_nil client.get(KEY)
   end
 
   # ---- get_json ---------------------------------------------------------

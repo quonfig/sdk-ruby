@@ -2,6 +2,7 @@
 
 require 'json'
 require 'timeout'
+require 'set'
 
 module Quonfig
   # Public Quonfig SDK client.
@@ -63,6 +64,9 @@ module Quonfig
       @evaluator = Quonfig::Evaluator.new(@store, env_id: @options.environment)
       @resolver = Quonfig::Resolver.new(@store, @evaluator)
       @semantic_logger_filters = {}
+      # Keys already warned about for a malformed duration value (qfg-2agi.10).
+      @malformed_duration_warned = Set.new
+      @malformed_duration_mutex = Mutex.new
       @sse_client = nil
       @poll_supervisor = nil
       @stopped = false
@@ -161,8 +165,31 @@ module Quonfig
       typed_get(key, :string_list, default: default, context: context)
     end
 
+    # Integer milliseconds for a duration config (qfg-2agi.10).
+    #
+    # - A config whose valueType is not duration raises TypeMismatchError,
+    #   like get_int on a string config.
+    # - Values follow the shared grammar (Quonfig::Duration); ms are rounded
+    #   half up on both the stored and the ENV_VAR path.
+    # - A malformed value (stored or ENV_VAR) returns +default+ and logs one
+    #   warning per key. With no default it returns nil under
+    #   on_no_default: :return_nil and raises EnvVarParseError under :raise.
     def get_duration(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
-      typed_get(key, :duration, default: default, context: context)
+      ensure_initialized_after_fork
+      ctx = build_context(context)
+      record_context_for_telemetry(ctx)
+      result =
+        begin
+          @resolver.get(key, ctx)
+        rescue Quonfig::Errors::MissingDefaultError
+          nil
+        rescue Quonfig::Errors::EnvVarParseError => e
+          return malformed_duration(key, default, e)
+        end
+      return handle_missing(key, default) if result.nil?
+
+      record_evaluation_for_telemetry(result)
+      duration_millis(key, result, default)
     end
 
     def get_json(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
@@ -1701,6 +1728,30 @@ module Quonfig
       coerce_and_check(key, value, expected_type)
     end
 
+    def duration_millis(key, result, default)
+      config = result.config || {}
+      value_type = config['valueType'] || config[:valueType] || config['value_type'] || config[:value_type]
+      raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', result.unwrapped_value) unless value_type == 'duration' || result.type == 'duration'
+
+      value = result.unwrapped_value
+      millis = value.is_a?(Integer) ? value : Quonfig::Duration.parse_millis(value)
+      return millis unless millis.nil?
+
+      error = Quonfig::Errors::EnvVarParseError.new(result.raw_value, config, 'stored value')
+      malformed_duration(key, default, error)
+    end
+
+    def malformed_duration(key, default, error)
+      if @malformed_duration_mutex.synchronize { @malformed_duration_warned.add?(key.to_s) }
+        LOG.warn "[quonfig] #{key} is not a valid ISO-8601 duration; " \
+                 "#{default == NO_DEFAULT_PROVIDED ? 'no default given' : 'returning the default'}"
+      end
+      return default unless default == NO_DEFAULT_PROVIDED
+      raise error if @options.on_no_default == Quonfig::Options::ON_NO_DEFAULT::RAISE
+
+      nil
+    end
+
     def coerce_and_check(key, value, expected_type)
       case expected_type
       when :bool
@@ -1713,10 +1764,12 @@ module Quonfig
 
         arr
       when :duration
-        return value.to_i if value.is_a?(Numeric)
-        return (Quonfig::Duration.parse(value) * 1000).to_i if value.is_a?(String)
+        return value if value.is_a?(Integer)
 
-        raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', value)
+        millis = Quonfig::Duration.parse_millis(value)
+        raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', value) if millis.nil?
+
+        millis
       when :json
         # JSON values are returned as-is (Hash, Array, or scalar from the wire).
         value
