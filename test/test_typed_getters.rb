@@ -192,6 +192,19 @@ class TestTypedGetters < Minitest::Test
     end
   end
 
+  # qfg-2agi.22: get() on an ENV_VAR-provided duration returns ms, the same
+  # as the stored value (it used to return the raw ISO string).
+  def test_get_on_env_var_duration_returns_millis_like_stored
+    with_env('QFG_TYPED_GETTER_DURATION', 'PT30M') do
+      assert_equal 1_800_000, provided_duration_client.get(KEY)
+      assert_equal 1_800_000, client_with_value(value: 'PT30M', type: 'duration').get(KEY)
+    end
+    with_env('QFG_TYPED_GETTER_DURATION', 'PT1.5S') do
+      assert_equal 1500, provided_duration_client.get(KEY)
+      assert_equal 1500, provided_duration_client.get_duration(KEY)
+    end
+  end
+
   def test_get_duration_never_returns_the_raw_string_from_get
     client = client_with_value(value: 'garbage', type: 'duration')
     assert_nil client.get(KEY)

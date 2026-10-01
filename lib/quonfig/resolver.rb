@@ -290,6 +290,9 @@ module Quonfig
       when 'double'      then 'double'
       when 'bool'        then 'bool'
       when 'string_list' then 'string_list'
+      # Keep 'duration' so Evaluator#unwrapped_value converts to ms and
+      # get() matches the stored path (qfg-2agi.22).
+      when 'duration'    then 'duration'
       else 'string'
       end
     end
