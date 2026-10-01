@@ -68,32 +68,27 @@ class TestGet < Minitest::Test
 
   # duration 200 ms
   def test_duration_200_ms
-    resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(self, resolver, 'test.duration.PT0.2S', {}, 200)
+    IntegrationTestHelpers.assert_duration(self, @store, 'test.duration.PT0.2S', {}, 200)
   end
 
   # duration 90S
   def test_duration_90s
-    resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(self, resolver, 'test.duration.PT90S', {}, 90_000)
+    IntegrationTestHelpers.assert_duration(self, @store, 'test.duration.PT90S', {}, 90_000)
   end
 
   # duration 1.5M
   def test_duration_1_5m
-    resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(self, resolver, 'test.duration.PT1.5M', {}, 90_000)
+    IntegrationTestHelpers.assert_duration(self, @store, 'test.duration.PT1.5M', {}, 90_000)
   end
 
   # duration 0.5H
   def test_duration_0_5h
-    resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(self, resolver, 'test.duration.PT0.5H', {}, 1_800_000)
+    IntegrationTestHelpers.assert_duration(self, @store, 'test.duration.PT0.5H', {}, 1_800_000)
   end
 
   # duration test.duration.P1DT6H2M1.5S
   def test_duration_test_duration_p1dt6h2m1_5s
-    resolver = IntegrationTestHelpers.build_resolver(@store)
-    IntegrationTestHelpers.assert_resolved(self, resolver, 'test.duration.P1DT6H2M1.5S', {}, 108_121_500)
+    IntegrationTestHelpers.assert_duration(self, @store, 'test.duration.P1DT6H2M1.5S', {}, 108_121_500)
   end
 
   # json test

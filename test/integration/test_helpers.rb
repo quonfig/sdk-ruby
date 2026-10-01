@@ -171,6 +171,40 @@ module IntegrationTestHelpers
     actual
   end
 
+  # A real Quonfig::Client over +store+, evaluating the 'Production'
+  # environment like build_resolver does. Used by the DURATION path so the
+  # customer-facing typed getter is what gets asserted (qfg-2agi.4).
+  def self.build_client(store)
+    Quonfig::Client.new(store: store, environment: ENV_ID)
+  end
+
+  # type: DURATION cases (qfg-2agi.4). Assert through the PUBLIC
+  # Client#get_duration, the getter a customer calls, not the internal
+  # resolver. Comparison is integer-exact: the result must be an Integer
+  # millisecond count equal to +expected_millis+ (no tolerance, no Float).
+  def self.assert_duration(test, store, key, context, expected_millis, default: Quonfig::NO_DEFAULT_PROVIDED)
+    client = build_client(store)
+    ctx_arg =
+      if context.nil? || (context.respond_to?(:empty?) && context.empty?)
+        Quonfig::NO_DEFAULT_PROVIDED
+      elsif context.is_a?(Quonfig::Context)
+        context
+      else
+        Quonfig::Context.new(context)
+      end
+    actual = client.get_duration(key, default: default, context: ctx_arg)
+    acknowledge_hash_property_missing_warn
+
+    msg = "get_duration(#{key}): expected #{expected_millis.inspect} ms, got #{actual.inspect}"
+    if expected_millis.nil?
+      test.assert_nil actual, msg
+    else
+      test.assert_kind_of Integer, actual, msg
+      test.assert_equal expected_millis, actual, msg
+    end
+    actual
+  end
+
   # Build a real Quonfig::Client whose initial fetch is intentionally slow
   # (an unreachable api_url + tiny init timeout) and assert that
   # Client#get raises Quonfig::Errors::InitializationTimeoutError.
