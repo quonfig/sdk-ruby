@@ -248,8 +248,8 @@ module IntegrationTestHelpers
   # Generic raise path through a real-client construction (e.g. on_init_failure
   # :return + missing_default on get_or_raise — init returns zero value,
   # then get_or_raise still raises MissingDefault). The function arg picks
-  # the call shape: 'get_or_raise' uses get_or_raise(key); anything else
-  # falls back to client.get(key).
+  # the call shape: 'get_or_raise' uses the public Client#get_or_raise(key);
+  # anything else uses client.get(key).
   #
   # The Client logs a warning when init returns the zero value (the typical
   # on_init_failure: :return path). Drain $logs (if it exists from
@@ -267,11 +267,9 @@ module IntegrationTestHelpers
       enable_polling: false
     )
     begin
-      if fn == 'get_or_raise' && client.respond_to?(:get_or_raise)
+      if fn == 'get_or_raise'
         client.get_or_raise(key)
       else
-        # No public get_or_raise: call .get with no default and the SDK's
-        # internal NO_DEFAULT_PROVIDED forces the missing-default raise.
         client.get(key)
       end
       test.flunk("expected #{err_class} to raise but call returned")

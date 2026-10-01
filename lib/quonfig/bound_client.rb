@@ -40,6 +40,10 @@ module Quonfig
       @client.get_json(key, default: default, context: @context)
     end
 
+    def get_or_raise(key, default: NO_DEFAULT_PROVIDED)
+      @client.get_or_raise(key, default: default, context: @context)
+    end
+
     # ---- Details getters ----------------------------------------------
 
     def get_bool_details(key)
@@ -64,6 +68,10 @@ module Quonfig
 
     def get_json_details(key)
       @client.get_json_details(key, context: @context)
+    end
+
+    def get_duration_details(key)
+      @client.get_duration_details(key, context: @context)
     end
 
     def enabled?(feature_name)

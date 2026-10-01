@@ -361,6 +361,14 @@ client.get_json('homepage.layout')
 client.enabled?('beta-feature', user: { key: 'user-123' })
 ```
 
+`get_or_raise(key, default:, context:)` returns the value like `get`, but a
+missing key without a `default:` always raises
+`Quonfig::Errors::MissingDefaultError` (whatever `on_no_default` is set to), and
+an unset or malformed ENV_VAR value, a malformed stored duration, or a
+decryption failure raises its error. `get_duration_details(key, context:)`
+returns `Quonfig::EvaluationDetails` with the duration in integer milliseconds,
+like the other `*_details` getters.
+
 ## Dynamic log levels (SemanticLogger)
 
 Quonfig can drive per-class log levels at runtime. Set config keys like

@@ -196,6 +196,39 @@ module Quonfig
       typed_get(key, :json, default: default, context: context)
     end
 
+    # Like +get+, but never applies the +on_no_default+ policy (qfg-2agi.27):
+    #
+    # - A missing key (or a config with no matching value) returns +default:+
+    #   when one is given and otherwise raises MissingDefaultError, even
+    #   under on_no_default: :return_nil.
+    # - A config provided by an unset ENV_VAR raises MissingEnvVarError; an
+    #   ENV_VAR value that cannot be coerced to the config's type raises
+    #   EnvVarParseError; a decryption failure raises DecryptionError.
+    # - A malformed stored duration raises EnvVarParseError (a given
+    #   +default:+ is not applied; it only covers a missing key).
+    def get_or_raise(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
+      ensure_initialized_after_fork
+      ctx = build_context(context)
+      record_context_for_telemetry(ctx)
+      result =
+        begin
+          @resolver.get(key, ctx)
+        rescue Quonfig::Errors::MissingDefaultError
+          nil
+        end
+      if result.nil?
+        raise Quonfig::Errors::MissingDefaultError, key if default == NO_DEFAULT_PROVIDED
+
+        return default
+      end
+
+      record_evaluation_for_telemetry(result)
+      value = result.unwrapped_value
+      raise malformed_stored_duration_error(result) if malformed_stored_duration?(result, value)
+
+      value
+    end
+
     # ---- Details getters ----------------------------------------------
     #
     # Mirrors the typed getters above but returns a +Quonfig::EvaluationDetails+
@@ -226,6 +259,13 @@ module Quonfig
 
     def get_json_details(key, context: NO_DEFAULT_PROVIDED)
       evaluate_details(key, :json, context)
+    end
+
+    # Integer milliseconds in +value+ (qfg-2agi.27). A config whose valueType
+    # is not duration is ERROR / TYPE_MISMATCH; a malformed value (stored or
+    # ENV_VAR) is ERROR with a nil value.
+    def get_duration_details(key, context: NO_DEFAULT_PROVIDED)
+      evaluate_details(key, :duration, context)
     end
 
     def enabled?(feature_name, jit_context = NO_DEFAULT_PROVIDED)
@@ -1650,6 +1690,10 @@ module Quonfig
       raw_value = result.unwrapped_value
 
       begin
+        if expected_type == :duration
+          raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', raw_value) unless duration_result?(result)
+          raise malformed_stored_duration_error(result) if malformed_stored_duration?(result, raw_value)
+        end
         coerced = coerce_and_check(key, raw_value, expected_type) unless raw_value.nil?
       rescue Quonfig::Errors::TypeMismatchError => e
         return Quonfig::EvaluationDetails.new(
@@ -1729,16 +1773,28 @@ module Quonfig
     end
 
     def duration_millis(key, result, default)
-      config = result.config || {}
-      value_type = config['valueType'] || config[:valueType] || config['value_type'] || config[:value_type]
-      raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', result.unwrapped_value) unless value_type == 'duration' || result.type == 'duration'
+      raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', result.unwrapped_value) unless duration_result?(result)
 
       value = result.unwrapped_value
       millis = value.is_a?(Integer) ? value : Quonfig::Duration.parse_millis(value)
       return millis unless millis.nil?
 
-      error = Quonfig::Errors::EnvVarParseError.new(result.raw_value, config, 'stored value')
-      malformed_duration(key, default, error)
+      malformed_duration(key, default, malformed_stored_duration_error(result))
+    end
+
+    def duration_result?(result)
+      config = result.config || {}
+      value_type = config['valueType'] || config[:valueType] || config['value_type'] || config[:value_type]
+      value_type == 'duration' || result.type == 'duration'
+    end
+
+    # A stored duration string outside the shared grammar unwraps to nil.
+    def malformed_stored_duration?(result, unwrapped)
+      unwrapped.nil? && result.type == 'duration' && !result.raw_value.nil?
+    end
+
+    def malformed_stored_duration_error(result)
+      Quonfig::Errors::EnvVarParseError.new(result.raw_value, result.config || {}, 'stored value')
     end
 
     def malformed_duration(key, default, error)
