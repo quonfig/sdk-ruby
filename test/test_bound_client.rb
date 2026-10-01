@@ -83,14 +83,24 @@ class TestBoundClient < Minitest::Test
     assert_equal({ user: { 'key' => '99' }, org: { 'id' => 'acme' } }, ctx_arg)
   end
 
-  def test_in_context_later_keys_within_same_named_ctx_override_earlier
+  # qfg-2agi.24 / qfg-2agi.36: same-named context is replaced wholesale.
+  def test_in_context_same_named_ctx_replaces_whole_earlier_ctx
     fake = FakeClient.new
-    bound = Quonfig::BoundClient.new(fake, user: { 'key' => '99', 'plan' => 'free' })
+    bound = Quonfig::BoundClient.new(fake, user: { 'key' => '99', 'plan' => 'free' }, team: { 'key' => 't1' })
 
     chained = bound.in_context(user: { 'plan' => 'pro' })
 
-    # 'plan' overridden; 'key' preserved from parent bound
-    assert_equal({ user: { 'key' => '99', 'plan' => 'pro' } }, chained.context)
+    # 'key' is NOT carried over from the parent's user; team survives
+    assert_equal({ user: { 'plan' => 'pro' }, team: { 'key' => 't1' } }, chained.context)
+  end
+
+  def test_in_context_string_name_replaces_symbol_name
+    fake = FakeClient.new
+    bound = Quonfig::BoundClient.new(fake, user: { 'key' => '99' })
+
+    chained = bound.in_context('user' => { 'plan' => 'pro' })
+
+    assert_equal({ 'user' => { 'plan' => 'pro' } }, chained.context)
   end
 
   def test_in_context_does_not_mutate_parent_bound_context

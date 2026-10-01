@@ -1518,7 +1518,7 @@ module Quonfig
 
     # Combine the customer-supplied globalContext with the optional dev
     # context loaded from ~/.quonfig/tokens.json. Dev context goes UNDER the
-    # customer's so any explicit `quonfig-user` keys win on collision.
+    # customer's, so an explicit customer `quonfig-user` context replaces it.
     def build_initial_global_context(options)
       customer = normalize_context(options.global_context)
       return customer unless dev_context_enabled?(options)
@@ -1551,21 +1551,19 @@ module Quonfig
       raise ArgumentError, "Quonfig context must be a Hash, got #{ctx.class}"
     end
 
-    # One-level-deep merge per named context (mirrors sdk-node's mergeContexts):
-    # later values override earlier within the same named context; keys unique
-    # to each side are preserved.
+    # Combine two context tiers (qfg-2agi.24): a named context in +right+
+    # REPLACES the whole same-named context in +left+ (no per-property merge);
+    # named contexts only in +left+ survive. Names compare as strings, so
+    # +:user+ and +'user'+ are the same named context.
     def merge_contexts(left, right)
       return right || {} if left.nil? || left.empty?
       return left if right.nil? || right.empty?
 
       merged = {}
-      left.each  { |name, ctx| merged[name] = ctx.is_a?(Hash) ? ctx.dup : ctx }
+      left.each { |name, ctx| merged[name] = ctx.is_a?(Hash) ? ctx.dup : ctx }
       right.each do |name, ctx|
-        merged[name] = if merged[name].is_a?(Hash) && ctx.is_a?(Hash)
-                         merged[name].merge(ctx)
-                       else
-                         ctx.is_a?(Hash) ? ctx.dup : ctx
-                       end
+        merged.delete_if { |existing, _| existing.to_s == name.to_s }
+        merged[name] = ctx.is_a?(Hash) ? ctx.dup : ctx
       end
       merged
     end

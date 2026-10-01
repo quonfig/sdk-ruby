@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Behaviour change (bug fix): a named context from a newer tier now replaces the whole same-named context from an older tier, instead of being merged into it property by property (qfg-2agi.36).** Tiers, oldest to newest: `global_context`, `with_context` / `in_context` scopes (outer to inner), per-call context. Example: with `global_context: { user: { 'role' => 'admin' } }`, a call passing `user: { 'plan' => 'pro' }` now evaluates with `user.plan` only; `user.role` is no longer present. Named contexts the newer tier does not mention (for example `team`) are still kept. A symbol name and a string name (`:user` vs `'user'`) count as the same named context. This is the documented rule. Callers that relied on the old property-level merge should pass every attribute of a named context they set.
 - **Fix (security): evaluation-summary telemetry no longer sends the plaintext of `confidential` or `decryptWith` config values (qfg-2agi.15).** `selectedValue` now carries the `*****<hash>` redacted form the resolver already computed; before, `Client#get` reported the decrypted value. Non-confidential values are reported unchanged.
 
 ## 1.6.0 - 2026-09-28

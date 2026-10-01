@@ -216,7 +216,34 @@ class TestClient < Minitest::Test
     assert_equal 'admin-value', client.get(CONFIG_KEY, 'fallback')
   end
 
-  def test_jit_context_overrides_global_context_at_the_property_level
+  # qfg-2agi.24 / qfg-2agi.36: a newer tier's named context REPLACES the
+  # whole same-named context from an older tier; it is not merged property
+  # by property. Named contexts the newer tier does not mention survive.
+  def user_role_admin_config
+    make_config(
+      key: CONFIG_KEY,
+      value: 'admin-value',
+      criteria: [{
+        'operator' => 'PROP_IS_ONE_OF',
+        'propertyName' => 'user.role',
+        'valueToMatch' => { 'type' => 'string_list', 'value' => ['admin'] }
+      }]
+    )
+  end
+
+  def global_admin_client
+    Quonfig::Client.new(
+      Quonfig::Options.new(global_context: { user: { 'role' => 'admin' } }),
+      store: store_with(user_role_admin_config)
+    )
+  end
+
+  def test_jit_named_context_replaces_whole_global_named_context
+    # JIT 'user' carries a disjoint attribute; global user.role must be gone.
+    assert_equal 'fallback', global_admin_client.get(CONFIG_KEY, 'fallback', user: { 'plan' => 'pro' })
+  end
+
+  def test_jit_named_context_overrides_same_property
     cfg = make_config(
       key: CONFIG_KEY,
       value: 'jit-value',
@@ -226,14 +253,35 @@ class TestClient < Minitest::Test
         'valueToMatch' => { 'type' => 'string_list', 'value' => ['user'] }
       }]
     )
-    store = store_with(cfg)
     client = Quonfig::Client.new(
       Quonfig::Options.new(global_context: { user: { 'role' => 'admin' } }),
-      store: store
+      store: store_with(cfg)
     )
 
-    # jit overrides global for this single property; keys unique to global preserved
     assert_equal 'jit-value', client.get(CONFIG_KEY, 'fallback', user: { 'role' => 'user' })
+  end
+
+  def test_jit_named_context_with_string_key_replaces_global_symbol_key
+    assert_equal 'fallback', global_admin_client.get(CONFIG_KEY, 'fallback', 'user' => { 'plan' => 'pro' })
+  end
+
+  def test_global_named_context_survives_jit_with_other_named_context
+    assert_equal 'admin-value', global_admin_client.get(CONFIG_KEY, 'fallback', team: { 'key' => 't1' })
+  end
+
+  def test_with_context_named_context_replaces_whole_global_named_context
+    client = global_admin_client
+    assert_equal 'fallback', client.with_context(user: { 'plan' => 'pro' }).get_string(CONFIG_KEY, default: 'fallback')
+    assert_equal 'admin-value', client.with_context(team: { 'key' => 't1' }).get_string(CONFIG_KEY, default: 'fallback')
+  end
+
+  def test_nested_in_context_named_context_replaces_whole_outer_named_context
+    client = client_with(store_with(user_role_admin_config))
+    outer = client.with_context(user: { 'role' => 'admin' }, team: { 'key' => 't1' })
+
+    assert_equal 'fallback', outer.in_context(user: { 'plan' => 'pro' }).get_string(CONFIG_KEY, default: 'fallback')
+    assert_equal 'fallback', outer.in_context('user' => { 'plan' => 'pro' }).get_string(CONFIG_KEY, default: 'fallback')
+    assert_equal 'admin-value', outer.in_context(org: { 'id' => 'acme' }).get_string(CONFIG_KEY, default: 'fallback')
   end
 
   def test_normalize_context_rejects_non_hash_jit_context
