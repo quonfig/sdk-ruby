@@ -177,4 +177,41 @@ class TestClientTelemetry < Minitest::Test
                'weighted variant evaluation must report a weightedValueIndex'
     assert_kind_of Integer, counter['weightedValueIndex']
   end
+
+  # Regression (qfg-2agi.15): record_evaluation_for_telemetry passed the
+  # DECRYPTED plaintext of a decryptWith secret as selectedValue. It must
+  # send the `*****<md5[0,5]>` redacted form computed over the ciphertext.
+  def test_decrypt_with_config_reports_redacted_selected_value
+    hex_key = Quonfig::Encryption.generate_new_hex_key
+    ciphertext = Quonfig::Encryption.new(hex_key).encrypt('hello.world')
+
+    store = Quonfig::ConfigStore.new
+    store.set('the.key', make_config(key: 'the.key', value: hex_key))
+    secret_cfg = make_config(key: 'a.secret.config', value: ciphertext)
+    secret_cfg['default']['rules'][0]['value'].merge!('confidential' => true, 'decryptWith' => 'the.key')
+    store.set('a.secret.config', secret_cfg)
+
+    client, _reporter, summaries_agg, _conn = make_client_with_telemetry(store)
+    assert_equal 'hello.world', client.get('a.secret.config', Quonfig::NO_DEFAULT_PROVIDED, {})
+
+    summary = summaries_agg.drain_event['summaries']['summaries'].find { |s| s['key'] == 'a.secret.config' }
+    refute_nil summary
+    selected = summary['counters'][0]['selectedValue']
+    expected = "*****#{Digest::MD5.hexdigest(ciphertext)[0, 5]}"
+    assert_equal({ 'string' => expected }, selected)
+    refute_includes selected.to_s, 'hello.world'
+  end
+
+  def test_confidential_config_reports_redacted_selected_value
+    store = Quonfig::ConfigStore.new
+    cfg = make_config(key: 'a.confidential', value: 'plain-secret')
+    cfg['default']['rules'][0]['value']['confidential'] = true
+    store.set('a.confidential', cfg)
+
+    client, _reporter, summaries_agg, _conn = make_client_with_telemetry(store)
+    assert_equal 'plain-secret', client.get('a.confidential', Quonfig::NO_DEFAULT_PROVIDED, {})
+
+    selected = summaries_agg.drain_event['summaries']['summaries'][0]['counters'][0]['selectedValue']
+    assert_equal({ 'string' => "*****#{Digest::MD5.hexdigest('plain-secret')[0, 5]}" }, selected)
+  end
 end

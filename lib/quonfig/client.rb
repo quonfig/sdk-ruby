@@ -1153,7 +1153,9 @@ module Quonfig
         config_type: config_field(config, :type),
         conditional_value_index: result.rule_index,
         weighted_value_index: result.weighted_value_index,
-        selected_value: result.unwrapped_value,
+        # Confidential / decryptWith values ship as the `*****<hash>` redacted
+        # form, never the plaintext (qfg-2agi.15).
+        selected_value: result.reportable_value.nil? ? result.unwrapped_value : result.reportable_value,
         reason: result.wire_reason
       )
     rescue StandardError => e

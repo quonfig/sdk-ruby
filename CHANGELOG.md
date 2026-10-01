@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Fix (security): evaluation-summary telemetry no longer sends the plaintext of `confidential` or `decryptWith` config values (qfg-2agi.15).** `selectedValue` now carries the `*****<hash>` redacted form the resolver already computed; before, `Client#get` reported the decrypted value. Non-confidential values are reported unchanged.
+
 ## 1.6.0 - 2026-09-28
 
 - **Change: a weighted rollout that hashes on a property missing from the context now hashes an empty value, so every such caller gets the same variant for that flag (qfg-9dxb.8).** Before, such evaluations got a random variant on every call. It is the same variant a context with the property set to `""` gets, and a variant with weight 0 is not served. The reason is still `SPLIT`. The `flag_metadata` of `get_*_details` results includes `'hashPropertyMissing' => true` when the property is missing, and the SDK logs one warning per flag. A weighted rollout with no hash property configured still picks a random variant on every evaluation, unchanged. Users whose context has the property keep the same variant as in 1.5.0.
