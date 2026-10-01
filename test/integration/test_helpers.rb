@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'socket'
+require 'webrick'
 require 'quonfig'
 
 # Integration-test environment — the generated tests read these the same way
@@ -13,294 +15,83 @@ ENV['IS_A_NUMBER'] = '1234'
 ENV['NOT_A_NUMBER'] = 'not_a_number'
 ENV.delete('MISSING_ENV_VAR')
 
-# Shared fixture loader + resolver factory for the generated integration
-# tests in sdk-ruby/test/integration/test_*.rb (qfg-dk6.23/.24). The evaluator
-# wired up here still delegates to Quonfig::CriteriaEvaluator — once
-# qfg-dk6.10 ports the criterion operators to the JSON Criterion type,
-# generated tests will resolve end-to-end. Until then build_store simply
-# parses the JSON fixtures into the ConfigStore.
+# Support code for the generated integration tests in
+# sdk-ruby/test/integration/test_*.rb (generator:
+# integration-test-data/generators/src/targets/ruby.ts).
+#
+# qfg-2agi.33: every generated case drives the PUBLIC Quonfig::Client exactly
+# as a customer would — a datadir client, the typed getter / enabled? /
+# get_or_raise the YAML names, global_context / with_context / in_context for
+# the context tiers, and the real telemetry reporter flushed to a local HTTP
+# sink. Nothing here resolves a config, maps an exception, or redacts a value
+# on the SDK's behalf; if the SDK gets it wrong, the test goes red.
 module IntegrationTestHelpers
   DATA_DIR = File.expand_path(
     '../../../integration-test-data/data/integration-tests',
     __dir__
   )
   ENV_ID = 'Production'
-  CONFIG_SUBDIRS = %w[configs feature-flags segments log-levels schemas].freeze
+
+  # Warnings the SDK is REQUIRED to log on paths the shared YAML exercises on
+  # purpose. The harness teardown rejects any unhandled log line, so these are
+  # dropped; anything else still fails the test.
+  EXPECTED_WARNINGS = [
+    # Weighted rollout whose hash property is missing (qfg-9dxb.8 / qfg-46e1).
+    /which is missing from context; hashing an empty value instead/,
+    # Malformed duration -> default/nil, warn once per key (qfg-2agi.10).
+    /is not a valid ISO-8601 duration/,
+    # A single explicit api_url disables failover (qfg-41nh.26).
+    /explicit api_urls disables automatic failover/
+  ].freeze
 
   def self.data_dir
-    DATA_DIR
-  end
-
-  # fixture_name matches the generator's YAML suite name (e.g. 'get',
-  # 'enabled'). Every suite shares the same config corpus — mirrors
-  # sdk-node/sdk-go, which also build a single store for the whole run —
-  # so the name is advisory. Accepting it keeps the call shape the task
-  # spec asks for and leaves room for per-suite overlays later.
-  def self.build_store(_fixture_name = nil)
     unless Dir.exist?(DATA_DIR)
       raise "[integration tests] fixtures not found at #{DATA_DIR} — " \
             'clone quonfig/integration-test-data as a sibling of sdk-ruby.'
     end
 
-    store = Quonfig::ConfigStore.new
-    CONFIG_SUBDIRS.each do |subdir|
-      dir = File.join(DATA_DIR, subdir)
-      next unless Dir.exist?(dir)
-
-      Dir.glob(File.join(dir, '*.json')).each do |path|
-        raw = JSON.parse(File.read(path))
-        cfg = to_config_response(raw)
-        key = cfg[:key]
-        next if key.nil? || key.empty?
-
-        store.set(key, cfg)
-      end
-    end
-    self.last_store = store
-    store
+    DATA_DIR
   end
 
-  def self.build_resolver(store)
-    evaluator = Quonfig::Evaluator.new(store, env_id: ENV_ID)
-    Quonfig::Resolver.new(store, evaluator)
+  # A datadir-mode Quonfig::Client over the shared integration-test corpus,
+  # evaluating the 'Production' environment. +opts+ are public client options
+  # taken from the case (global_context:, on_no_default:, ...).
+  #
+  # sdk_key: nil and enable_quonfig_user_context: false keep the developer's
+  # ambient QUONFIG_BACKEND_SDK_KEY / ~/.quonfig/tokens.json out of the result.
+  def self.build_client(**opts)
+    Quonfig::Client.new(
+      datadir: data_dir,
+      environment: ENV_ID,
+      sdk_key: nil,
+      enable_quonfig_user_context: false,
+      **opts
+    )
   end
 
-  # Resolve +key+ against +context+ and assert the unwrapped value (and,
-  # when present, its reported value_type) match. Generated tests call
-  # this for the "no default, no enabled" path. With the generator now
-  # threading input.default through assert_get_with_default and routing
-  # function: enabled cases through assert_enabled, this helper can stay
-  # strict: missing keys still raise, non-bool actual stays non-bool.
-  # Nil-expected cases (e.g. "get returns nil if value not found" with
-  # on_no_default: 2) catch the resolver's MissingDefaultError and return nil.
-  def self.assert_resolved(test, resolver, key, context, expected_value, expected_type = nil)
-    ctx = context.is_a?(Quonfig::Context) ? context : Quonfig::Context.new(context || {})
-    result =
-      begin
-        resolver.get(key, ctx)
-      rescue Quonfig::Errors::MissingDefaultError
-        nil
-      end
-
-    acknowledge_hash_property_missing_warn
-
-    actual = if result.nil?
-               nil
-             elsif result.respond_to?(:unwrapped_value)
-               result.unwrapped_value
-             elsif result.respond_to?(:value)
-               v = result.value
-               v.respond_to?(:string) ? v.string : v
-             else
-               result
-             end
-
-    msg = "#{key}: expected #{expected_value.inspect} (#{expected_type}), got #{actual.inspect}"
-    if expected_value.nil?
-      test.assert_nil actual, msg
-    else
-      test.assert_equal expected_value, actual, msg
-    end
-
-    if expected_type && result.respond_to?(:value_type)
-      test.assert_equal expected_type.to_s, result.value_type.to_s,
-                        "#{key}: expected type #{expected_type}, got #{result.value_type}"
-    end
-    actual
+  # A client whose initial network fetch cannot succeed (unreachable api_url +
+  # tiny init timeout) for the initialization_timeout / on_init_failure cases.
+  def self.build_network_client(api_url:, timeout_sec:, on_init_failure:)
+    Quonfig::Client.new(
+      sdk_key: 'test-unused',
+      api_urls: [api_url.to_s.empty? ? 'https://127.0.0.1:1' : api_url],
+      initialization_timeout_sec: timeout_sec,
+      on_init_failure: on_init_failure,
+      enable_sse: false,
+      enable_polling: false,
+      enable_quonfig_user_context: false
+    )
   end
 
-  HASH_PROPERTY_MISSING_WARN = /which is missing from context; hashing an empty value instead/
-
-  # A weighted rollout whose hash property is missing from context WARNs once
-  # per config key per resolver (qfg-9dxb.8). The shared YAML cases exercise
-  # that path on purpose, and the harness teardown rejects any unhandled log
-  # line, so drop the expected WARN here (qfg-46e1). The warn-once contract
-  # itself is pinned in test/test_weighted_hash_property_missing.rb.
-  def self.acknowledge_hash_property_missing_warn
+  # Drop the EXPECTED_WARNINGS lines from the captured log so the teardown
+  # only trips on unexpected output.
+  def self.acknowledge_expected_warnings
     return unless $logs.respond_to?(:string)
 
-    kept = $logs.string.lines.grep_v(HASH_PROPERTY_MISSING_WARN)
+    kept = $logs.string.lines.reject { |line| EXPECTED_WARNINGS.any? { |re| line.match?(re) } }
     $logs.truncate(0)
     $logs.rewind
     $logs.write(kept.join)
-  end
-
-  # function: enabled semantics — Quonfig::Client#enabled? returns the
-  # bool value if the resolved value is a boolean, false otherwise.
-  # The generator routes function: enabled cases through this helper so
-  # the bool-coercion lives here, not inferred from the expected literal.
-  def self.assert_enabled(test, resolver, key, context, expected_bool)
-    ctx = context.is_a?(Quonfig::Context) ? context : Quonfig::Context.new(context || {})
-    actual =
-      begin
-        result = resolver.get(key, ctx)
-        if result.nil?
-          false
-        else
-          v = result.respond_to?(:unwrapped_value) ? result.unwrapped_value : result
-          [true, 'true'].include?(v)
-        end
-      rescue Quonfig::Errors::MissingDefaultError
-        false
-      end
-    test.assert_equal expected_bool, actual,
-                      "enabled?(#{key}): expected #{expected_bool.inspect}, got #{actual.inspect}"
-    actual
-  end
-
-  # input.default — thread the YAML default through the SDK's public
-  # get(key, default) API. Build a Client over the same store the
-  # resolver uses; that way we observe what the SDK actually returns
-  # (default kicks in for missing keys, found-key wins over default).
-  def self.assert_get_with_default(test, store, key, context, default_value, expected_value)
-    # Build with environment: ENV_ID so config rules evaluate against the
-    # 'Production' environment (matching what build_resolver does). Without
-    # this the Client falls back to default rules.
-    client = Quonfig::Client.new(store: store, environment: ENV_ID)
-    ctx_arg =
-      if context.nil? || (context.respond_to?(:empty?) && context.empty?)
-        Quonfig::NO_DEFAULT_PROVIDED
-      elsif context.is_a?(Quonfig::Context)
-        context
-      else
-        Quonfig::Context.new(context)
-      end
-    actual = client.get(key, default_value, ctx_arg)
-    test.assert_equal expected_value, actual,
-                      "#{key}: expected #{expected_value.inspect} (default=#{default_value.inspect}), got #{actual.inspect}"
-    actual
-  end
-
-  # A real Quonfig::Client over +store+, evaluating the 'Production'
-  # environment like build_resolver does. Used by the DURATION path so the
-  # customer-facing typed getter is what gets asserted (qfg-2agi.4).
-  def self.build_client(store, **opts)
-    Quonfig::Client.new(store: store, environment: ENV_ID, **opts)
-  end
-
-  # type: DURATION cases (qfg-2agi.4). Assert through the PUBLIC
-  # Client#get_duration, the getter a customer calls, not the internal
-  # resolver. Comparison is integer-exact: the result must be an Integer
-  # millisecond count equal to +expected_millis+ (no tolerance, no Float).
-  # +on_no_default:+ mirrors the case's client_overrides.on_no_default
-  # (2 -> :return_nil) for the malformed no-default cases (qfg-2agi.6/.7).
-  def self.assert_duration(test, store, key, context, expected_millis, default: Quonfig::NO_DEFAULT_PROVIDED,
-                           on_no_default: nil)
-    client = on_no_default ? build_client(store, on_no_default: on_no_default) : build_client(store)
-    ctx_arg =
-      if context.nil? || (context.respond_to?(:empty?) && context.empty?)
-        Quonfig::NO_DEFAULT_PROVIDED
-      elsif context.is_a?(Quonfig::Context)
-        context
-      else
-        Quonfig::Context.new(context)
-      end
-    actual = client.get_duration(key, default: default, context: ctx_arg)
-    acknowledge_hash_property_missing_warn
-
-    msg = "get_duration(#{key}): expected #{expected_millis.inspect} ms, got #{actual.inspect}"
-    if expected_millis.nil?
-      test.assert_nil actual, msg
-    else
-      test.assert_kind_of Integer, actual, msg
-      test.assert_equal expected_millis, actual, msg
-    end
-    actual
-  end
-
-  # Build a real Quonfig::Client whose initial fetch is intentionally slow
-  # (an unreachable api_url + tiny init timeout) and assert that
-  # Client#get raises Quonfig::Errors::InitializationTimeoutError.
-  def self.assert_initialization_timeout_error(test, key, timeout_sec, api_url, on_init_failure)
-    on_init = on_init_failure.to_s.sub(/\A:/, '').to_sym
-    api_urls = api_url && !api_url.empty? ? [api_url] : ['https://127.0.0.1:1']
-    client =
-      begin
-        Quonfig::Client.new(
-          sdk_key: 'test-unused',
-          api_urls: api_urls,
-          initialization_timeout_sec: timeout_sec,
-          on_init_failure: on_init,
-          enable_sse: false,
-          enable_polling: false
-        )
-      rescue Quonfig::Errors::InitializationTimeoutError
-        test.assert(true, 'init raised InitializationTimeoutError as expected')
-        # A single explicit api_url warns about disabled failover (qfg-41nh.26)
-        # before the init fetch times out; drain it so teardown doesn't trip.
-        $logs = nil if defined?($logs)
-        return
-      end
-    test.assert_equal :raise, on_init,
-                      'expected on_init_failure :raise so client.get raises InitializationTimeoutError'
-
-    begin
-      client.get(key)
-      test.flunk("expected get(#{key}) to raise InitializationTimeoutError but it returned")
-    rescue Quonfig::Errors::InitializationTimeoutError
-      test.assert(true, 'get raised InitializationTimeoutError as expected')
-    ensure
-      client.respond_to?(:close) && client.close
-      $logs = nil if defined?($logs)
-    end
-  end
-
-  # Generic raise path through a real-client construction (e.g. on_init_failure
-  # :return + missing_default on get_or_raise — init returns zero value,
-  # then get_or_raise still raises MissingDefault). The function arg picks
-  # the call shape: 'get_or_raise' uses the public Client#get_or_raise(key);
-  # anything else uses client.get(key).
-  #
-  # The Client logs a warning when init returns the zero value (the typical
-  # on_init_failure: :return path). Drain $logs (if it exists from
-  # CommonHelpers) so the test's teardown doesn't trip on it — that's the
-  # whole point of the case.
-  def self.assert_client_construction_raises(test, key, timeout_sec, api_url, on_init_failure, fn, err_class)
-    on_init = on_init_failure.to_s.sub(/\A:/, '').to_sym
-    api_urls = api_url && !api_url.empty? ? [api_url] : ['https://127.0.0.1:1']
-    client = Quonfig::Client.new(
-      sdk_key: 'test-unused',
-      api_urls: api_urls,
-      initialization_timeout_sec: timeout_sec,
-      on_init_failure: on_init,
-      enable_sse: false,
-      enable_polling: false
-    )
-    begin
-      if fn == 'get_or_raise'
-        client.get_or_raise(key)
-      else
-        client.get(key)
-      end
-      test.flunk("expected #{err_class} to raise but call returned")
-    rescue err_class
-      test.assert(true, "#{err_class} raised as expected")
-    ensure
-      client.respond_to?(:close) && client.close
-      # Acknowledge the init-warning log so common_helpers' teardown won't
-      # blow up. The warning IS the thing we asked for via :return policy.
-      $logs = nil if defined?($logs)
-    end
-  end
-
-  # Happy path through a real-client construction (rare; mostly here for
-  # symmetry — the YAML init-timeout cases are all raise-path).
-  def self.assert_client_construction_value(test, key, timeout_sec, api_url, on_init_failure, _fn, expected_value)
-    on_init = on_init_failure.to_s.sub(/\A:/, '').to_sym
-    api_urls = api_url && !api_url.empty? ? [api_url] : ['https://127.0.0.1:1']
-    client = Quonfig::Client.new(
-      sdk_key: 'test-unused',
-      api_urls: api_urls,
-      initialization_timeout_sec: timeout_sec,
-      on_init_failure: on_init,
-      enable_sse: false,
-      enable_polling: false
-    )
-    actual = client.get(key)
-    test.assert_equal expected_value, actual,
-                      "#{key}: expected #{expected_value.inspect}, got #{actual.inspect}"
-    client.respond_to?(:close) && client.close
-    actual
   end
 
   # Temporarily set env vars for the duration of the block and restore the
@@ -323,388 +114,195 @@ module IntegrationTestHelpers
   end
 
   # ----------------------------------------------------------------------
-  # Aggregator helpers for the post.yaml + telemetry.yaml generated suites.
+  # Telemetry (post.yaml / telemetry.yaml)
   # ----------------------------------------------------------------------
   #
-  # The shared YAML in integration-test-data/tests/eval/{post,telemetry}.yaml
-  # describes telemetry payloads in language-neutral terms — `aggregator:
-  # context_shape | evaluation_summary | example_contexts` plus a `data`
-  # block of inputs and an `expected_data` block of the would-be POST body.
-  # The Ruby generator emits one method per case calling these three
-  # helpers. They wire the YAML inputs through the real aggregator classes
-  # (Quonfig::Telemetry::*) and translate the aggregator's drain_event
-  # output into the YAML's snake_case schema for assertion.
+  # The real path: a datadir client WITH an SDK key (the telemetry gate) whose
+  # telemetry_url points at TelemetrySink, a local HTTP server. The generated
+  # test evaluates through the public client, then flushes the client's own
+  # TelemetryReporter, and the POST body the sink received is projected onto
+  # the YAML's snake_case expected_data.
+
+  # Local HTTP server that records every telemetry POST body.
+  class TelemetrySink
+    attr_reader :port
+
+    def self.start
+      new.tap(&:start)
+    end
+
+    def initialize
+      @bodies = []
+      @mutex = Mutex.new
+      @server = WEBrick::HTTPServer.new(Port: 0, Logger: WEBrick::Log.new(StringIO.new), AccessLog: [])
+      @server.mount_proc('/') do |req, res|
+        @mutex.synchronize { @bodies << req.body.to_s }
+        res.status = 200
+        res['Content-Type'] = 'application/json'
+        res.body = '{}'
+      end
+      @port = @server.config[:Port]
+    end
+
+    def start
+      @thread = Thread.new { @server.start }
+      50.times do
+        break if open?
+
+        sleep 0.02
+      end
+    end
+
+    def url
+      "http://127.0.0.1:#{@port}"
+    end
+
+    def bodies
+      @mutex.synchronize { @bodies.dup }
+    end
+
+    def stop
+      @server.shutdown
+      @thread&.join(1)
+    end
+
+    private
+
+    def open?
+      TCPSocket.new('127.0.0.1', @port).tap(&:close)
+      true
+    rescue StandardError
+      false
+    end
+  end
+
+  # A datadir client with telemetry ON, reporting to +sink+. +opts+ are the
+  # case's client_overrides (context_upload_mode:, collect_evaluation_summaries:).
+  def self.build_telemetry_client(sink, **opts)
+    Quonfig::Client.new(
+      datadir: data_dir,
+      environment: ENV_ID,
+      sdk_key: 'itd-telemetry-sdk-key',
+      telemetry_url: sink.url,
+      enable_quonfig_user_context: false,
+      **opts
+    )
+  end
+
+  # Flush the client's REAL telemetry reporter into +sink+ and assert the POST
+  # it produced, projected for +kind+, matches +expected_data+.
   #
-  # Recent build_store call stashes the Quonfig::ConfigStore on the module
-  # so eval-summary cases can resolve real values for each key.
-  class << self
-    attr_accessor :last_store
-    # Side-channel populated by record_one_eval whenever we redact a
-    # confidential value before recording it on the aggregator. Keyed by
-    # config_key → { unwrapped:, value_type: }. evaluation_summary_post
-    # consults it so the YAML's `value` / `value_type` fields can still
-    # assert the runtime resolved value while `selected_value` carries
-    # the wire-redacted form.
-    attr_accessor :last_unwrapped_overrides
-  end
-
-  # Construct an aggregator. +kind+ is one of :context_shape,
-  # :evaluation_summary, :example_contexts (string or symbol). +overrides+
-  # mirrors the YAML `client_overrides` block; the only options that
-  # affect aggregator output today are `collect_evaluation_summaries`
-  # (false → eval-summary aggregator created with max_keys=0 so it noops)
-  # and `context_upload_mode` ("shape_only" / "none" → example-contexts
-  # aggregator created with max=0; ":none" / ":shape_only" come through
-  # as Ruby-symbol strings via js-yaml, which is why we strip the leading
-  # colon defensively).
-  def self.build_aggregator(kind, overrides = {})
-    overrides = (overrides || {}).each_with_object({}) { |(k, v), h| h[k.to_s] = v }
-    case normalize_kind(kind)
-    when :context_shape
-      max = aggregator_max_for(overrides, :context_shape)
-      Quonfig::Telemetry::ContextShapeAggregator.new(max_shapes: max)
-    when :evaluation_summary
-      collect = overrides.fetch('collect_evaluation_summaries', true)
-      max = collect ? 100_000 : 0
-      Quonfig::Telemetry::EvaluationSummariesAggregator.new(max_keys: max)
-    when :example_contexts
-      max = aggregator_max_for(overrides, :example_contexts)
-      Quonfig::Telemetry::ExampleContextsAggregator.new(max_contexts: max)
-    else
-      raise ArgumentError, "Unknown aggregator kind: #{kind.inspect}"
-    end
-  end
-
-  # Feed +data+ through +aggregator+ for the given +kind+. Each kind has
-  # its own input shape (see post.yaml / telemetry.yaml):
-  # - :context_shape   → +data+ is a Hash of named contexts, OR an Array
-  #                      of such hashes (multi-record case).
-  # - :evaluation_summary
-  #                    → +data+ is { 'keys' => [...], 'keys_without_context'
-  #                      => [...] }. Each key is resolved against
-  #                      +contexts+ (or empty contexts for the second
-  #                      list), then the EvalResult is recorded.
-  # - :example_contexts → same as :context_shape but recorded into the
-  #                      example aggregator.
-  def self.feed_aggregator(aggregator, kind, data, contexts: {})
-    case normalize_kind(kind)
-    when :context_shape
-      each_context_record(data) { |rec| aggregator.push(rec) }
-    when :example_contexts
-      each_context_record(data) { |rec| aggregator.record(Quonfig::Context.new(rec)) }
-    when :evaluation_summary
-      record_eval_keys(aggregator, data, contexts)
-    else
-      raise ArgumentError, "Unknown aggregator kind: #{kind.inspect}"
-    end
-  end
-
-  # Drain the aggregator and assert its would-be POST body matches
-  # +expected_data+. +endpoint+ is captured from YAML for diagnostics
-  # (the Ruby helpers don't actually POST anything — the aggregator's
-  # drain_event payload is what the reporter would ship). +expected_data+
-  # is YAML-shaped (snake_case `field_types` etc.); we project the
-  # aggregator's drain output into that shape so the comparison is
-  # apples-to-apples.
-  def self.assert_aggregator_post(test, aggregator, kind, expected_data, endpoint:)
-    actual = build_actual_post(aggregator, kind)
+  # Eval-summary rows: the wire carries only selectedValue (redacted for
+  # confidential / decryptWith configs). The YAML's `value` is the runtime
+  # view, so it is checked against what the public getter actually returned
+  # for that key (+returned+), and the rest of the row against the wire.
+  def self.assert_telemetry_post(test, client, sink, kind, expected_data, endpoint:, returned: {})
+    client.telemetry_reporter&.flush
+    events = sink.bodies.flat_map { |body| JSON.parse(body).fetch('events', []) }
+    actual = project(events, kind)
 
     if expected_data.nil?
-      test.assert_nil actual,
-                      "[#{endpoint}] expected no telemetry POST but aggregator produced #{actual.inspect}"
+      test.assert_nil actual, "[#{endpoint}] expected no #{kind} telemetry but the client sent #{actual.inspect}"
       return
     end
 
-    expected_normalized, actual_normalized = align_for_comparison(expected_data, actual, kind)
-    actual_normalized = scrub_optional_fields(actual_normalized, expected_normalized, kind)
-
-    test.assert_equal expected_normalized, actual_normalized,
-                      "[#{endpoint}] aggregator POST mismatch"
-  end
-
-  # Normalize ordering on both sides for comparison. Telemetry payloads
-  # are conceptually unordered sets — different SDKs (and different runs
-  # within a single SDK if you swap a Hash for a different impl) emit
-  # entries in different orders. Sort by a stable key so the comparison
-  # is set-equality. Keeps assertion errors readable: both sides print in
-  # the same canonical order.
-  def self.align_for_comparison(expected, actual, kind)
-    case normalize_kind(kind)
-    when :evaluation_summary
-      sort_key = ->(row) { [row['key'].to_s, row.dig('summary', 'conditional_value_index') || 0] }
-      [expected.is_a?(Array) ? expected.sort_by(&sort_key) : expected,
-       actual.is_a?(Array)   ? actual.sort_by(&sort_key)   : actual]
-    when :context_shape
-      sort_key = ->(row) { row['name'].to_s }
-      [expected.is_a?(Array) ? expected.sort_by(&sort_key) : expected,
-       actual.is_a?(Array)   ? actual.sort_by(&sort_key)   : actual]
-    else
-      [expected, actual]
-    end
-  end
-  private_class_method :align_for_comparison
-
-  # Drop fields from +actual+ that the YAML's +expected+ doesn't assert.
-  # Today only `selected_value` in eval-summary rows is opt-in (some YAML
-  # cases verify the proto-style wrapper, most don't). Index pairwise so
-  # the per-row decision lines up.
-  def self.scrub_optional_fields(actual, expected, kind)
-    return actual unless normalize_kind(kind) == :evaluation_summary
-    return actual unless actual.is_a?(Array) && expected.is_a?(Array)
-
-    actual.each_with_index.map do |row, idx|
-      exp_row = expected[idx]
-      next row unless row.is_a?(Hash) && exp_row.is_a?(Hash)
-      next row if exp_row.key?('selected_value')
-
-      row.except('selected_value')
-    end
-  end
-  private_class_method :scrub_optional_fields
-
-  # --- aggregator-helper internals ---
-
-  def self.normalize_kind(kind)
-    str = kind.to_s
-    str = str.sub(/\A:/, '') # ":shape_only" → "shape_only" if a stray symbol-string sneaks in
-    case str
-    when 'context_shape'      then :context_shape
-    when 'evaluation_summary' then :evaluation_summary
-    when 'example_contexts'   then :example_contexts
-    else raise ArgumentError, "Unknown aggregator kind: #{kind.inspect}"
-    end
-  end
-  private_class_method :normalize_kind
-
-  # Strip a leading `:` so a Ruby-symbol-style YAML scalar (":shape_only"
-  # → ":shape_only" string when js-yaml serializes it) compares cleanly.
-  def self.strip_symbol(v)
-    v.is_a?(String) ? v.sub(/\A:/, '') : v.to_s
-  end
-  private_class_method :strip_symbol
-
-  def self.aggregator_max_for(overrides, agg_kind)
-    mode = strip_symbol(overrides['context_upload_mode']) if overrides.key?('context_upload_mode')
-    return 0 if mode == 'none'
-
-    case agg_kind
-    when :context_shape    then 100_000
-    when :example_contexts then mode == 'shape_only' ? 0 : 100_000
-    end
-  end
-  private_class_method :aggregator_max_for
-
-  def self.each_context_record(data)
-    return if data.nil?
-
-    if data.is_a?(Array)
-      data.each { |row| yield row if row.is_a?(Hash) && !row.empty? }
-    elsif data.is_a?(Hash)
-      yield data unless data.empty?
-    end
-  end
-  private_class_method :each_context_record
-
-  def self.record_eval_keys(aggregator, data, contexts)
-    return unless data.is_a?(Hash)
-
-    keys = data['keys'] || data[:keys] || []
-    keys_no_ctx = data['keys_without_context'] || data[:keys_without_context] || []
-    store = last_store
-    raise '[integration tests] no store cached — call build_store before feed_aggregator' if store.nil?
-
-    resolver = build_resolver(store)
-    ctx = contexts.is_a?(Quonfig::Context) ? contexts : Quonfig::Context.new(contexts || {})
-    empty_ctx = Quonfig::Context.new({})
-
-    self.last_unwrapped_overrides = {}
-    Array(keys).each { |key| record_one_eval(aggregator, resolver, store, key, ctx) }
-    Array(keys_no_ctx).each { |key| record_one_eval(aggregator, resolver, store, key, empty_ctx) }
-  end
-  private_class_method :record_eval_keys
-
-  def self.record_one_eval(aggregator, resolver, store, key, ctx)
-    cfg = store.get(key)
-    return if cfg.nil?
-
-    result =
-      begin
-        resolver.get(key, ctx)
-      rescue Quonfig::Errors::MissingDefaultError
-        nil
+    if kind == :evaluation_summary
+      expected_data.each do |row|
+        test.assert_includes returned.fetch(row['key'], []), row['value'],
+                             "[#{endpoint}] public getter for #{row['key']} did not return #{row['value'].inspect}"
       end
-    return if result.nil?
-
-    # Confidential / decryptWith values must never appear in plaintext on
-    # the wire. EvalResult#reportable_value, when populated, is the
-    # `*****<md5>`-redacted substitute the resolver computed pre-decryption.
-    # When we substitute, stash the runtime unwrapped value so the
-    # post-projection can still assert YAML's `value` / `value_type` against
-    # the resolved plaintext (the YAML treats `value` as the runtime view
-    # and `selected_value` as the wire view).
-    selected_for_telemetry = result.unwrapped_value
-    if result.reportable_value
-      selected_for_telemetry = result.reportable_value
-      (self.last_unwrapped_overrides ||= {})[key] = {
-        unwrapped: result.unwrapped_value,
-        value_type: result.value_type
-      }
+      expected_data = expected_data.map { |row| row.except('value') }
+      actual = scrub_unasserted_selected_values(actual, expected_data)
     end
-    aggregator.record(
-      config_id: (cfg[:id] || cfg['id']).to_s,
-      config_key: key,
-      config_type: (cfg[:type] || cfg['type']).to_s,
-      conditional_value_index: result.rule_index,
-      weighted_value_index: result.weighted_value_index,
-      selected_value: selected_for_telemetry,
-      reason: result.wire_reason
-    )
+
+    test.assert_equal sort_rows(expected_data, kind), sort_rows(actual, kind),
+                      "[#{endpoint}] telemetry POST mismatch"
   end
-  private_class_method :record_one_eval
 
-  # Project +aggregator+'s drain_event payload onto the YAML's
-  # snake_case `expected_data` schema. Returns nil when the aggregator
-  # produced nothing (matches YAML's bare `expected_data:` lines).
-  def self.build_actual_post(aggregator, kind)
-    event = aggregator.drain_event
-    return nil if event.nil?
-
-    case normalize_kind(kind)
-    when :context_shape      then context_shape_post(event)
-    when :evaluation_summary then evaluation_summary_post(event)
-    when :example_contexts   then example_contexts_post(event)
+  def self.project(events, kind)
+    case kind
+    when :evaluation_summary then evaluation_summary_rows(events)
+    when :context_shape      then context_shape_rows(events)
+    when :example_contexts   then example_context_set(events)
+    else raise ArgumentError, "Unknown telemetry kind: #{kind.inspect}"
     end
   end
-  private_class_method :build_actual_post
+  private_class_method :project
 
-  def self.context_shape_post(event)
-    shapes = event.dig('contextShapes', 'shapes') || []
+  def self.context_shape_rows(events)
+    shapes = events.flat_map { |e| e.dig('contextShapes', 'shapes') || [] }
     return nil if shapes.empty?
 
-    shapes.map do |shape|
-      { 'name' => shape['name'], 'field_types' => shape['fieldTypes'] }
-    end
+    shapes.map { |shape| { 'name' => shape['name'], 'field_types' => shape['fieldTypes'] } }
   end
-  private_class_method :context_shape_post
+  private_class_method :context_shape_rows
 
-  def self.example_contexts_post(event)
-    examples = event.dig('exampleContexts', 'examples') || []
+  # post.yaml expects a single context-set object (the first example), keyed
+  # by named-context name.
+  def self.example_context_set(events)
+    examples = events.flat_map { |e| e.dig('exampleContexts', 'examples') || [] }
     return nil if examples.empty?
 
-    # post.yaml expects a single context-set object (the first / only
-    # example), keyed by named-context-name. Multiple examples are not
-    # exercised in the YAML; if they ever are, this helper still picks
-    # the first dedup'd record, matching sdk-node's wire shape.
-    contexts = examples.first.dig('contextSet', 'contexts') || []
-    contexts.to_h do |ctx|
-      [ctx['type'], ctx['values']]
-    end
+    (examples.first.dig('contextSet', 'contexts') || []).to_h { |ctx| [ctx['type'], ctx['values']] }
   end
-  private_class_method :example_contexts_post
+  private_class_method :example_context_set
 
-  TYPE_LABELS = {
-    'config' => 'CONFIG',
-    'feature_flag' => 'FEATURE_FLAG',
-    'segment' => 'SEGMENT',
-    'log_level' => 'LOG_LEVEL',
-    'schema' => 'SCHEMA'
+  SELECTED_VALUE_TYPES = {
+    'bool' => 'bool', 'int' => 'int', 'double' => 'double',
+    'string' => 'string', 'stringList' => 'string_list'
   }.freeze
-  private_constant :TYPE_LABELS
 
-  def self.evaluation_summary_post(event)
-    summaries = event.dig('summaries', 'summaries') || []
-    overrides = last_unwrapped_overrides || {}
-    rows = []
-    summaries.each do |summary|
-      type_label = TYPE_LABELS[summary['type'].to_s] || summary['type'].to_s.upcase
-      counters = summary['counters'] || []
-      counters.each do |counter|
+  def self.evaluation_summary_rows(events)
+    summaries = events.flat_map { |e| e.dig('summaries', 'summaries') || [] }
+    rows = summaries.flat_map do |summary|
+      (summary['counters'] || []).map do |counter|
         selected = counter['selectedValue'] || {}
-        unwrapped, value_type = unwrap_selected(selected)
-        # When the resolver redacted this key (confidential / decryptWith),
-        # selected_value carries the redacted form on the wire but YAML's
-        # `value` / `value_type` should still reflect the runtime resolved
-        # plaintext. Restore from the side channel populated in
-        # record_one_eval.
-        if (override = overrides[summary['key']])
-          unwrapped = override[:unwrapped]
-          value_type = override[:value_type] if override[:value_type]
-        end
-        row = {
-          'key' => summary['key'],
-          'type' => type_label,
-          'value' => unwrapped,
-          'value_type' => value_type,
-          'count' => counter['count'],
-          'reason' => counter['reason']
-        }
-        if counter.key?('selectedValue')
-          # YAML test cases that assert `selected_value:` use the raw
-          # tagged shape (e.g. {"string" => "hello.world"}). We always
-          # emit it; the diff's expected_data will simply not include
-          # the field for cases that don't care.
-          row['selected_value'] = selected
-        end
         summary_block = {
           'config_row_index' => counter['configRowIndex'],
           'conditional_value_index' => counter['conditionalValueIndex']
         }
         summary_block['weighted_value_index'] = counter['weightedValueIndex'] if counter.key?('weightedValueIndex')
-        row['summary'] = summary_block
-        rows << row
+        {
+          'key' => summary['key'],
+          'type' => summary['type'].to_s.upcase,
+          'value_type' => SELECTED_VALUE_TYPES.fetch(selected.keys.first.to_s, selected.keys.first),
+          'count' => counter['count'],
+          'reason' => counter['reason'],
+          'selected_value' => selected,
+          'summary' => summary_block
+        }
       end
     end
-    return nil if rows.empty?
-
-    # Strip selected_value from rows whose YAML cases don't assert it.
-    # We can't know that here, so emit it conditionally based on the
-    # caller. The simpler path is to only include selected_value when
-    # the YAML case asks for it. To keep this stateless we drop it by
-    # default; the helper re-adds it on request via opt-in (see
-    # #with_selected_values below). Most cases assert without it.
-    rows
+    rows.empty? ? nil : rows
   end
-  private_class_method :evaluation_summary_post
+  private_class_method :evaluation_summary_rows
 
-  # Decode the proto-style selectedValue wrapper { "<type>" => <val> }
-  # into [unwrapped_value, value_type_label]. Mirrors the keys used by
-  # EvaluationSummariesAggregator#wrap_selected_value (bool/int/double/
-  # string/stringList).
-  def self.unwrap_selected(selected)
-    return [nil, nil] unless selected.is_a?(Hash) && selected.size == 1
+  # selected_value is opt-in per expected row; drop it from actual rows whose
+  # expected counterpart (same key + conditional_value_index) omits it.
+  def self.scrub_unasserted_selected_values(actual, expected)
+    return actual unless actual.is_a?(Array)
 
-    key, value = selected.first
-    case key
-    when 'bool'       then [value, 'bool']
-    when 'int'        then [value, 'int']
-    when 'double'     then [value, 'double']
-    when 'string'     then [value, 'string']
-    when 'stringList' then [value, 'string_list']
-    else [value, key]
+    asserted = expected.select { |row| row.key?('selected_value') }
+                       .map { |row| [row['key'], row.dig('summary', 'conditional_value_index')] }
+    actual.map do |row|
+      id = [row['key'], row.dig('summary', 'conditional_value_index')]
+      asserted.include?(id) ? row : row.except('selected_value')
     end
   end
-  private_class_method :unwrap_selected
+  private_class_method :scrub_unasserted_selected_values
 
-  # Normalize the raw JSON config on disk into the shape the rest of the
-  # suite expects: one environment row for ENV_ID pulled out of the
-  # top-level `environments` array. Matches sdk-node/setup.ts:toConfigResponse.
-  def self.to_config_response(raw)
-    environment = nil
-    if raw['environments'].is_a?(Array)
-      match = raw['environments'].find { |e| e.is_a?(Hash) && e['id'] == ENV_ID }
-      environment = match if match
+  # Telemetry rows are an unordered set; sort both sides the same way.
+  def self.sort_rows(rows, kind)
+    return rows unless rows.is_a?(Array)
+
+    case kind
+    when :evaluation_summary
+      rows.sort_by { |r| [r['key'].to_s, r.dig('summary', 'conditional_value_index') || 0] }
+    when :context_shape
+      rows.sort_by { |r| r['name'].to_s }
+    else
+      rows
     end
-
-    {
-      id: raw['id'] || '',
-      key: raw['key'],
-      type: raw['type'],
-      value_type: raw['valueType'],
-      send_to_client_sdk: raw['sendToClientSdk'] || false,
-      default: raw['default'] || { 'rules' => [] },
-      environment: environment,
-      raw: raw
-    }
   end
-  private_class_method :to_config_response
+  private_class_method :sort_rows
 end

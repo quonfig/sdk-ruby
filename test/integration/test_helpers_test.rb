@@ -3,9 +3,9 @@
 require 'test_helper'
 require 'integration/test_helpers'
 
-# Verifies the shared helper that generated integration tests (qfg-dk6.23/.24)
-# depend on: fixture loading, resolver construction, env-var scoping,
-# and the assertion helper.
+# Verifies the shared helpers the generated integration tests depend on
+# (qfg-2agi.33): the public datadir client, env-var scoping, expected-warning
+# filtering, and the real-reporter telemetry path.
 class TestIntegrationHelpers < Minitest::Test
   def test_data_dir_is_the_integration_tests_sibling_repo
     assert_equal 'integration-tests', File.basename(IntegrationTestHelpers.data_dir)
@@ -13,22 +13,19 @@ class TestIntegrationHelpers < Minitest::Test
            "integration-test-data sibling repo must exist at #{IntegrationTestHelpers.data_dir}"
   end
 
-  def test_build_store_loads_configs_from_subdirs
-    store = IntegrationTestHelpers.build_store('get')
+  def test_build_client_is_a_datadir_client_over_the_shared_corpus
+    client = IntegrationTestHelpers.build_client
 
-    assert_kind_of Quonfig::ConfigStore, store
-    refute_empty store.keys, 'build_store should load at least one config'
-    assert store.keys.include?('my-test-key'),
-           "expected 'my-test-key' in store keys (got #{store.keys.first(5).inspect}...)"
+    assert_kind_of Quonfig::Client, client
+    assert_includes client.keys, 'my-test-key'
+    assert_equal 'my-test-value', client.get_string('my-test-key')
+    assert_nil client.telemetry_reporter, 'eval clients must not report telemetry'
   end
 
-  def test_build_resolver_wires_store_and_evaluator
-    store = IntegrationTestHelpers.build_store('get')
-    resolver = IntegrationTestHelpers.build_resolver(store)
+  def test_build_client_passes_public_options_through
+    client = IntegrationTestHelpers.build_client(global_context: { 'user' => { 'email' => 'test@prefab.cloud' } })
 
-    assert_kind_of Quonfig::Resolver, resolver
-    assert_same store, resolver.store
-    assert_kind_of Quonfig::Evaluator, resolver.evaluator
+    assert_equal 'override', client.get_string('basic.rule.config')
   end
 
   def test_env_vars_for_encryption_and_env_lookups_are_set_at_load
@@ -71,33 +68,29 @@ class TestIntegrationHelpers < Minitest::Test
     assert_nil ENV.fetch('ROLLBACK_ME', nil)
   end
 
-  # qfg-g0rp — helpers must call assert_* on the test instance so Minitest
-  # actually counts the assertion. Previously they raised Minitest::Assertion
-  # directly, leaving the suite at "N tests, 0 assertions".
-  def test_assert_enabled_records_an_assertion_on_the_test_instance
-    store = IntegrationTestHelpers.build_store('enabled')
-    resolver = IntegrationTestHelpers.build_resolver(store)
-    before = assertions
-    IntegrationTestHelpers.assert_enabled(self, resolver, 'feature-flag.simple', {}, true)
-    after = assertions
-    assert_operator after, :>, before,
-                    "expected assert_enabled to bump self.assertions from #{before} but it was #{after}"
+  def test_acknowledge_expected_warnings_keeps_unexpected_lines
+    $logs = StringIO.new
+    $logs.write("WARN foo is not a valid ISO-8601 duration; returning the default\nWARN something else\n")
+    IntegrationTestHelpers.acknowledge_expected_warnings
+
+    assert_equal "WARN something else\n", $logs.string
+    $logs = nil
   end
 
-  def test_assert_enabled_still_raises_minitest_assertion_on_mismatch
-    store = IntegrationTestHelpers.build_store('enabled')
-    resolver = IntegrationTestHelpers.build_resolver(store)
-    assert_raises(Minitest::Assertion) do
-      IntegrationTestHelpers.assert_enabled(self, resolver, 'feature-flag.simple', {}, false)
-    end
-  end
+  # The telemetry path flushes the client's REAL reporter into a local sink.
+  def test_assert_telemetry_post_reads_the_reporters_post
+    sink = IntegrationTestHelpers::TelemetrySink.start
+    client = IntegrationTestHelpers.build_telemetry_client(sink)
+    returned = { 'brand.new.string' => [client.get_or_raise('brand.new.string')] }
+    expected = [{ 'key' => 'brand.new.string', 'type' => 'CONFIG', 'value' => 'hello.world', 'value_type' => 'string',
+                  'count' => 1, 'reason' => 1, 'selected_value' => { 'string' => 'hello.world' },
+                  'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0 } }]
 
-  def test_assert_resolved_records_an_assertion_on_the_test_instance
-    store = IntegrationTestHelpers.build_store('get')
-    resolver = IntegrationTestHelpers.build_resolver(store)
-    before = assertions
-    IntegrationTestHelpers.assert_resolved(self, resolver, 'my-test-key', {}, 'my-test-value')
-    after = assertions
-    assert_operator after, :>, before, 'expected assert_resolved to bump self.assertions'
+    IntegrationTestHelpers.assert_telemetry_post(self, client, sink, :evaluation_summary, expected,
+                                                 endpoint: '/api/v1/telemetry', returned: returned)
+    refute_empty sink.bodies
+  ensure
+    client&.stop
+    sink&.stop
   end
 end

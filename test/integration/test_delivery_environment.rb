@@ -53,7 +53,7 @@ class TestDeliveryEnvironment < Minitest::Test
       context_upload_mode: :none,
       collect_evaluation_summaries: false
     )
-    assert_equal false, client.get('flag.env-scoped', :missing),
+    assert_equal false, client.get_bool('flag.env-scoped'),
                  'delivery-wire env override: expected false for flag.env-scoped'
     # A single explicit api_url disables failover (qfg-41nh.26); the SDK warns once.
     assert_logged([/explicit api_urls disables automatic failover/])
@@ -77,7 +77,7 @@ class TestDeliveryEnvironment < Minitest::Test
       collect_evaluation_summaries: false,
       environment: 'staging'
     )
-    assert_equal false, client.get('flag.env-scoped', :missing),
+    assert_equal false, client.get_bool('flag.env-scoped'),
                  'delivery-wire env override: expected false for flag.env-scoped'
     assert_logged([/was set but the client is in delivery \(SDK-key\) mode/])
   ensure
@@ -99,7 +99,7 @@ class TestDeliveryEnvironment < Minitest::Test
       context_upload_mode: :none,
       collect_evaluation_summaries: false
     )
-    assert_equal true, client.get('flag.default-only', :missing),
+    assert_equal true, client.get_bool('flag.default-only'),
                  'delivery-wire env override: expected true for flag.default-only'
     # A single explicit api_url disables failover (qfg-41nh.26); the SDK warns once.
     assert_logged([/explicit api_urls disables automatic failover/])
