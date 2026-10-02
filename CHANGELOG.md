@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.7.0 - 2026-10-02
 
 - **New: public `Client#get_or_raise` and `Client#get_duration_details` (also on `BoundClient`) (qfg-2agi.27).** `get_or_raise(key, default:, context:)` returns the value like `get`; a missing key with no `default:` raises `MissingDefaultError` even under `on_no_default: :return_nil`, and an unset ENV_VAR (`MissingEnvVarError`), an uncoercible ENV_VAR or malformed stored duration (`EnvVarParseError`) or a decryption failure (`DecryptionError`) raises. `get_duration_details` returns integer milliseconds in `EvaluationDetails`; a non-duration config is `ERROR`/`TYPE_MISMATCH` and a malformed value is `ERROR` with a nil value. The shared integration suite's init-timeout `get_or_raise` case now calls the public method instead of falling back to `get`.
 - **Fix: durations follow the one grammar all Quonfig SDKs share, and a malformed duration returns the default instead of a made-up number (qfg-2agi.10).** Grammar (integration-test-data `tests/duration/grammar.yaml`): `P[nD][T[nH][nM][n[.fff]S]]`, at least one component, a fraction only on seconds (at most 9 digits), at most `P36500D`. Before, the pattern was unanchored, so `xxPT5Sxx` read as 5000 ms, `PT5M3H` as 300000 ms and `garbage` as 0. Milliseconds are now rounded half up on both the stored and the ENV_VAR path (`PT1.9999S` from an env var was 1999, now 2000).
