@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Behaviour change (bug fix): weighted rollouts now hash non-ASCII text the same way as every other Quonfig SDK (qfg-1mvb).** The MurmurHash3 used to pick a weighted variant counted characters instead of UTF-8 bytes, so a config key or hash value containing non-ASCII text (for example `josé`, `日本語`, `🚀`) hashed to a different number than sdk-java, sdk-python, sdk-go and sdk-node. It now hashes the UTF-8 bytes. Ruby users whose hash value (or the flag's key) contains non-ASCII characters may move to a different variant on upgrade; afterwards they get the same variant as in the other SDKs. ASCII-only values and keys are unchanged.
+
 ## 1.7.0 - 2026-10-02
 
 - **New: public `Client#get_or_raise` and `Client#get_duration_details` (also on `BoundClient`) (qfg-2agi.27).** `get_or_raise(key, default:, context:)` returns the value like `get`; a missing key with no `default:` raises `MissingDefaultError` even under `on_no_default: :return_nil`, and an unset ENV_VAR (`MissingEnvVarError`), an uncoercible ENV_VAR or malformed stored duration (`EnvVarParseError`) or a decryption failure (`DecryptionError`) raises. `get_duration_details` returns integer milliseconds in `EvaluationDetails`; a non-duration config is `ERROR`/`TYPE_MISMATCH` and a malformed value is `ERROR` with a nil value. The shared integration suite's init-timeout `get_or_raise` case now calls the public method instead of falling back to `get`.

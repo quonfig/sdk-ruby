@@ -25,10 +25,14 @@ class Murmur3
     (k1 * 0x1b873593) & MASK32
   end
 
+  # Hashes the string's BYTES (UTF-8 for any normal Ruby string), like every
+  # other Quonfig SDK. Using the character count instead of the byte count put
+  # non-ASCII input in the wrong tail/length mix (qfg-1mvb).
   def self.murmur3_32(str, seed = 0)
+    bytes = str.b
     h1 = seed
-    numbers = str.unpack('V*C*')
-    tailn = str.length % 4
+    numbers = bytes.unpack('V*C*')
+    tailn = bytes.bytesize % 4
     tail = numbers.slice!(numbers.size - tailn, tailn)
     numbers.each do |k1|
       h1 ^= murmur3_32__mmix(k1)
@@ -44,7 +48,7 @@ class Murmur3
       h1 ^= murmur3_32__mmix(k1)
     end
 
-    h1 ^= str.length
+    h1 ^= bytes.bytesize
     murmur3_32_fmix(h1)
   end
 end
