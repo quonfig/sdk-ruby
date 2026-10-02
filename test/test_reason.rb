@@ -62,11 +62,22 @@ class TestReason < Minitest::Test
     assert_equal :SPLIT, reason
   end
 
-  def test_weighted_value_index_zero_is_not_split
+  # Bucket 0 is a real weighted variant, so it is a SPLIT like any other
+  # bucket (qfg-mn8f). Matches EvalResult#wire_reason and sdk-node.
+  def test_weighted_value_index_zero_is_split
     reason = Quonfig::Reason.compute(
       config: default_only_config,
       conditional_value: DEFAULT_CV,
       weighted_value_index: 0
+    )
+    assert_equal :SPLIT, reason
+  end
+
+  def test_nil_weighted_value_index_is_not_split
+    reason = Quonfig::Reason.compute(
+      config: default_only_config,
+      conditional_value: DEFAULT_CV,
+      weighted_value_index: nil
     )
     assert_equal :DEFAULT, reason
   end

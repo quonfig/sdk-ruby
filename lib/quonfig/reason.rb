@@ -7,7 +7,7 @@ module Quonfig
   #   :DEFAULT     — config has no targeting rules; matched value is the static default
   #   :RULE_MATCH  — at least one targeting rule exists on the config (the matched
   #                  conditional may itself be ALWAYS_TRUE, but the *config* is targeted)
-  #   :SPLIT       — matched value came from a non-default weighted variant
+  #   :SPLIT       — matched value came from a weighted variant (any bucket, including 0)
   #   :ERROR       — evaluation failed
   #   :UNKNOWN     — unable to determine
   module Reason
@@ -20,7 +20,7 @@ module Quonfig
     module_function
 
     def compute(config:, conditional_value:, weighted_value_index: nil)
-      return SPLIT if weighted_value_index&.positive?
+      return SPLIT unless weighted_value_index.nil?
       return RULE_MATCH if targeting_rules?(config)
       return RULE_MATCH if non_always_true_criteria?(conditional_value)
 

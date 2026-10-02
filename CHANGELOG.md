@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Behaviour change (bug fix): weighted rollouts now hash non-ASCII text the same way as every other Quonfig SDK (qfg-1mvb).** The MurmurHash3 used to pick a weighted variant counted characters instead of UTF-8 bytes, so a config key or hash value containing non-ASCII text (for example `josé`, `日本語`, `🚀`) hashed to a different number than sdk-java, sdk-python, sdk-go and sdk-node. It now hashes the UTF-8 bytes. Ruby users whose hash value (or the flag's key) contains non-ASCII characters may move to a different variant on upgrade; afterwards they get the same variant as in the other SDKs. ASCII-only values and keys are unchanged.
+- **Fix: `Quonfig::Reason.compute` now returns `:SPLIT` for weighted bucket 0 (qfg-mn8f).** It returned `:SPLIT` only for buckets 1 and up, so bucket 0 was reported as `:DEFAULT`/`:RULE_MATCH`. The SDK's own evaluation path does not use this method and already reported bucket 0 as `SPLIT`; this only affects code that calls `Quonfig::Reason.compute` directly.
 
 ## 1.7.0 - 2026-10-02
 
