@@ -66,6 +66,30 @@ class TestGetWeightedValues < Minitest::Test
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
+  # non-ascii tracking_id emoji hashes utf-8 bytes
+  def test_non_ascii_tracking_id_emoji_hashes_utf_8_bytes
+    client = IntegrationTestHelpers.build_client
+    actual = client.get_string('feature-flag.weighted.even-split-ones', context: { 'user' => { 'tracking_id' => '🚀-rocket' } })
+    assert_equal 'a', actual, 'client.get_string(feature-flag.weighted.even-split-ones, context: { user => { tracking_id => 🚀-rocket } })'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # non-ascii tracking_id latin hashes utf-8 bytes
+  def test_non_ascii_tracking_id_latin_hashes_utf_8_bytes
+    client = IntegrationTestHelpers.build_client
+    actual = client.get_string('feature-flag.weighted.even-split-ones', context: { 'user' => { 'tracking_id' => 'münchen-7' } })
+    assert_equal 'a', actual, 'client.get_string(feature-flag.weighted.even-split-ones, context: { user => { tracking_id => münchen-7 } })'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # non-ascii tracking_id cjk hashes utf-8 bytes
+  def test_non_ascii_tracking_id_cjk_hashes_utf_8_bytes
+    client = IntegrationTestHelpers.build_client
+    actual = client.get_string('feature-flag.weighted.even-split-ones', context: { 'user' => { 'tracking_id' => 'ユーザー1' } })
+    assert_equal 'b', actual, 'client.get_string(feature-flag.weighted.even-split-ones, context: { user => { tracking_id => ユーザー1 } })'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
   # non-standard sum still serves normalized true bucket
   def test_non_standard_sum_still_serves_normalized_true_bucket
     client = IntegrationTestHelpers.build_client
