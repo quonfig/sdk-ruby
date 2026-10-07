@@ -223,4 +223,64 @@ class TestTypedGetters < Minitest::Test
     client = client_with_value(value: payload, type: 'json')
     assert_equal payload, client.get_json(KEY)
   end
+  # ---- error messages never carry the value (qfg-goi1.2.11) -------------
+
+  # A decryptWith secret read through the wrong typed getter must not put the
+  # decrypted plaintext into the exception message or into
+  # *_details.error_message (both end up in logs and error trackers).
+  def secret_client
+    hex_key = Quonfig::Encryption.generate_new_hex_key
+    ciphertext = Quonfig::Encryption.new(hex_key).encrypt('hello.world')
+    store = Quonfig::ConfigStore.new
+    key_cfg = make_config(value: hex_key, type: 'string')
+    key_cfg['key'] = 'the.key'
+    store.set('the.key', key_cfg)
+    secret_cfg = make_config(value: ciphertext, type: 'string')
+    secret_cfg['default']['rules'][0]['value'].merge!('confidential' => true, 'decryptWith' => 'the.key')
+    store.set(KEY, secret_cfg)
+    Quonfig::Client.new(Quonfig::Options.new, store: store)
+  end
+
+  def test_type_mismatch_message_omits_decrypted_secret
+    client = secret_client
+    assert_equal 'hello.world', client.get_string(KEY)
+
+    err = assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int(KEY, default: 0) }
+    refute_includes err.message, 'hello.world'
+    assert_includes err.message, KEY
+    assert_includes err.message, 'Integer'
+    assert_includes err.message, 'String'
+
+    details = client.get_int_details(KEY)
+    refute_nil details.error_message
+    refute_includes details.error_message, 'hello.world'
+  end
+
+  def test_type_mismatch_message_has_no_doubled_expected
+    err = assert_raises(Quonfig::Errors::TypeMismatchError) do
+      client_with_value(value: 'oops', type: 'string').get_int(KEY)
+    end
+    refute_match(/expected expected/, err.message)
+    refute_includes err.message, 'oops'
+  end
+
+  def test_type_mismatch_messages_omit_value_for_every_getter
+    { get_bool: 'string-secret', get_string_list: 'string-secret', get_duration: 'string-secret' }.each do |getter, v|
+      err = assert_raises(Quonfig::Errors::TypeMismatchError) do
+        client_with_value(value: v, type: 'string').public_send(getter, KEY)
+      end
+      refute_includes err.message, v, "#{getter}: #{err.message}"
+    end
+  end
+
+  def test_malformed_stored_duration_error_omits_stored_value
+    client = client_with_value(value: 'not-a-duration-secret', type: 'duration')
+    err = nil
+    capture_client_warns do
+      err = assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_duration(KEY) }
+    end
+    refute_includes err.message, 'not-a-duration-secret'
+    assert_includes err.message, KEY
+    assert_includes err.message, 'duration'
+  end
 end

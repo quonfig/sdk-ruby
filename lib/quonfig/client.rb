@@ -1830,7 +1830,7 @@ module Quonfig
         # JSON values are returned as-is (Hash, Array, or scalar from the wire).
         value
       when Class
-        raise Quonfig::Errors::TypeMismatchError.new(key, "expected #{expected_type}", value) unless value.is_a?(expected_type)
+        raise Quonfig::Errors::TypeMismatchError.new(key, expected_type.to_s, value) unless value.is_a?(expected_type)
 
         value
       else

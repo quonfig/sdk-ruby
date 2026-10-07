@@ -274,7 +274,11 @@ class TestResolverTrio < Minitest::Test
         resolver.get('a.number', Quonfig::Context.new({}))
       end
       assert_match(/a\.number/, err.message)
-      assert_match(/not_a_number/, err.message)
+      assert_match(/QFG_TEST_BAD_INT/, err.message)
+      assert_match(/int/, err.message)
+      # The raw env value can be a secret: it must never reach the message
+      # (qfg-goi1.2.11).
+      refute_match(/not_a_number/, err.message)
     end
   end
 
