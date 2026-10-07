@@ -26,6 +26,22 @@ class TestEnabled < Minitest::Test
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
+  # returns false for a flag key that does not exist
+  def test_returns_false_for_a_flag_key_that_does_not_exist
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('my-missing-key')
+    assert_equal false, actual, 'client.enabled?(my-missing-key)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for a flag key that does not exist with a context
+  def test_returns_false_for_a_flag_key_that_does_not_exist_with_a_context
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('my-missing-key', { 'user' => { 'key' => 'michael', 'email' => 'michael@example.com' } })
+    assert_equal false, actual, 'client.enabled?(my-missing-key, { user => { key => michael, email => michael@example.com } })'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
   # returns true for a PROP_IS_ONE_OF rule when any prop matches
   def test_returns_true_for_a_prop_is_one_of_rule_when_any_prop_matches
     client = IntegrationTestHelpers.build_client
