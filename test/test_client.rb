@@ -347,7 +347,7 @@ class TestClient < Minitest::Test
     # qfg-dk6.32: scrub PrefabProto from the runtime lib path.
     lib_dir = File.expand_path('../lib/quonfig', __dir__)
     offenders = Dir.glob(File.join(lib_dir, '**/*.rb')).select do |path|
-      File.read(path).match?(/PrefabProto/)
+      File.read(path, encoding: 'UTF-8').match?(/PrefabProto/)
     end
 
     assert_empty offenders,
