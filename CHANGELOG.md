@@ -5,6 +5,7 @@
 Recommended semver: none (CI and chaos-harness only; no change to the published gem).
 
 - **Chaos: `server_metric(...)` expectations are now reported as SKIPPED with a reason instead of silently evaluating to 0 and passing (qfg-goi1.1.3).** api-delivery exports its metrics only by OTLP push, so the rig has nothing to scrape; server-side lag is covered by the staging drill (qfg-47c2.19) and the `QuonfigSubscriberLagHigh` alert. Each skipped expectation prints a `SKIP` line with the reason, the scenario summary counts skips separately, and the run ends with a tally of every skipped expression. In a compound expression the skipped leaf is neutral: the other leaves are still enforced (scenario 02 still requires `connected`). No library change.
+- **CI: the Chaos and Failover Chaos workflows now run integration-test-data `v2026.10.03`, the same tag as the unit and contract tests (qfg-goi1.1.3).** They were on `v2026.05.13` and `v2026.06.19.1`. The new tag adds the continuous freshness hold on scenario 05-sse-down (qfg-e3ja). Both workflows still build api-delivery from `main` on purpose (they exist to catch api-delivery drift) and now write the resolved api-delivery SHA to the run summary. No library change.
 
 ## 1.7.1 - 2026-10-03
 
