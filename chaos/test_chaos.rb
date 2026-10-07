@@ -266,6 +266,9 @@ class ChaosProbe
     end
   end
 
+  # Returns the probe's value for an SDK-side metric, or nil for a metric name
+  # the probe does not implement, so the evaluator fails the expectation loudly
+  # instead of comparing against a silent 0 (qfg-goi1.2.21; sdk-go's `known`).
   def sdk_metric(name, labels)
     @lock.synchronize do
       case name
@@ -277,8 +280,6 @@ class ChaosProbe
         end
       when 'quonfig_sse_connect_attempts_total'
         @conn_attempts.to_f
-      else
-        0.0
       end
     end
   end

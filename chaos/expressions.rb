@@ -6,6 +6,7 @@
 # unit-tested without booting toxiproxy or api-delivery (see
 # test/test_chaos_expressions.rb). A +probe+ is any object answering
 # #snapshot, #sdk_metric(name, labels) and #log_matches(level, regex).
+# #sdk_metric returns nil for a metric name the probe does not implement.
 
 module Quonfig
   module Chaos
@@ -105,6 +106,9 @@ module Quonfig
           want = m[4].to_f
           labels = layer ? { 'layer' => layer } : {}
           got = probe.sdk_metric(metric, labels)
+          # Unknown metric fails loudly, never a silent 0 (qfg-goi1.2.21).
+          return [false, "unknown sdkMetric \"#{metric}\": the chaos probe does not implement it"] if got.nil?
+
           ok = compare(op, got, want)
           return [ok, "sdkMetric(#{metric},layer=#{layer || ''})=#{got} #{op} #{want}"]
         end

@@ -90,4 +90,48 @@ class TestChaosExpressions < Minitest::Test
     assert_equal :fail, r.status
     assert_match(/unrecognized expression/, r.reason)
   end
+
+  # qfg-goi1.2.21: a probe answers nil from #sdk_metric for a metric name it
+  # does not implement (sdk-go's `known == false`). The evaluator must fail
+  # that expectation loudly instead of comparing against a silent 0, which
+  # would make `client.sdkMetric('typo_total') == 0` pass without checking.
+  class MetricProbe < FakeProbe
+    def initialize(metrics)
+      super('connected')
+      @metrics = metrics
+    end
+
+    def sdk_metric(name, _labels)
+      @metrics[name]
+    end
+  end
+
+  def eval_metric(expr, metrics = { 'quonfig_sse_connect_attempts_total' => 0.0 })
+    Quonfig::Chaos::Expressions.evaluate(expr, MetricProbe.new(metrics))
+  end
+
+  def test_unknown_sdk_metric_fails_loudly
+    r = eval_metric("client.sdkMetric('typo_total') == 0")
+
+    assert_equal :fail, r.status
+    assert_match(/unknown sdkMetric "typo_total": the chaos probe does not implement it/, r.reason)
+  end
+
+  def test_unknown_sdk_metric_fails_whatever_the_comparison
+    # A silent 0 would pass `< 5` and fail `> 0`; unknown fails both.
+    assert_equal :fail, eval_metric("client.sdkMetric('typo_total', layer='1') < 5").status
+    assert_equal :fail, eval_metric("client.sdkMetric('typo_total') > 0").status
+  end
+
+  def test_unknown_sdk_metric_fails_inside_an_and
+    r = eval_metric("client.connectionState() == 'connected' AND client.sdkMetric('typo_total') == 0")
+
+    assert_equal :fail, r.status
+    assert_match(/unknown sdkMetric "typo_total"/, r.reason)
+  end
+
+  def test_known_sdk_metric_still_compares
+    assert_equal :pass, eval_metric("client.sdkMetric('quonfig_sse_connect_attempts_total') == 0").status
+    assert_equal :fail, eval_metric("client.sdkMetric('quonfig_sse_connect_attempts_total') > 0").status
+  end
 end
