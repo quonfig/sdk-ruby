@@ -56,6 +56,14 @@ module Quonfig
 
     MAGIC_CURRENT_TIME_PROPS = %w[quonfig.current-time prefab.current-time reforge.current-time].freeze
 
+    # PROP_MATCHES / PROP_DOES_NOT_MATCH match timeout (qfg-goi1.2.11). Ruby
+    # 3.2+ supports Regexp.new(src, timeout:); Regexp::TimeoutError is a
+    # RegexpError, so a pattern that runs away (backreferences and lookarounds
+    # defeat Onigmo's memoization) does not match instead of pinning a
+    # thread. Ruby 3.0/3.1 have no timeout and are unchanged.
+    REGEX_MATCH_TIMEOUT_SECONDS = 0.1
+    REGEX_TIMEOUT_SUPPORTED = Regexp.respond_to?(:timeout)
+
     attr_reader :store
     attr_accessor :project_env_id, :env_id
 
@@ -218,7 +226,7 @@ module Quonfig
         mv = hget(match_value, :value)
         if context_exists && context_value.is_a?(String) && mv.is_a?(String)
           begin
-            re = Regexp.new(mv)
+            re = REGEX_TIMEOUT_SUPPORTED ? Regexp.new(mv, timeout: REGEX_MATCH_TIMEOUT_SECONDS) : Regexp.new(mv)
             matched = re.match?(context_value)
             return matched == (operator == OP_PROP_MATCHES)
           rescue RegexpError

@@ -138,6 +138,31 @@ class TestEvaluator < Minitest::Test
     assert_equal 'no', evaluate(cfg, { user: { email: 'foo' } }).unwrapped_value
   end
 
+  # qfg-goi1.2.11: on Ruby 3.2+ a catastrophic pattern (backreferences defeat
+  # Onigmo's memoization) is cut off by Regexp's timeout. Regexp::TimeoutError
+  # is a RegexpError, so the existing rescue makes the criterion not match.
+  # Unbounded, this pattern takes ~6s on 13 a's (and doubles per extra a).
+  def test_prop_matches_catastrophic_pattern_times_out
+    skip 'Regexp timeout needs Ruby 3.2+' unless Regexp.respond_to?(:timeout)
+
+    %w[PROP_MATCHES PROP_DOES_NOT_MATCH].each do |op|
+      cfg = build_config([
+                           value_match_rule(
+                             [{ 'propertyName' => 'user.email', 'operator' => op,
+                                'valueToMatch' => { 'type' => 'string', 'value' => '^(a|a?)+\\1$' } }],
+                             'string', 'yes'
+                           ),
+                           value_match_rule([{ 'operator' => 'ALWAYS_TRUE' }], 'string', 'no')
+                         ])
+      started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      result = evaluate(cfg, { user: { email: "#{'a' * 13}b" } }).unwrapped_value
+      elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+      assert_equal 'no', result, op
+      assert_operator elapsed, :<, 2.0, "#{op}: regex ran #{elapsed.round(2)}s; the match timeout did not apply"
+    end
+  end
+
   # ------ HIERARCHICAL_MATCH ------
 
   def test_hierarchical_match
