@@ -12,6 +12,19 @@ module Quonfig
     module Expressions
       module_function
 
+      # Why server_metric(...) is not evaluated by this rig (Decision 6 in
+      # project/sdk-quality-check/META-ANALYSIS.md): api-delivery exports its
+      # metrics only by OTLP push, so there is nothing to scrape from here.
+      SERVER_METRIC_SKIP_REASON =
+        'server-side metric; api-delivery exports via OTLP only, no scrape endpoint ' \
+        'in the rig; covered by staging drill qfg-47c2.19 and the QuonfigSubscriberLagHigh alert'
+
+      Result = Struct.new(:status, :reason, :skipped) do
+        def pass?
+          status == :pass
+        end
+      end
+
       RE_CONN_STATE_EQ = /\Aclient\.connectionState\(\)\s*(==|!=)\s*'([^']+)'\z/
       RE_FALLBACK_EQ   = /\Aclient\.fallbackPollerActive\(\)\s*==\s*(true|false)\z/
       RE_PROC_ALIVE_EQ = /\Aclient\.processStillAlive\(\)\s*==\s*(true|false)\z/
@@ -57,7 +70,7 @@ module Quonfig
         end
       end
 
-      def eval_leaf(expr, probe, server_metric)
+      def eval_leaf(expr, probe)
         expr = expr.strip
         if (m = RE_CONN_STATE_EQ.match(expr))
           op = m[1]
@@ -96,13 +109,10 @@ module Quonfig
           return [ok, "sdkMetric(#{metric},layer=#{layer || ''})=#{got} #{op} #{want}"]
         end
         if (m = RE_SERVER_METRIC.match(expr))
-          name = m[1]
-          op = m[2]
-          want = m[3].to_f
-          got = server_metric.call(name)
-          ok = compare(op, got, want)
-          return [ok, "server_metric(#{name})=#{got} #{op} #{want}"]
+          # Explicit SKIP, never a silent 0 (qfg-goi1.1.3, Decision 6).
+          return [:skip, "server_metric(#{m[1]}) #{m[2]} #{m[3]}: #{SERVER_METRIC_SKIP_REASON}"]
         end
+
         if (m = RE_SDK_LOG.match(expr))
           level = m[1]
           pattern = m[2]
@@ -116,30 +126,35 @@ module Quonfig
         [false, "unrecognized expression: #{expr}"]
       end
 
-      def evaluate(expr, probe, server_metric)
+      # Evaluate +expr+ against +probe+. Returns a Result whose +status+ is
+      # :pass, :fail or :skip. A skipped leaf is neutral in a compound: an AND
+      # passes when every non-skipped leaf passes, an OR passes only when a
+      # non-skipped leaf passes, and a compound whose leaves are all skipped is
+      # itself skipped. +skipped+ lists every skipped leaf with its reason.
+      def evaluate(expr, probe)
         expr = expr.to_s.strip
-        return [true, ''] if expr.empty?
+        return Result.new(:pass, '', []) if expr.empty?
 
-        if expr.include?(' OR ')
-          parts = split_outside_quotes(expr, ' OR ')
-          reasons = []
-          parts.each do |p|
-            ok, why = evaluate(p, probe, server_metric)
-            return [true, ''] if ok
+        return combine(:or, split_outside_quotes(expr, ' OR ').map { |p| evaluate(p, probe) }) if expr.include?(' OR ')
+        return combine(:and, split_outside_quotes(expr, ' AND ').map { |p| evaluate(p, probe) }) if expr.include?(' AND ')
 
-            reasons << why
-          end
-          return [false, "OR: #{reasons.join(' | ')}"]
-        end
-        if expr.include?(' AND ')
-          parts = split_outside_quotes(expr, ' AND ')
-          parts.each do |p|
-            ok, why = evaluate(p, probe, server_metric)
-            return [false, "AND: #{why}"] unless ok
-          end
-          return [true, '']
-        end
-        eval_leaf(expr, probe, server_metric)
+        ok, why = eval_leaf(expr, probe)
+        return Result.new(:skip, "SKIPPED #{why}", [why]) if ok == :skip
+
+        Result.new(ok ? :pass : :fail, why, [])
+      end
+
+      def combine(kind, results)
+        skipped = results.flat_map(&:skipped)
+        live = results.reject { |r| r.status == :skip }
+        return Result.new(:skip, "SKIPPED #{skipped.join(' | ')}", skipped) if live.empty?
+
+        label = kind == :or ? 'OR' : 'AND'
+        ok = kind == :or ? live.any?(&:pass?) : live.all?(&:pass?)
+        return Result.new(:pass, '', skipped) if ok
+
+        reasons = kind == :or ? live.map(&:reason) : [live.find { |r| !r.pass? }.reason]
+        Result.new(:fail, "#{label}: #{reasons.join(' | ')}", skipped)
       end
     end
   end

@@ -389,6 +389,33 @@ def chaos_apply_process(tp, p)
   end
 end
 
+# ----- skipped-expression tally -----
+
+# Every expectation (or compound leaf) the rig cannot evaluate is reported as
+# SKIPPED with its reason, per expectation and again in one run-end tally, so a
+# skip is never mistaken for a pass (qfg-goi1.1.3, Decision 6).
+module ChaosSkipTally
+  @lock = Mutex.new
+  @entries = []
+
+  class << self
+    def record(scenario, idx, leaf)
+      @lock.synchronize { @entries << [scenario, idx, leaf] }
+    end
+
+    def report(io = $stdout)
+      entries = @lock.synchronize { @entries.dup }
+      return if entries.empty?
+
+      io.puts
+      io.puts "chaos: #{entries.size} skipped expression(s) — not evaluated, NOT counted as passes:"
+      entries.each { |scenario, idx, leaf| io.puts "  SKIPPED  #{scenario} exp[#{idx}]: #{leaf}" }
+    end
+  end
+end
+
+Minitest.after_run { ChaosSkipTally.report }
+
 # ----- scenario runner -----
 
 # Build the Quonfig::Client configured to talk through the chaos ports.
@@ -534,12 +561,11 @@ def chaos_run_scenario(tp, run)
 
     states = (run['expectations'] || []).each_with_index.map do |e, i|
       {
-        idx: i, exp: e, passed: false, failed: false,
+        idx: i, exp: e, passed: false, failed: false, skipped: false,
         hit_at: nil, held_since: nil, last_reason: ''
       }
     end
 
-    server_metric = ->(_name) { 0.0 }
     poll_interval = CHAOS_POLL_MS / 1000.0
 
     loop do
@@ -548,10 +574,18 @@ def chaos_run_scenario(tp, run)
 
       all_terminal = true
       states.each do |s|
-        next if s[:passed] || s[:failed]
+        next if s[:passed] || s[:failed] || s[:skipped]
 
-        ok, why = Quonfig::Chaos::Expressions.evaluate(s[:exp]['assert'], probe, server_metric)
-        s[:last_reason] = why
+        result = Quonfig::Chaos::Expressions.evaluate(s[:exp]['assert'], probe)
+        s[:last_reason] = result.reason
+        s[:skipped_leaves] = result.skipped
+        if result.status == :skip
+          # Fully-skipped expectation (e.g. a bare server_metric): terminal,
+          # neither pass nor fail, reported as SKIPPED with its reason.
+          s[:skipped] = true
+          next
+        end
+        ok = result.pass?
         if ok
           if s[:held_since].nil?
             s[:held_since] = (Time.now.to_f * 1000).to_i
@@ -563,32 +597,38 @@ def chaos_run_scenario(tp, run)
           s[:held_since] = nil
         end
         s[:failed] = true if !s[:passed] && elapsed > s[:exp]['within_ms'].to_i
-        all_terminal = false unless s[:passed] || s[:failed]
+        all_terminal = false unless s[:passed] || s[:failed] || s[:skipped]
       end
       break if all_terminal
 
       sleep poll_interval
     end
 
-    states.each { |s| s[:failed] = true unless s[:passed] }
+    states.each { |s| s[:failed] = true unless s[:passed] || s[:skipped] }
 
     details = []
     passed = 0
     failed = 0
+    skipped = 0
     states.each do |s|
       exp = s[:exp]
       label = "exp[#{s[:idx]}] within=#{exp['within_ms']}ms " \
               "hold=#{exp['must_hold_for_ms'] || 0}ms: #{exp['assert']}"
-      if s[:passed]
+      (s[:skipped_leaves] || []).each { |leaf| ChaosSkipTally.record(run['name'], s[:idx], leaf) }
+      if s[:skipped]
+        skipped += 1
+        details << "SKIP  #{label} — #{s[:last_reason]}"
+      elsif s[:passed]
         passed += 1
-        details << "PASS  #{label} (hit at #{s[:hit_at]}ms)"
+        partial = (s[:skipped_leaves] || []).map { |leaf| " [SKIPPED leaf: #{leaf}]" }.join
+        details << "PASS  #{label} (hit at #{s[:hit_at]}ms)#{partial}"
       else
         failed += 1
         details << "FAIL  #{label} — last: #{s[:last_reason]}"
       end
     end
     snap = probe.snapshot
-    details << "summary: #{passed} passed, #{failed} failed " \
+    details << "summary: #{passed} passed, #{failed} failed, #{skipped} skipped " \
                "(state=#{snap[:conn_state]}, restartLayer1=#{snap[:restart_layer1]}, " \
                "restartLayer2=#{snap[:restart_layer2]}, fallback=#{snap[:fallback_active]}, " \
                "lastRefreshMs=#{snap[:last_refresh_ms]})"
