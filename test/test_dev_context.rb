@@ -202,4 +202,28 @@ class TestDevContext < Minitest::Test
 
     assert_equal true, client.get_bool('my-flag')
   end
+
+  # qfg-goi1.2.11 / qfg-xy92: tokens.json read under a US-ASCII
+  # default_external (LANG unset / LANG=C) with a non-ASCII email raised
+  # Encoding::InvalidByteSequenceError out of Client.new (the rescue only
+  # caught JSON::ParserError). It must read the file as UTF-8.
+  def test_reads_non_ascii_email_under_us_ascii_default_external
+    write_tokens(userEmail: "jos\u00e9@caf\u00e9.com")
+
+    old = Encoding.default_external
+    old_verbose = $VERBOSE
+    $VERBOSE = nil
+    Encoding.default_external = Encoding::US_ASCII
+    $VERBOSE = old_verbose
+    begin
+      ctx = Quonfig::DevContext.load_quonfig_user_context
+    ensure
+      $VERBOSE = nil
+      Encoding.default_external = old
+      $VERBOSE = old_verbose
+    end
+
+    assert_equal({ 'quonfig-user' => { 'email' => "jos\u00e9@caf\u00e9.com" } }, ctx)
+    assert_equal Encoding::UTF_8, ctx['quonfig-user']['email'].encoding
+  end
 end

@@ -21,7 +21,8 @@ module Quonfig
       return nil unless File.exist?(path)
 
       raw = begin
-        File.read(path)
+        # UTF-8 regardless of the process locale (qfg-goi1.2.11 / qfg-xy92).
+        File.read(path, encoding: 'UTF-8')
       rescue StandardError => e
         LOG.warn "dev-context: could not read #{path} (#{e.class}: #{e.message}); skipping injection"
         return nil

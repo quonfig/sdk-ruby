@@ -39,7 +39,10 @@ module Quonfig
            .sort
            .each do |filename|
           path = File.join(dir, filename)
-          raw = JSON.parse(File.read(path))
+          # Always read as UTF-8: under LANG unset / LANG=C the process
+          # default is US-ASCII and JSON.parse would raise on any non-ASCII
+          # byte (qfg-goi1.2.11 / qfg-xy92).
+          raw = JSON.parse(File.read(path, encoding: 'UTF-8'))
           raise ArgumentError, "[quonfig] config has empty key — file is not a Quonfig Config: #{path}" if raw['key'].nil? || raw['key'].to_s.empty?
 
           coerce_numeric_values(raw)
@@ -68,7 +71,7 @@ module Quonfig
 
       raise ArgumentError, "[quonfig] Datadir is missing quonfig.json: #{quonfig_path}" unless File.exist?(quonfig_path)
 
-      environments = JSON.parse(File.read(quonfig_path)).fetch('environments', [])
+      environments = JSON.parse(File.read(quonfig_path, encoding: 'UTF-8')).fetch('environments', [])
 
       raise Quonfig::Errors::InvalidEnvironmentError.new(environment, environments) if !environments.empty? && !environments.include?(environment)
 

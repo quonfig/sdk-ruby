@@ -228,4 +228,40 @@ class TestDatadir < Minitest::Test
     assert(store.keys.any? { |k| k.start_with?('a.') } || store.keys.include?('already.in.use'),
            "expected to find familiar fixture keys; got: #{store.keys.first(5).inspect}")
   end
+
+  # qfg-goi1.2.11 / qfg-xy92: under LANG unset or LANG=C (systemd, cron,
+  # distroless) Encoding.default_external is US-ASCII. File.read then tags
+  # the bytes US-ASCII and JSON.parse raised InvalidByteSequenceError on the
+  # first non-ASCII byte, so datadir mode could not boot.
+  def with_default_external(encoding)
+    old = Encoding.default_external
+    silence_warnings { Encoding.default_external = encoding }
+    yield
+  ensure
+    silence_warnings { Encoding.default_external = old }
+  end
+
+  def silence_warnings
+    old_verbose = $VERBOSE
+    $VERBOSE = nil
+    yield
+  ensure
+    $VERBOSE = old_verbose
+  end
+
+  def test_load_envelope_reads_utf8_under_us_ascii_default_external
+    cfg = sample_config('a.config')
+    cfg['description'] = "Greeting \u2014 shown to caf\u00e9 users"
+    cfg['default']['rules'][0]['value']['value'] = "h\u00e9llo"
+    write_config('configs', 'a.config.json', cfg)
+    File.write(File.join(@tmpdir, 'quonfig.json'),
+               JSON.generate({ environments: %w[Production Staging], description: "workspace \u2014 caf\u00e9" }))
+
+    store = nil
+    with_default_external(Encoding::US_ASCII) do
+      store = Quonfig::Datadir.load_store(@tmpdir, 'Production')
+    end
+
+    assert_equal "h\u00e9llo", store.get('a.config')['default']['rules'][0]['value']['value']
+  end
 end
