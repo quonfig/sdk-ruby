@@ -32,6 +32,7 @@ require 'minitest/autorun'
 
 require 'quonfig'
 require_relative 'scheduler'
+require_relative 'expressions'
 
 # ----- paths -----
 
@@ -388,138 +389,6 @@ def chaos_apply_process(tp, p)
   end
 end
 
-# ----- expression evaluator -----
-
-RE_CONN_STATE_EQ = /\Aclient\.connectionState\(\)\s*(==|!=)\s*'([^']+)'\z/
-RE_FALLBACK_EQ   = /\Aclient\.fallbackPollerActive\(\)\s*==\s*(true|false)\z/
-RE_PROC_ALIVE_EQ = /\Aclient\.processStillAlive\(\)\s*==\s*(true|false)\z/
-RE_LAST_REFRESH  = /\Aclient\.lastSuccessfulRefresh\(\)\s*(>=|>|<=|<|==)\s*\(now\(\)\s*-\s*(\d+)\)\z/
-RE_SDK_METRIC    = /\Aclient\.sdkMetric\(\s*'([^']+)'\s*(?:,\s*layer=\s*'([^']+)'\s*)?\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/
-RE_SERVER_METRIC = /\Aserver_metric\(\s*'([^']+)'\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/
-RE_SDK_LOG       = %r{\Aclient\.sdkLog\(\s*'([^']+)'\s*,\s*/(.+)/i\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z}
-
-def chaos_split_outside_quotes(expr, sep)
-  out = []
-  in_sq = false
-  in_re = false
-  start = 0
-  i = 0
-  while i < expr.length
-    c = expr[i]
-    if c == "'" && !in_re
-      in_sq = !in_sq
-    elsif c == '/' && !in_sq
-      in_re = !in_re
-    end
-    if !in_sq && !in_re && expr[i, sep.length] == sep
-      out << expr[start...i]
-      start = i + sep.length
-      i += sep.length
-      next
-    end
-    i += 1
-  end
-  out << expr[start..]
-  out
-end
-
-def chaos_compare(op, a, b)
-  case op
-  when '==' then a == b
-  when '!=' then a != b
-  when '<'  then a < b
-  when '<=' then a <= b
-  when '>'  then a > b
-  when '>=' then a >= b
-  else false
-  end
-end
-
-def chaos_eval_leaf(expr, probe, server_metric)
-  expr = expr.strip
-  if (m = RE_CONN_STATE_EQ.match(expr))
-    op = m[1]
-    want = m[2]
-    snap = probe.snapshot
-    got = snap[:conn_state]
-    ok = op == '==' ? got == want : got != want
-    return [ok, "connectionState=#{got} #{op} #{want}"]
-  end
-  if (m = RE_FALLBACK_EQ.match(expr))
-    want = m[1] == 'true'
-    got = probe.snapshot[:fallback_active]
-    return [got == want, "fallbackPollerActive=#{got} want #{want}"]
-  end
-  if (m = RE_PROC_ALIVE_EQ.match(expr))
-    want = m[1] == 'true'
-    alive = !probe.snapshot[:process_crashed]
-    return [alive == want, "processStillAlive=#{alive} want #{want}"]
-  end
-  if (m = RE_LAST_REFRESH.match(expr))
-    op  = m[1]
-    ago = m[2].to_i
-    last = probe.snapshot[:last_refresh_ms]
-    threshold = (Time.now.to_f * 1000).to_i - ago
-    ok = chaos_compare(op, last, threshold)
-    return [ok, "lastSuccessfulRefresh=#{last} #{op} (now()-#{ago})=#{threshold}"]
-  end
-  if (m = RE_SDK_METRIC.match(expr))
-    metric = m[1]
-    layer = m[2]
-    op = m[3]
-    want = m[4].to_f
-    labels = layer ? { 'layer' => layer } : {}
-    got = probe.sdk_metric(metric, labels)
-    ok = chaos_compare(op, got, want)
-    return [ok, "sdkMetric(#{metric},layer=#{layer || ''})=#{got} #{op} #{want}"]
-  end
-  if (m = RE_SERVER_METRIC.match(expr))
-    name = m[1]
-    op = m[2]
-    want = m[3].to_f
-    got = server_metric.call(name)
-    ok = chaos_compare(op, got, want)
-    return [ok, "server_metric(#{name})=#{got} #{op} #{want}"]
-  end
-  if (m = RE_SDK_LOG.match(expr))
-    level = m[1]
-    pattern = m[2]
-    op = m[3]
-    want = m[4].to_f
-    regex = Regexp.new(pattern, Regexp::IGNORECASE)
-    got = probe.log_matches(level, regex).to_f
-    ok = chaos_compare(op, got, want)
-    return [ok, "sdkLog(#{level},/#{pattern}/i)=#{got} #{op} #{want}"]
-  end
-  [false, "unrecognized expression: #{expr}"]
-end
-
-def chaos_evaluate(expr, probe, server_metric)
-  expr = expr.to_s.strip
-  return [true, ''] if expr.empty?
-
-  if expr.include?(' OR ')
-    parts = chaos_split_outside_quotes(expr, ' OR ')
-    reasons = []
-    parts.each do |p|
-      ok, why = chaos_evaluate(p, probe, server_metric)
-      return [true, ''] if ok
-
-      reasons << why
-    end
-    return [false, "OR: #{reasons.join(' | ')}"]
-  end
-  if expr.include?(' AND ')
-    parts = chaos_split_outside_quotes(expr, ' AND ')
-    parts.each do |p|
-      ok, why = chaos_evaluate(p, probe, server_metric)
-      return [false, "AND: #{why}"] unless ok
-    end
-    return [true, '']
-  end
-  chaos_eval_leaf(expr, probe, server_metric)
-end
-
 # ----- scenario runner -----
 
 # Build the Quonfig::Client configured to talk through the chaos ports.
@@ -681,7 +550,7 @@ def chaos_run_scenario(tp, run)
       states.each do |s|
         next if s[:passed] || s[:failed]
 
-        ok, why = chaos_evaluate(s[:exp]['assert'], probe, server_metric)
+        ok, why = Quonfig::Chaos::Expressions.evaluate(s[:exp]['assert'], probe, server_metric)
         s[:last_reason] = why
         if ok
           if s[:held_since].nil?
