@@ -138,7 +138,7 @@ DEPENDENCIES
   concurrent-ruby (~> 1.0, >= 1.0.5)
   faraday (~> 1.10.5)
   listen (~> 3.8)
-  minitest
+  minitest (< 6)
   minitest-focus
   minitest-reporters
   parallel (< 2.0)
