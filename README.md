@@ -35,8 +35,8 @@ limit   = client.get_int('rate-limit')
 name    = client.get_string('app.display-name')
 regions = client.get_string_list('allowed-regions')
 
-# Context-aware evaluation — pass a context hash as the last argument
-value = client.get_string('homepage-hero', user: { key: 'user-123', country: 'US' })
+# Context-aware evaluation — pass a context hash with `context:`
+value = client.get_string('homepage-hero', context: { user: { key: 'user-123', country: 'US' } })
 ```
 
 ## Context
@@ -47,7 +47,7 @@ attach a context in three ways:
 ### 1. Per-call context
 
 ```ruby
-client.get_bool('beta-feature', user: { key: 'user-123', plan: 'pro' })
+client.get_bool('beta-feature', context: { user: { key: 'user-123', plan: 'pro' } })
 ```
 
 ### 2. `with_context` block
@@ -333,31 +333,43 @@ model.
 
 ## Typed getters
 
-Each typed getter takes a config key and an optional context hash. If the key
-is missing or the stored value does not match the requested type, the getter
-returns `nil`.
+Each typed getter takes a config key plus two optional keyword arguments:
+`default:` (returned when the key is missing) and `context:` (a context hash
+for this call). On a `BoundClient` (see `with_context` above) the getters take
+only `default:`; the context is the bound one.
 
-| Method                                          | Returns                       |
-|-------------------------------------------------|-------------------------------|
-| `get_string(key, contexts = nil)`               | `String` or `nil`             |
-| `get_int(key, contexts = nil)`                  | `Integer` or `nil`            |
-| `get_float(key, contexts = nil)`                | `Float` or `nil`              |
-| `get_bool(key, contexts = nil)`                 | `true`, `false`, or `nil`     |
-| `get_string_list(key, contexts = nil)`          | `Array<String>` or `nil`      |
-| `get_duration(key, contexts = nil)`             | `Float` (seconds) or `nil`    |
-| `get_json(key, contexts = nil)`                 | `Hash`, `Array`, or `nil`     |
-| `enabled?(feature_name, contexts = nil)`        | `true` or `false`             |
+- **Missing key:** returns `default:` when you pass one. Without a default the
+  `on_no_default` option decides: `:raise` (the default) raises
+  `Quonfig::Errors::MissingDefaultError`, `:return_nil` returns `nil`.
+- **Wrong type:** a value that does not match the getter's type (for example
+  `get_int` on a string config) raises `Quonfig::Errors::TypeMismatchError`,
+  with or without a `default:`.
+
+| Method                                              | Returns                                   |
+|-----------------------------------------------------|-------------------------------------------|
+| `get_string(key, default:, context:)`               | `String`                                  |
+| `get_int(key, default:, context:)`                  | `Integer`                                 |
+| `get_float(key, default:, context:)`                | `Float`                                   |
+| `get_bool(key, default:, context:)`                 | `true` or `false`                         |
+| `get_string_list(key, default:, context:)`          | `Array<String>`                           |
+| `get_duration(key, default:, context:)`             | `Integer` (milliseconds)                  |
+| `get_json(key, default:, context:)`                 | `Hash`, `Array`, or a scalar              |
+| `enabled?(feature_name, context = nil)`             | `true` or `false` (`false` when missing)  |
+
+`get_duration` returns integer milliseconds (`PT1.5S` is `1500`). A duration
+value that is not valid ISO-8601 returns `default:` and logs one warning per
+key; with no default it follows `on_no_default`.
 
 Example:
 
 ```ruby
 client.get_string('app.display-name')
-client.get_int('rate-limit', user: { key: 'user-123' })
-client.get_float('pricing.multiplier')
-client.get_bool('flags.new-checkout')
-client.get_string_list('allowed-regions')
-client.get_duration('request-timeout')
-client.get_json('homepage.layout')
+client.get_int('rate-limit', default: 100, context: { user: { key: 'user-123' } })
+client.get_float('pricing.multiplier', default: 1.0)
+client.get_bool('flags.new-checkout', default: false)
+client.get_string_list('allowed-regions', default: [])
+client.get_duration('request-timeout', default: 5_000) # milliseconds
+client.get_json('homepage.layout', default: {})
 client.enabled?('beta-feature', user: { key: 'user-123' })
 ```
 
