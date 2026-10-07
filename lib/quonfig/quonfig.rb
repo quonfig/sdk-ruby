@@ -11,6 +11,14 @@ module Quonfig
     end
 
     @@lock.with_write_lock do
+      # Re-check under the lock: two threads can both pass the check above,
+      # and the loser must not build (and orphan) a second Client with its
+      # own SSE stream and telemetry thread (qfg-goi1.2.11).
+      unless @singleton.nil?
+        LOG.warn 'Quonfig already initialized.'
+        next @singleton
+      end
+
       @singleton = Quonfig::Client.new(options)
     end
   end
