@@ -52,6 +52,10 @@ module Quonfig
 
     # SemanticLogger filter contract: return true to emit, false to suppress.
     # Missing config key → return true so SemanticLogger's static level decides.
+    # A resolution error (unset ENV_VAR, decryption failure, ...) is treated
+    # the same way: the filter runs inside the host app's log calls and must
+    # never raise out of them (qfg-goi1.2.11). Nothing is logged here, since
+    # logging from inside a log filter can recurse.
     def call(log)
       configured = @client.get(@config_key, nil, context_for(log))
       return true if configured.nil?
@@ -59,6 +63,8 @@ module Quonfig
       log_severity = LEVELS[log.level] || LEVELS[:debug]
       min_severity = LEVELS[normalize_level(configured)] || LEVELS[:debug]
       log_severity >= min_severity
+    rescue StandardError
+      true
     end
 
     private

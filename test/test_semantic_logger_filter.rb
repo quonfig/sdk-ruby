@@ -141,4 +141,36 @@ class TestSemanticLoggerFilter < Minitest::Test
       assert_match(/semantic_logger/i, err.message)
     end
   end
+
+  # qfg-goi1.2.11: Client#get re-raises MissingEnvVarError / DecryptionError
+  # etc. even with a default. A log level provided by an ENV_VAR that is unset
+  # on one host must not make the host app's log calls raise: the filter
+  # emits (returns true) so SemanticLogger's static level decides, the same
+  # as the missing-key branch.
+  def test_resolution_error_falls_through_instead_of_raising
+    ENV.delete('QFG_FILTER_TEST_UNSET_LEVEL')
+    config = {
+      'id' => '1',
+      'key' => CONFIG_KEY,
+      'type' => 'log_level',
+      'valueType' => 'log_level',
+      'sendToClientSdk' => false,
+      'default' => {
+        'rules' => [{
+          'criteria' => [{ 'operator' => 'ALWAYS_TRUE' }],
+          'value' => { 'type' => 'provided',
+                       'value' => { 'source' => 'ENV_VAR', 'lookup' => 'QFG_FILTER_TEST_UNSET_LEVEL' } }
+        }]
+      },
+      'environment' => nil
+    }
+    store = Quonfig::ConfigStore.new
+    store.set(CONFIG_KEY, config)
+    client = Quonfig::Client.new(Quonfig::Options.new, store: store)
+    assert_raises(Quonfig::Errors::MissingEnvVarError) { client.get(CONFIG_KEY, nil) }
+
+    filter = Quonfig::SemanticLoggerFilter.new(client, config_key: CONFIG_KEY)
+    assert_equal true, filter.call(make_log('MyApp::Foo', :debug))
+    assert_equal true, filter.call(make_log('MyApp::Foo', :error))
+  end
 end
