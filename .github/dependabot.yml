@@ -1,3 +1,6 @@
+# Dependabot version updates (SOC 2 SSDLC, qfg-66ko.3). Weekly; minor and
+# patch bumps are grouped into one PR per ecosystem, majors stay separate.
+# Security updates are enabled in the repo settings and are not grouped here.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -9,6 +12,9 @@ updates:
     labels:
       - dependencies
       - github-actions
+    groups:
+      github-actions-minor-patch:
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: bundler
     directory: "/"
@@ -20,3 +26,6 @@ updates:
       - dependencies
       - ruby
     open-pull-requests-limit: 5
+    groups:
+      ruby-minor-patch:
+        update-types: ["minor", "patch"]
