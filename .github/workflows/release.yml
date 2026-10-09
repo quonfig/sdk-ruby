@@ -36,7 +36,7 @@ jobs:
           ref: v2026.10.07
 
       - name: Set up Ruby ${{ matrix.ruby-version }}
-        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.310.0
+        uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8  # v1.327.0
         with:
           ruby-version: ${{ matrix.ruby-version }}
           bundler-cache: true
@@ -65,7 +65,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Ruby
-        uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.310.0
+        uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8  # v1.327.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
@@ -100,4 +100,4 @@ jobs:
         run: ./scripts/smoke_check.sh "${{ steps.build.outputs.gem_file }}"
 
       - name: Release gem
-        uses: rubygems/release-gem@6317d8d1f7e28c24d28f6eff169ea854948bd9f7  # v1.2.0
+        uses: rubygems/release-gem@7f9650160c1a4e7989fdc9855807bdbd421d8b6b  # v1.4.1
