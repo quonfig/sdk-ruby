@@ -1,0 +1,20 @@
+# SSDLC PR gate (SOC 2). Copy to .github/workflows/ssdlc.yml in each in-scope
+# repo. All logic lives in quonfig/ci; keep this file thin.
+name: ssdlc
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  checks: read
+
+jobs:
+  ssdlc:
+    uses: quonfig/ci/.github/workflows/ssdlc.yml@main
+    # First-party workflow; it declares only ANTHROPIC_API_KEY. inherit is the
+    # documented SSDLC caller contract (quonfig/ci README).
+    secrets: inherit # nosemgrep: yaml.github-actions.security.secrets-inherit.secrets-inherit
