@@ -1,8 +1,6 @@
 # Changelog
 
-## Unreleased
-
-Recommended semver: patch (1.7.2). The library entries below are error-path and edge fixes with no change to a common success-path result; the chaos and CI entries change no published code.
+## 1.7.2 - 2026-10-09
 
 - **Fix (security): `TypeMismatchError` and `EnvVarParseError` messages no longer include the value (qfg-goi1.2.11).** Reading a `confidential` or `decryptWith` config through the wrong typed getter (for example `get_int` on a secret) put the decrypted plaintext into the exception message and into `*_details.error_message`, which end up in logs and error trackers. An unparseable ENV_VAR or a malformed stored duration put the raw value into `EnvVarParseError`. The messages now name the key, the expected type and the actual class (`TypeMismatchError`), or the key, the env var name (or `stored value`) and the target type (`EnvVarParseError`). The doubled word in `expected expected Integer` is fixed. Only the message text changes; the exception classes and when they are raised are unchanged.
 - **Fix: datadir mode and the dev-context loader read their JSON files as UTF-8 whatever the process locale (qfg-goi1.2.11, qfg-xy92).** Under `LANG` unset or `LANG=C` (systemd units, cron, many minimal and distroless images) Ruby's default external encoding is US-ASCII, and any non-ASCII byte in a config file (for example an em dash in a `description`) or in `quonfig.json` made `Client.new` raise `Encoding::InvalidByteSequenceError`, so the app could not boot in datadir mode. The same applied to a non-ASCII email in `~/.quonfig/tokens.json`. These files are now always read as UTF-8.
