@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Fix (patch): an install interrupted part-way through the store write is now repaired by the next delivery of the same envelope (qfg-goi1.10.2).** The SDK recorded the new config generation before it wrote the configs into the store, so an interrupt during the write (for example `Thread#raise` or `Timeout`) left a partly updated store marked as fully installed, and the same-generation redelivery that follows (SSE re-sends the current envelope on every connect) was ignored as a duplicate. The generation now advances only after the store write.
+- **Fix (patch): the SSE line reader no longer rescans its whole buffer on every chunk (qfg-goi1.10.2).** A long SSE line (a large config envelope) delivered in small chunks cost O(n^2) time: 100,000 one-byte chunks took about 9 seconds. Scanning now resumes where the previous chunk stopped, and the consumed bytes are dropped once per chunk instead of once per line. Parsing results are unchanged; there is still no size cap.
 
 ## 1.7.2 - 2026-10-09
 
