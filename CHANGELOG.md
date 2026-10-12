@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Fix (security, patch): a `confidential` or `decryptWith` variant inside a weighted rollout is now redacted in telemetry (qfg-goi1.2.39).** The evaluation-summary redaction looked only at the outer `weighted_values` wrapper, which is never flagged, so the selected variant went out as `selectedValue` in plaintext (for `decryptWith`, the decrypted secret). The selected variant is now sent as `*****<md5[0,5]>` over its stored value (the ciphertext for `decryptWith`), the same as a non-rollout secret and the same as sdk-go, sdk-node and sdk-java.
+
 ## 1.7.2 - 2026-10-09
 
 - **Fix (security): `TypeMismatchError` and `EnvVarParseError` messages no longer include the value (qfg-goi1.2.11).** Reading a `confidential` or `decryptWith` config through the wrong typed getter (for example `get_int` on a secret) put the decrypted plaintext into the exception message and into `*_details.error_message`, which end up in logs and error trackers. An unparseable ENV_VAR or a malformed stored duration put the raw value into `EnvVarParseError`. The messages now name the key, the expected type and the actual class (`TypeMismatchError`), or the key, the env var name (or `stored value`) and the target type (`EnvVarParseError`). The doubled word in `expected expected Integer` is fixed. Only the message text changes; the exception classes and when they are raised are unchanged.
