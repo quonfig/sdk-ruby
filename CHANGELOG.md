@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Fix (patch): an install interrupted part-way through the store write is now repaired by the next delivery of the same envelope (qfg-goi1.10.2).** The SDK recorded the new config generation before it wrote the configs into the store, so an interrupt during the write (for example `Thread#raise` or `Timeout`) left a partly updated store marked as fully installed, and the same-generation redelivery that follows (SSE re-sends the current envelope on every connect) was ignored as a duplicate. The generation now advances only after the store write.
+
 ## 1.7.2 - 2026-10-09
 
 - **Fix (security): `TypeMismatchError` and `EnvVarParseError` messages no longer include the value (qfg-goi1.2.11).** Reading a `confidential` or `decryptWith` config through the wrong typed getter (for example `get_int` on a secret) put the decrypted plaintext into the exception message and into `*_details.error_message`, which end up in logs and error trackers. An unparseable ENV_VAR or a malformed stored duration put the raw value into `EnvVarParseError`. The messages now name the key, the expected type and the actual class (`TypeMismatchError`), or the key, the env var name (or `stored value`) and the target type (`EnvVarParseError`). The doubled word in `expected expected Integer` is fixed. Only the message text changes; the exception classes and when they are raised are unchanged.
