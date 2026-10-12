@@ -3,6 +3,7 @@
 ## Unreleased
 
 - **Fix (security, patch): a `confidential` or `decryptWith` variant inside a weighted rollout is now redacted in telemetry (qfg-goi1.2.39).** The evaluation-summary redaction looked only at the outer `weighted_values` wrapper, which is never flagged, so the selected variant went out as `selectedValue` in plaintext (for `decryptWith`, the decrypted secret). The selected variant is now sent as `*****<md5[0,5]>` over its stored value (the ciphertext for `decryptWith`), the same as a non-rollout secret and the same as sdk-go, sdk-node and sdk-java.
+- **Fix (patch): `Client#stdlib_formatter` no longer raises out of the host app's `::Logger` calls (qfg-goi1.2.28).** `Client#get` raises on a resolution error (for example `MissingEnvVarError` when the log level is provided by an env var that is unset on this host, or `DecryptionError`) even when a default is passed, and the formatter let that escape, so every `logger.info` raised. The formatter now emits the line in that case, the same as `SemanticLoggerFilter` since 1.7.2. `Client#should_log?` itself is unchanged.
 
 ## 1.7.2 - 2026-10-09
 

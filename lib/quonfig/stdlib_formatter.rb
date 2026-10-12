@@ -74,12 +74,23 @@ module Quonfig
         path = logger_name || progname
         level = SEVERITY_TO_LEVEL[severity.to_s.upcase] || :info
 
-        if client.should_log?(logger_path: path, desired_level: level)
+        if emit?(client, path, level)
           format_record(severity, datetime, progname, msg)
         else
           ''
         end
       end
+    end
+
+    # The formatter runs inside the host app's Logger calls and must never
+    # raise out of them. A resolution error (unset ENV_VAR, decryption
+    # failure, ...) emits the line, matching SemanticLoggerFilter
+    # (qfg-goi1.2.11, qfg-goi1.2.28). Nothing is logged here, since logging
+    # from inside a formatter can recurse.
+    def self.emit?(client, path, level)
+      client.should_log?(logger_path: path, desired_level: level)
+    rescue StandardError
+      true
     end
 
     # Default record formatter. Matches ::Logger::Formatter's general shape
