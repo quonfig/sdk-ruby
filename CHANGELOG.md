@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Fix (patch): `Client#stdlib_formatter` no longer raises out of the host app's `::Logger` calls (qfg-goi1.2.28).** `Client#get` raises on a resolution error (for example `MissingEnvVarError` when the log level is provided by an env var that is unset on this host, or `DecryptionError`) even when a default is passed, and the formatter let that escape, so every `logger.info` raised. The formatter now emits the line in that case, the same as `SemanticLoggerFilter` since 1.7.2. `Client#should_log?` itself is unchanged.
+
 ## 1.7.2 - 2026-10-09
 
 - **Fix (security): `TypeMismatchError` and `EnvVarParseError` messages no longer include the value (qfg-goi1.2.11).** Reading a `confidential` or `decryptWith` config through the wrong typed getter (for example `get_int` on a secret) put the decrypted plaintext into the exception message and into `*_details.error_message`, which end up in logs and error trackers. An unparseable ENV_VAR or a malformed stored duration put the raw value into `EnvVarParseError`. The messages now name the key, the expected type and the actual class (`TypeMismatchError`), or the key, the env var name (or `stored value`) and the target type (`EnvVarParseError`). The doubled word in `expected expected Integer` is fixed. Only the message text changes; the exception classes and when they are raised are unchanged.

@@ -192,4 +192,26 @@ class TestStdlibFormatter < Minitest::Test
     assert_includes out, 'should be emitted'
     assert_includes out, 'also emitted'
   end
+
+  # qfg-goi1.2.28: the formatter runs inside the host app's Logger calls, so a
+  # resolution error (here a log level provided by an unset ENV_VAR, which
+  # Client#get re-raises) must not escape; the line is emitted instead.
+  def test_resolution_error_does_not_raise_out_of_logger_and_emits_line
+    env_var = 'QUONFIG_TEST_STDLIB_FORMATTER_UNSET_LEVEL'
+    ENV.delete(env_var)
+    cfg = make_log_level_config(key: LOG_LEVEL_KEY, level: 'warn')
+    cfg['default']['rules'][0]['value'] = {
+      'type' => 'provided', 'value' => { 'source' => 'ENV_VAR', 'lookup' => env_var }
+    }
+    client = client_with(store_with(cfg), logger_key: LOG_LEVEL_KEY)
+
+    io = StringIO.new
+    logger = ::Logger.new(io)
+    logger.level = ::Logger::DEBUG
+    logger.formatter = client.stdlib_formatter(logger_name: 'MyApp::Svc')
+
+    logger.info 'hello'
+
+    assert_includes io.string, 'hello'
+  end
 end
