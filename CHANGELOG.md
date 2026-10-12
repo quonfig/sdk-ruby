@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Tests: the datadir auto-reload burst test no longer sleeps between writes (qfg-goi1.2.29).** A 10ms sleep between five rewrites could outlast the 150ms debounce on a starved CI runner, so the test saw more than one reload (it failed once on Ruby 3.2 CI). The writes are now back to back, and a new filesystem-free test drives `DatadirWatcher` directly: events in one window fire once, a later event fires again, and `stop` cancels a pending fire. No library change.
+
 ## 1.7.2 - 2026-10-09
 
 - **Fix (security): `TypeMismatchError` and `EnvVarParseError` messages no longer include the value (qfg-goi1.2.11).** Reading a `confidential` or `decryptWith` config through the wrong typed getter (for example `get_int` on a secret) put the decrypted plaintext into the exception message and into `*_details.error_message`, which end up in logs and error trackers. An unparseable ENV_VAR or a malformed stored duration put the raw value into `EnvVarParseError`. The messages now name the key, the expected type and the actual class (`TypeMismatchError`), or the key, the env var name (or `stored value`) and the target type (`EnvVarParseError`). The doubled word in `expected expected Integer` is fixed. Only the message text changes; the exception classes and when they are raised are unchanged.
