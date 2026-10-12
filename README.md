@@ -82,6 +82,16 @@ bound.get_int('rate-limit')
 > `in_context` is a deprecated alias of `with_context` kept for backward
 > compatibility through 1.0.0. New code should use `with_context`.
 
+### Developer context (on by default)
+
+On a machine where someone ran `qfg login`, the SDK reads the signed-in email
+from `~/.quonfig/tokens.json` and adds it to every evaluation as
+`quonfig-user.email`, so rules can target it and it reaches telemetry example
+contexts; pass `enable_quonfig_user_context: false` or set
+`QUONFIG_DEV_CONTEXT=false` to turn it off. Servers without that file are
+unaffected, and a `quonfig-user` context you pass in `global_context:`
+replaces it.
+
 ## Datadir / offline mode
 
 For tests, CI, or air-gapped environments, point the client at a local workspace
@@ -246,6 +256,7 @@ for the cross-SDK story (sdk-node, sdk-go, sdk-ruby, sdk-python, sdk-java).
 | `QUONFIG_BACKEND_SDK_KEY`   | SDK key used to authenticate against the Quonfig API. Used when `sdk_key:` is omitted.   |
 | `QUONFIG_DIR`               | Path to a workspace directory. When set, the SDK runs in datadir/offline mode.           |
 | `QUONFIG_ENVIRONMENT`       | Environment name (`production`, `staging`, `development`) evaluated in datadir mode.     |
+| `QUONFIG_DEV_CONTEXT`       | `false` turns off the developer context (`quonfig-user.email` from `qfg login`). An explicit `enable_quonfig_user_context:` wins. See [Developer context](#developer-context-on-by-default). |
 | `QUONFIG_DOMAIN`            | Base domain used to derive api, sse, and telemetry URLs. Defaults to `quonfig.com`. Set to `quonfig-staging.com` to point at staging. Explicit `api_urls:` / `telemetry_url:` kwargs override this. |
 
 ## Constructor options
@@ -279,6 +290,7 @@ Quonfig::Client.new(
 | `init_timeout_ms` | `Integer` (ms)             | `10_000`                                                            | Maximum time to wait for the initial config load, in milliseconds. Deprecated alias: `initialization_timeout_sec` (seconds, multiplied by 1000 internally). |
 | `on_no_default`   | `Symbol`                   | `:raise`                                                            | Behavior when a key has no value and no default: `:raise` (raise `Quonfig::Errors::MissingDefaultError`) or `:return_nil`. |
 | `global_context`  | `Hash`                     | `{}`                                                                | Context applied to every evaluation.                                                              |
+| `enable_quonfig_user_context` | `Boolean` or `nil`  | `nil` (on, unless `QUONFIG_DEV_CONTEXT=false`)                      | Add the `qfg login` email as `quonfig-user.email`. See [Developer context](#developer-context-on-by-default). |
 | `datadir`         | `String`                   | `ENV['QUONFIG_DIR']`                                                | Path to a local workspace. When set, the SDK runs offline from disk.                              |
 | `environment`     | `String`                   | `ENV['QUONFIG_ENVIRONMENT']`                                        | Environment to evaluate in datadir mode. Required when `datadir` is set.                          |
 | `data_dir_auto_reload`              | `Boolean`         | `false`                                                             | Datadir mode only. When `true`, the SDK watches the datadir and re-reads the envelope when files change. See [Datadir mode: auto-reload on file changes](#datadir-mode-auto-reload-on-file-changes). |

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Docs: the README now says that the SDK adds the `qfg login` email to every evaluation as `quonfig-user.email` by default, and how to turn it off (`enable_quonfig_user_context: false` or `QUONFIG_DEV_CONTEXT=false`) (qfg-goi1.2.40).** No code change.
 - **Fix (security, patch): a `confidential` or `decryptWith` variant inside a weighted rollout is now redacted in telemetry (qfg-goi1.2.39).** The evaluation-summary redaction looked only at the outer `weighted_values` wrapper, which is never flagged, so the selected variant went out as `selectedValue` in plaintext (for `decryptWith`, the decrypted secret). The selected variant is now sent as `*****<md5[0,5]>` over its stored value (the ciphertext for `decryptWith`), the same as a non-rollout secret and the same as sdk-go, sdk-node and sdk-java.
 
 ## 1.7.2 - 2026-10-09
