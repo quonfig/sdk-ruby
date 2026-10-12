@@ -15,6 +15,10 @@ module Quonfig
       # prunes expired entries, and is not recorded if it is still full.
       SEEN_CAP = 100_000
 
+      # Max nesting depth copied from a context value; deeper levels are left
+      # out. Guards the recursive copy against stack exhaustion.
+      MAX_SNAPSHOT_DEPTH = 32
+
       attr_reader :data, :cache
 
       def initialize(max_contexts:, rate_limit_seconds: ONE_HOUR_SECONDS, seen_cap: SEEN_CAP)
@@ -38,7 +42,7 @@ module Quonfig
         return unless room_in_cache?
 
         @cache.set(key)
-        @data.push([Quonfig::TimeHelpers.now_in_ms, context])
+        @data.push([Quonfig::TimeHelpers.now_in_ms, snapshot(context)])
       end
 
       def prepare_data
@@ -64,6 +68,19 @@ module Quonfig
       end
 
       private
+
+      # Copy +context+ into plain JSON-safe data at record time (qfg-goi1.2.35).
+      # The caller owns its nested Hashes/Arrays and may mutate them after
+      # get() returns, while the window is serialized later on the reporter
+      # thread. NaN/Infinity become nil, and an edge that closes a cycle is
+      # left out, so one bad value no longer makes JSON.generate raise and drop
+      # the whole window. Any other object is rendered with #to_s, which is
+      # what JSON.generate already sent for it (a UUID-like key keeps the
+      # example reportable); one whose #to_s raises is left out.
+      def snapshot(context)
+        named = contexts_to_list(context)
+        named.to_h { |entry| [entry['type'], snapshot_value(entry['values'], 0, {})] }
+      end
 
       def room_in_cache?
         return true if @cache.data.size < @seen_cap
@@ -99,6 +116,43 @@ module Quonfig
           end
         else
           []
+        end
+      end
+
+      OMIT = Object.new.freeze
+      private_constant :OMIT
+
+      def snapshot_value(value, depth, ancestors)
+        case value
+        when nil, true, false, Integer then value
+        when Float then value.finite? ? value : nil
+        when String then value.frozen? ? value : value.dup
+        when Symbol then value.to_s
+        when Hash, Array then snapshot_container(value, depth, ancestors)
+        else value.to_s
+        end
+      rescue StandardError
+        OMIT
+      end
+
+      # +ancestors+ holds the containers on the current path only, so the same
+      # value reached twice without a cycle is still copied both times.
+      def snapshot_container(value, depth, ancestors)
+        id = value.object_id
+        return OMIT if depth >= MAX_SNAPSHOT_DEPTH || ancestors.key?(id)
+
+        ancestors[id] = true
+        begin
+          if value.is_a?(Hash)
+            value.each_with_object({}) do |(k, v), acc|
+              copied = snapshot_value(v, depth + 1, ancestors)
+              acc[k.to_s] = copied unless copied.equal?(OMIT)
+            end
+          else
+            value.map { |v| snapshot_value(v, depth + 1, ancestors) }.reject { |v| v.equal?(OMIT) }
+          end
+        ensure
+          ancestors.delete(id)
         end
       end
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Fix (patch): example-context telemetry now copies the context when it is recorded (qfg-goi1.2.35).** The SDK kept the caller's nested Hashes and Arrays by reference and serialized them later on the telemetry thread, so changing them after `get` changed what was sent. A `Float::NAN` or `Float::INFINITY`, or a Hash or Array that contains itself, made the whole telemetry window fail to serialize, so that window's evaluation summaries, context shapes and example contexts were all lost. Now, at record time: nested Hashes and Arrays are copied (keys as strings, up to 32 levels deep), strings are copied, symbols become strings, NaN and Infinity become `null`, the edge that closes a cycle is left out, and any other object is sent as its `to_s`, as before (so a UUID-like key object still makes the example reportable). Only a value whose `to_s` raises is left out. Context shapes are unchanged. Evaluation is unchanged.
+
 ## 1.7.2 - 2026-10-09
 
 - **Fix (security): `TypeMismatchError` and `EnvVarParseError` messages no longer include the value (qfg-goi1.2.11).** Reading a `confidential` or `decryptWith` config through the wrong typed getter (for example `get_int` on a secret) put the decrypted plaintext into the exception message and into `*_details.error_message`, which end up in logs and error trackers. An unparseable ENV_VAR or a malformed stored duration put the raw value into `EnvVarParseError`. The messages now name the key, the expected type and the actual class (`TypeMismatchError`), or the key, the env var name (or `stored value`) and the target type (`EnvVarParseError`). The doubled word in `expected expected Integer` is fixed. Only the message text changes; the exception classes and when they are raised are unchanged.
