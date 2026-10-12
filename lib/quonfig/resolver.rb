@@ -56,15 +56,21 @@ module Quonfig
 
       weighted_index = nil
       hash_missing = []
-      resolved_value = resolve_value_on_path(eval_result.value, config, context, [], hash_missing) do |idx|
+      selected_variants = []
+      resolved_value = resolve_value_on_path(eval_result.value, config, context, [], hash_missing,
+                                             selected_variants) do |idx|
         weighted_index = idx
       end
+      # Redact from the selected rollout variant, not only the outer
+      # weighted_values wrapper (which is never flagged), so a confidential or
+      # decryptWith variant never reaches telemetry in plaintext (qfg-goi1.2.39).
+      reportable = redacted_reportable_value(eval_result.value) || redacted_reportable_value(selected_variants.last)
       EvalResult.new(
         value: resolved_value,
         rule_index: eval_result.rule_index,
         config: config,
         weighted_value_index: weighted_index,
-        reportable_value: redacted_reportable_value(eval_result.value),
+        reportable_value: reportable,
         hash_property_missing: !hash_missing.empty?
       )
     end
@@ -91,15 +97,21 @@ module Quonfig
     # DecryptionError instead of recursing until SystemStackError
     # (qfg-9dxb.7, matching sdk-go qfg-9dxb.4). +hash_missing+, when given,
     # gets an entry for each weighted rollout whose hash property was missing
-    # from the context (qfg-9dxb.8).
-    def resolve_value_on_path(value, config, context, key_path, hash_missing = nil, &on_weighted_index)
+    # from the context (qfg-9dxb.8). +selected_variants+, when given, gets the
+    # stored (pre-resolution) Value of each weighted variant picked, so get()
+    # can redact a confidential/decryptWith variant (qfg-goi1.2.39).
+    def resolve_value_on_path(value, config, context, key_path, hash_missing = nil, selected_variants = nil,
+                              &on_weighted_index)
       return nil if value.nil?
 
       type = vget(value, :type, 'type')
 
       return resolve_provided(value, config) if type == 'provided'
 
-      return resolve_weighted(value, config, context, key_path, hash_missing, &on_weighted_index) if type == 'weighted_values'
+      if type == 'weighted_values'
+        return resolve_weighted(value, config, context, key_path, hash_missing, selected_variants,
+                                &on_weighted_index)
+      end
 
       confidential = vget(value, :confidential, 'confidential')
       decrypt_with = vget(value, :decryptWith, 'decryptWith', :decrypt_with, 'decrypt_with')
@@ -184,7 +196,8 @@ module Quonfig
     # nil) hashes an empty value, the same bucket as a present "", and warns
     # once per config key (qfg-9dxb.8). With no hash property configured the
     # pick stays random per call.
-    def resolve_weighted(value, config, context, key_path, hash_missing = nil, &on_weighted_index)
+    def resolve_weighted(value, config, context, key_path, hash_missing = nil, selected_variants = nil,
+                         &on_weighted_index)
       payload = vget(value, :value, 'value') || {}
       weighted = vget(payload, :weightedValues, 'weightedValues', :weighted_values, 'weighted_values')
       return value unless weighted.is_a?(Array) && !weighted.empty?
@@ -213,7 +226,9 @@ module Quonfig
       variant, index = picker.resolve
       on_weighted_index&.call(index)
       variant_value = vget(variant, :value, 'value')
-      resolve_value_on_path(variant_value, config, context, key_path, hash_missing, &on_weighted_index)
+      selected_variants&.push(variant_value)
+      resolve_value_on_path(variant_value, config, context, key_path, hash_missing, selected_variants,
+                            &on_weighted_index)
     end
 
     def warn_hash_property_missing(cfg_key, hash_property)
