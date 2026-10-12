@@ -540,8 +540,11 @@ module Quonfig
       when 'log_level'   then raw.is_a?(Numeric) ? raw : raw.to_s
       when 'duration'    then duration_to_millis(raw)
       when 'json'
-        # JSON values must be native JS/Ruby types on the wire.
-        raw
+        # JSON values must be native JS/Ruby types on the wire. Hashes and
+        # Arrays are copied so a caller mutating the result cannot rewrite
+        # the cached config for every later read (qfg-goi1.10.3, sdk-go
+        # qfg-9dxb.6). Leaf values (strings included) are not copied.
+        copy_json_containers(raw)
       else
         raw
       end
@@ -554,6 +557,14 @@ module Quonfig
     end
 
     private
+
+    def copy_json_containers(value)
+      case value
+      when Hash then value.to_h { |k, v| [k, copy_json_containers(v)] }
+      when Array then value.map { |v| copy_json_containers(v) }
+      else value
+      end
+    end
 
     # Coerce an ISO 8601 duration value (e.g. "PT0.2S", "P1DT6H2M1.5S")
     # to integer milliseconds. The wire format may either be a bare ISO

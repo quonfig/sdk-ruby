@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **UPGRADE: may change returned values. Minor: JSON values are returned as a fresh copy on every call (qfg-goi1.10.3).** `get`, `get_json` and `get_json_details` (also on `BoundClient`) used to return the SDK's own Hash or Array for a JSON config. If your code changed the result (for example added a key or appended to a list), every later read in the process saw the change. Each call now returns its own copy of the Hashes and Arrays, so changes stay local. What changes for you: two calls no longer return the same object (`equal?` is false; `==` is still true), and code that relied on mutating the result to change config no longer does. Values are not frozen, so code that mutates its own copy keeps working. Strings are not copied: `get_string` and the strings inside a JSON value are the same objects as before. Matches sdk-go, sdk-net and sdk-java. Per the Wave 2 guardrail this ships in a minor release of its own, not bundled with the patch fixes above.
 - **Fix (security, patch): a `confidential` or `decryptWith` variant inside a weighted rollout is now redacted in telemetry (qfg-goi1.2.39).** The evaluation-summary redaction looked only at the outer `weighted_values` wrapper, which is never flagged, so the selected variant went out as `selectedValue` in plaintext (for `decryptWith`, the decrypted secret). The selected variant is now sent as `*****<md5[0,5]>` over its stored value (the ciphertext for `decryptWith`), the same as a non-rollout secret and the same as sdk-go, sdk-node and sdk-java.
 
 ## 1.7.2 - 2026-10-09
