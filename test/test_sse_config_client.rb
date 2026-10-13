@@ -829,6 +829,29 @@ class TestSSEConfigClient < Minitest::Test
     assert_equal ['complete'], lines
   end
 
+  # qfg-goi1.10.2 item 2: feed rescanned the whole buffer from byte 0 on every
+  # chunk, so a long line delivered in small chunks was O(n^2) (100k one-byte
+  # chunks took ~9s). Scanning resumes where the last feed stopped.
+  def test_line_reader_scan_is_linear_in_buffered_bytes
+    reader = Quonfig::SSEConfigClient::LineReader.new
+    lines = []
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    100_000.times { reader.feed('a') { |l| lines << l } }
+    reader.feed("\nnext\n") { |l| lines << l }
+    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    assert_equal ['a' * 100_000, 'next'], lines
+    assert_operator elapsed, :<, 2.0, "100k one-byte feeds took #{elapsed.round(2)}s; scan is not linear"
+  end
+
+  def test_line_reader_does_not_reyield_a_line_after_the_block_raises
+    reader = Quonfig::SSEConfigClient::LineReader.new
+    assert_raises(RuntimeError) { reader.feed("one\ntwo\n") { |_l| raise 'boom' } }
+    lines = []
+    reader.feed("three\n") { |l| lines << l }
+    assert_equal %w[two three], lines
+  end
+
   # ---- WEBrick endpoints --------------------------------------------------
 
   def start_webrick_server(port, endpoint_class)

@@ -630,37 +630,59 @@ module Quonfig
       def initialize
         @buffer = +''.b
         @last_was_cr = false
+        # Bytes of @buffer already scanned without finding a terminator, so
+        # the next feed resumes there instead of rescanning from byte 0
+        # (qfg-goi1.10.2; O(n^2) on a long line in small chunks).
+        @scanned = 0
       end
 
+      # Lines are sliced out by position and the consumed prefix is dropped
+      # once per feed (in +ensure+, so a raising block does not see a line
+      # twice), not once per line.
       def feed(chunk)
         @buffer << chunk.b
-        loop do
-          idx = @buffer.index(/[\r\n]/)
-          break if idx.nil?
-
-          ch = @buffer[idx]
-          if idx.zero? && ch == "\n" && @last_was_cr
-            # Dangling LF of a CRLF pair split across chunks — consume and skip.
-            @last_was_cr = false
-            @buffer.slice!(0, 1)
-            next
-          end
-
-          line = @buffer[0, idx].force_encoding('UTF-8')
-          consume = idx + 1
-          @last_was_cr = false
-          if ch == "\r"
-            if consume == @buffer.bytesize
-              # CR at end of buffer — could be CRLF split across feeds.
-              @last_was_cr = true
-            elsif @buffer[consume] == "\n"
-              consume += 1
+        pos = 0
+        begin
+          loop do
+            idx = @buffer.index(/[\r\n]/, [pos, @scanned].max)
+            if idx.nil?
+              @scanned = @buffer.bytesize
+              break
             end
+
+            ch = @buffer.getbyte(idx)
+            if idx == pos && ch == LF && @last_was_cr
+              # Dangling LF of a CRLF pair split across chunks — consume and skip.
+              @last_was_cr = false
+              pos += 1
+              next
+            end
+
+            line = @buffer.byteslice(pos, idx - pos).force_encoding('UTF-8')
+            consume_to = idx + 1
+            @last_was_cr = false
+            if ch == CR
+              if consume_to == @buffer.bytesize
+                # CR at end of buffer — could be CRLF split across feeds.
+                @last_was_cr = true
+              elsif @buffer.getbyte(consume_to) == LF
+                consume_to += 1
+              end
+            end
+            pos = consume_to
+            yield line
           end
-          @buffer.slice!(0, consume)
-          yield line
+        ensure
+          if pos.positive?
+            @buffer = @buffer.byteslice(pos, @buffer.bytesize - pos)
+            @scanned = [@scanned - pos, 0].max
+          end
         end
       end
+
+      CR = 13
+      LF = 10
+      private_constant :CR, :LF
     end
   end
 end
