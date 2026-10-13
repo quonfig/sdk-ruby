@@ -223,6 +223,43 @@ class TestTypedGetters < Minitest::Test
     client = client_with_value(value: payload, type: 'json')
     assert_equal payload, client.get_json(KEY)
   end
+
+  # qfg-goi1.10.3: a returned JSON Hash/Array is the caller's own copy, so
+  # mutating it cannot rewrite the cached config for later reads. Covers
+  # get_json, get and get_json_details (the three JSON return paths).
+  def test_mutating_a_returned_json_value_does_not_change_later_reads
+    payload = { 'a' => 1, 'nested' => { 'list' => [1, 2] } }
+    client = client_with_value(value: payload, type: 'json')
+    expected = { 'a' => 1, 'nested' => { 'list' => [1, 2] } }
+
+    first = client.get_json(KEY)
+    first['a'] = 'mutated'
+    first['nested']['list'] << 3
+    first['added'] = true
+
+    assert_equal expected, client.get_json(KEY)
+
+    via_get = client.get(KEY)
+    via_get['nested'].clear
+    assert_equal expected, client.get(KEY)
+
+    via_details = client.get_json_details(KEY).value
+    via_details['nested']['list'].pop
+    assert_equal expected, client.get_json_details(KEY).value
+  end
+
+  def test_returned_json_array_is_a_copy
+    client = client_with_value(value: [{ 'id' => 1 }], type: 'json')
+    client.get_json(KEY).first['id'] = 99
+    assert_equal [{ 'id' => 1 }], client.get_json(KEY)
+  end
+
+  # Q3c (2026-10-09): get_string keeps returning the same String object; no
+  # plain-string dup.
+  def test_get_string_identity_is_unchanged
+    client = client_with_value(value: 'hello', type: 'string')
+    assert_same client.get_string(KEY), client.get_string(KEY)
+  end
   # ---- error messages never carry the value (qfg-goi1.2.11) -------------
 
   # A decryptWith secret read through the wrong typed getter must not put the
