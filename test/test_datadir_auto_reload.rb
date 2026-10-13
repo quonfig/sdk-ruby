@@ -140,11 +140,12 @@ class TestDatadirAutoReload < Minitest::Test
     client = build_client(data_dir_auto_reload: true, data_dir_auto_reload_debounce_ms: 150)
     client.on_update { extra_callbacks += 1 }
 
-    # Five rapid rewrites of the same file inside the debounce window.
-    5.times do |i|
-      write_config(@tmpdir, 'welcome', "v#{i + 1}")
-      sleep 0.01
-    end
+    # Five back-to-back rewrites of the same file inside the debounce window.
+    # No sleep between them: on a starved CI runner even a 10ms sleep can
+    # outlast the debounce, so each write reloads on its own (qfg-goi1.2.29,
+    # same flake as sdk-node qfg-vnjw). The timer semantics are covered
+    # without the filesystem in test_datadir_watcher_debounce.rb.
+    5.times { |i| write_config(@tmpdir, 'welcome', "v#{i + 1}") }
 
     wait_for(-> { client.get('welcome') == 'v5' }, max_wait: 5)
     sleep 0.3 # let any straggler timers flush
