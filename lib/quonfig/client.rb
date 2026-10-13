@@ -1794,7 +1794,7 @@ module Quonfig
     end
 
     def malformed_stored_duration_error(result)
-      Quonfig::Errors::EnvVarParseError.new(result.raw_value, result.config || {}, 'stored value')
+      Quonfig::Errors::EnvVarParseError.new(result.raw_value, result.config || {}, nil, stored: true)
     end
 
     def malformed_duration(key, default, error)

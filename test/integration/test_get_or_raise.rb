@@ -63,6 +63,30 @@ class TestGetOrRaise < Minitest::Test
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
+  # coercion error for an int env var names the variable and never its value
+  def test_coercion_error_for_an_int_env_var_names_the_variable_and_never_its_value
+    IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_SECRET_ENV' => 'postgres://admin:hunter2@db' }) do
+      client = IntegrationTestHelpers.build_client
+      error = assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('provided.secret.not.an.int') }
+      assert_includes error.message, 'environment variable "QUONFIG_ITD_SECRET_ENV" cannot be converted to int for config "provided.secret.not.an.int"'
+      refute_includes error.message, 'hunter2'
+      refute_includes error.message, 'postgres://'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # coercion error for a double env var names the variable and never its value
+  def test_coercion_error_for_a_double_env_var_names_the_variable_and_never_its_value
+    IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_SECRET_ENV' => 'postgres://admin:hunter2@db' }) do
+      client = IntegrationTestHelpers.build_client
+      error = assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('provided.secret.not.a.double') }
+      assert_includes error.message, 'environment variable "QUONFIG_ITD_SECRET_ENV" cannot be converted to double for config "provided.secret.not.a.double"'
+      refute_includes error.message, 'hunter2'
+      refute_includes error.message, 'postgres://'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
   # raises an error for decryption failure
   def test_raises_an_error_for_decryption_failure
     client = IntegrationTestHelpers.build_client

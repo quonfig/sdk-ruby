@@ -82,6 +82,14 @@ class TestGet < Minitest::Test
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
+  # decrypts a secret whose key config has an environment rule
+  def test_decrypts_a_secret_whose_key_config_has_an_environment_rule
+    client = IntegrationTestHelpers.build_client
+    actual = client.get_string('env.scoped.secret')
+    assert_equal 'hello.world', actual, 'client.get_string(env.scoped.secret)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
   # duration 200 ms
   def test_duration_200_ms
     client = IntegrationTestHelpers.build_client
