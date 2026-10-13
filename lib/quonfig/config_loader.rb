@@ -461,6 +461,25 @@ module Quonfig
         @version = meta['version'] || meta[:version] || @version
         @environment_id = meta['environment'] || meta[:environment] || @environment_id
 
+        # Replace the live store first, then advance the generation
+        # (qfg-goi1.10.2). An interrupt part-way through the store write
+        # (Thread#raise, Timeout) then leaves the held generation where it
+        # was, so the same-generation redelivery that follows installs again
+        # and repairs the store instead of being ignored as a duplicate.
+        unless @store.nil?
+          new_keys = next_map.keys.to_set
+          old_keys = @store.keys.to_set
+          # Drop keys that disappeared server-side.
+          (old_keys - new_keys).each { |k| @store.delete(k) } if @store.respond_to?(:delete)
+
+          envelope.configs.each do |cfg|
+            key = config_key(cfg)
+            next if key.nil?
+
+            @store.set(key, cfg)
+          end
+        end
+
         # qfg-9dxb.3 Fix A: an unversioned install (generation <= 0) carries no
         # ordering info and must never LOWER a positive held generation. Under
         # the qfg-9dxb.9 rule it only installs when held is nil/0 anyway, so
@@ -473,21 +492,6 @@ module Quonfig
         # SSE / datadir installs pass source_index nil and are ignored by the
         # aggregator, so they are never counted.
         @failover_aggregator&.record_resolved_from(source_index)
-
-        # Replace the live store atomically.
-        return if @store.nil?
-
-        new_keys = next_map.keys.to_set
-        old_keys = @store.keys.to_set
-        # Drop keys that disappeared server-side.
-        (old_keys - new_keys).each { |k| @store.delete(k) } if @store.respond_to?(:delete)
-
-        envelope.configs.each do |cfg|
-          key = config_key(cfg)
-          next if key.nil?
-
-          @store.set(key, cfg)
-        end
       end
     end
 
