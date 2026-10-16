@@ -57,12 +57,12 @@ jobs:
       HAS_REPO_TOKEN: ${{ secrets.QUONFIG_REPO_TOKEN != '' }}
     steps:
       - name: Checkout sdk-ruby
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           path: sdk-ruby
 
       - name: Checkout integration-test-data
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: quonfig/integration-test-data
           path: integration-test-data
@@ -74,7 +74,7 @@ jobs:
 
       - name: Checkout api-delivery
         if: env.HAS_REPO_TOKEN == 'true'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # api-delivery is private; the default GITHUB_TOKEN cannot
           # read it. A PAT or fine-grained token with read access to
