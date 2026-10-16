@@ -47,6 +47,7 @@ require 'minitest/autorun'
 
 require 'quonfig'
 require_relative 'scheduler'
+require_relative 'expectations'
 
 # ----- paths -----
 
@@ -476,6 +477,10 @@ def failover_build_client(probe, sse_enabled, polling)
   client
 end
 
+def failover_now_ms
+  (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).to_i
+end
+
 def failover_run_scenario(tp, run, ordering:)
   # Clean proxy state — no leftover toxics, all legs enabled.
   %w[http secondary sse].each do |p|
@@ -495,14 +500,29 @@ def failover_run_scenario(tp, run, ordering:)
 
   begin
     events = run['chaos'] || []
-    # Injects at at_ms <= 0 must be in place BEFORE the synchronous initial
-    # fetch so the fault is observed at init (Ruby's Client.new fetches inline).
-    # Injects at at_ms > 0 fire after the client is up, relative to baseline.
+    # t=0 (README "Timeline rules", rule 2; qfg-goi1.10.35): Ruby's Client.new
+    # fetches inline, so the baseline and the scheduled event threads start
+    # BEFORE it and the initial fetch counts against within_ms (f01-f03's
+    # 4000ms failover bound now includes init). Injects at at_ms <= 0 are
+    # applied synchronously first so the fault is in place for the first fetch.
     pre_init, scheduled = events.partition { |ev| ev['inject'] && (ev['at_ms'] || 0).to_i <= 0 }
+
+    baseline_ms = failover_now_ms
 
     pre_init.each do |ev|
       failover_apply_inject(tp, ev['inject'], threads, stop_flag)
       puts "[pre-init] inject #{ev['inject'].inspect}"
+    end
+
+    scheduled.each do |ev|
+      at = (ev['at_ms'] || 0).to_i
+      delay = [at - (failover_now_ms - baseline_ms), 0].max
+      threads << Quonfig::Chaos.schedule_event(stop_flag, delay) do
+        failover_apply_inject(tp, ev['inject'], threads, stop_flag)
+        puts "[#{at}ms] inject #{ev['inject'].inspect}"
+      rescue StandardError => e
+        puts "[#{at}ms] chaos event failed: #{e.class}: #{e.message}"
+      end
     end
 
     begin
@@ -514,49 +534,24 @@ def failover_run_scenario(tp, run, ordering:)
     rescue StandardError => e
       puts "client init raised: #{e.class}: #{e.message}"
     end
-
-    baseline_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).to_i
-
-    scheduled.each do |ev|
-      at = (ev['at_ms'] || 0).to_i
-      threads << Quonfig::Chaos.schedule_event(stop_flag, at) do
-        failover_apply_inject(tp, ev['inject'], threads, stop_flag)
-        puts "[#{at}ms] inject #{ev['inject'].inspect}"
-      rescue StandardError => e
-        puts "[#{at}ms] chaos event failed: #{e.class}: #{e.message}"
-      end
-    end
+    puts "client constructed at #{failover_now_ms - baseline_ms}ms after t=0"
 
     states = (run['expectations'] || []).each_with_index.map do |e, i|
-      { idx: i, exp: e, passed: false, failed: false, held_since: nil, hit_at: nil, last_reason: '' }
+      Quonfig::Chaos::Expectations.new_state(i, e)
     end
 
     poll_interval = FAILOVER_POLL_MS / 1000.0
     loop do
-      elapsed = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).to_i - baseline_ms
+      elapsed = failover_now_ms - baseline_ms
       break if elapsed >= wall_clock_ms
 
-      all_terminal = true
       states.each do |s|
-        next if s[:passed] || s[:failed]
-
-        ok, why = failover_evaluate(s[:exp]['assert'], probe)
-        s[:last_reason] = why
-        now_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).to_i
-        if ok
-          if s[:held_since].nil?
-            s[:held_since] = now_ms
-            s[:hit_at] = elapsed
-          end
-          hold_for = (s[:exp]['must_hold_for_ms'] || 0).to_i
-          s[:passed] = true if hold_for <= 0 || (now_ms - s[:held_since]) >= hold_for
-        else
-          s[:held_since] = nil
+        Quonfig::Chaos::Expectations.step(s, elapsed, failover_now_ms) do
+          ok, why = failover_evaluate(s[:exp]['assert'], probe)
+          [ok ? :pass : :fail, why, []]
         end
-        s[:failed] = true if !s[:passed] && elapsed > s[:exp]['within_ms'].to_i
-        all_terminal = false unless s[:passed] || s[:failed]
       end
-      break if all_terminal
+      break if states.all? { |s| Quonfig::Chaos::Expectations.terminal?(s) }
 
       sleep poll_interval
     end
@@ -567,15 +562,8 @@ def failover_run_scenario(tp, run, ordering:)
     failed = 0
     details = []
     states.each do |s|
-      exp = s[:exp]
-      label = "exp[#{s[:idx]}] within=#{exp['within_ms']}ms hold=#{exp['must_hold_for_ms'] || 0}ms: #{exp['assert']}"
-      if s[:passed]
-        passed += 1
-        details << "PASS  #{label} (hit at #{s[:hit_at]}ms)"
-      else
-        failed += 1
-        details << "FAIL  #{label} — last: #{s[:last_reason]}"
-      end
+      s[:passed] ? passed += 1 : failed += 1
+      details << Quonfig::Chaos::Expectations.describe(s)
     end
     # f05 invariant, every scenario (qfg-41nh.6): no stream connection may ever
     # reach the secondary. The sentinel is the client's second stream leg, so a
@@ -706,9 +694,11 @@ end
 
 # Failover suite: one shared upstream, faults on the primary leg.
 failover_scenario_files(FAILOVER_SCEN_DIR).each do |path|
+  # An unknown expectation key raises UnknownKeyError and fails the run,
+  # naming the key (README rule 4); only a YAML syntax error is skipped.
   doc = begin
-    YAML.safe_load_file(path, aliases: true)
-  rescue StandardError => e
+    Quonfig::Chaos::Expectations.load_scenario_file(path)
+  rescue Psych::Exception => e
     warn "failover: failed to parse #{path}: #{e.message}"
     next
   end
@@ -731,9 +721,11 @@ end
 
 # Ordering suite: two upstreams at divergent generations, spawned per scenario.
 failover_scenario_files(ORDERING_SCEN_DIR).each do |path|
+  # An unknown expectation key raises UnknownKeyError and fails the run,
+  # naming the key (README rule 4); only a YAML syntax error is skipped.
   doc = begin
-    YAML.safe_load_file(path, aliases: true)
-  rescue StandardError => e
+    Quonfig::Chaos::Expectations.load_scenario_file(path)
+  rescue Psych::Exception => e
     warn "ordering: failed to parse #{path}: #{e.message}"
     next
   end

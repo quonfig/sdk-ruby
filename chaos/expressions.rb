@@ -148,6 +148,18 @@ module Quonfig
         Result.new(ok ? :pass : :fail, why, [])
       end
 
+      # True when every leaf of +expr+ is a server_metric(...) the rig cannot
+      # evaluate, i.e. evaluate() would return :skip for any probe. Static:
+      # reads no probe state, so the SKIPPED outcome is decided by shape.
+      def skip_only?(expr)
+        expr = expr.to_s.strip
+        return false if expr.empty?
+        return split_outside_quotes(expr, ' OR ').all? { |p| skip_only?(p) } if expr.include?(' OR ')
+        return split_outside_quotes(expr, ' AND ').all? { |p| skip_only?(p) } if expr.include?(' AND ')
+
+        RE_SERVER_METRIC.match?(expr)
+      end
+
       def combine(kind, results)
         skipped = results.flat_map(&:skipped)
         live = results.reject { |r| r.status == :skip }

@@ -33,6 +33,8 @@ require 'minitest/autorun'
 require 'quonfig'
 require_relative 'scheduler'
 require_relative 'expressions'
+require_relative 'expectations'
+require_relative 'probe'
 
 # ----- paths -----
 
@@ -158,142 +160,6 @@ class Toxiproxy
     http.request(Net::HTTP::Delete.new(uri.request_uri))
   rescue StandardError
     nil
-  end
-end
-
-# ----- SDK probe -----
-
-class ChaosProbe
-  attr_reader :lock, :log_lock
-
-  def initialize
-    @lock           = Mutex.new
-    @log_lock       = Mutex.new
-    @conn_state     = 'initializing' # initializing|connected|reconnecting|falling_back|disconnected
-    @last_refresh_ms = 0
-    @conn_attempts  = 0
-    @restart_layer1 = 0
-    @restart_layer2 = 0
-    @fallback_active = false
-    @process_crashed = false
-    @logs = []
-  end
-
-  attr_accessor :process_crashed
-
-  # Synthesize a state edge based on the SDK's :connection_state symbol.
-  # Mirrors sdk-python's ChaosProbe.on_sse_state semantics:
-  #   :connected      -> 'connected', conn_attempts++ ON EDGE ONLY
-  #   :falling_back   -> 'falling_back', fallback_active = true
-  #   :disconnected   -> 'disconnected'
-  #   :initializing   -> 'initializing'
-  #
-  # qfg-ll6r: @conn_attempts must increment only on the not-connected ->
-  # connected EDGE. The poller fires every 50ms; a steady connected state
-  # otherwise inflates conn_attempts by ~20/sec and trips chaos scenario 09's
-  # `quonfig_sse_connect_attempts_total < 100` guard. (Bug surfaced as a
-  # reported 1792 attempts over a 90s window — exactly the poll count.)
-  def absorb_sdk_state(sdk_state)
-    @lock.synchronize do
-      case sdk_state
-      when :connected
-        @conn_attempts += 1 unless @conn_state == 'connected'
-        @conn_state = 'connected'
-      when :falling_back
-        # transition into fallback: if we were previously connected, that's a
-        # Layer 1 restart edge.
-        @restart_layer1 += 1 if @conn_state == 'connected'
-        @conn_state = 'falling_back'
-        @fallback_active = true
-      when :disconnected
-        # transition out of connected (but NOT into falling_back) -> reconnecting
-        # If we were already disconnected/initializing, stay that way.
-        if @conn_state == 'connected'
-          @restart_layer1 += 1
-          @conn_state = 'reconnecting'
-        elsif @conn_state == 'reconnecting'
-          # keep reconnecting
-        else
-          @conn_state = 'disconnected'
-        end
-        @fallback_active = false
-      when :initializing
-        # first observation; no edge work
-        @conn_state = 'initializing' if @conn_state == 'initializing'
-        @fallback_active = false
-      end
-    end
-  end
-
-  def on_config_update
-    @lock.synchronize do
-      @last_refresh_ms = (Time.now.to_f * 1000).to_i
-    end
-  end
-
-  def bump_restart_layer1(by = 1)
-    @lock.synchronize { @restart_layer1 += by }
-  end
-
-  def bump_restart_layer2(by = 1)
-    @lock.synchronize { @restart_layer2 += by }
-  end
-
-  def log(level, msg)
-    line = "level=#{level.to_s.downcase} #{msg}"
-    @log_lock.synchronize { @logs << line }
-    # Mirror sdk-python/sdk-go: an onConfigUpdate callback throw counts as a
-    # Layer 1 restart for chaos scenario 10. Match the user-callback recovery
-    # log lines case-insensitively. The current sdk-ruby log line is
-    # "onConfigUpdate callback raised" (qfg-47c2.30); historical phrasing
-    # ("callback threw", "Error applying SSE envelope") is kept for back-compat
-    # with older SDK builds run against this harness.
-    return unless msg.to_s =~ /onConfigUpdate callback (raised|threw|panicked)|callback (raised|threw|panicked)|Error applying SSE envelope/i
-
-    @lock.synchronize { @restart_layer1 += 1 }
-  end
-
-  def snapshot
-    @lock.synchronize do
-      {
-        conn_state: @conn_state,
-        last_refresh_ms: @last_refresh_ms,
-        restart_layer1: @restart_layer1,
-        restart_layer2: @restart_layer2,
-        fallback_active: @fallback_active,
-        process_crashed: @process_crashed
-      }
-    end
-  end
-
-  # Returns the probe's value for an SDK-side metric, or nil for a metric name
-  # the probe does not implement, so the evaluator fails the expectation loudly
-  # instead of comparing against a silent 0 (qfg-goi1.2.21; sdk-go's `known`).
-  def sdk_metric(name, labels)
-    @lock.synchronize do
-      case name
-      when 'quonfig_sdk_worker_restart_total'
-        case labels['layer']
-        when '1' then @restart_layer1.to_f
-        when '2' then @restart_layer2.to_f
-        else (@restart_layer1 + @restart_layer2).to_f
-        end
-      when 'quonfig_sse_connect_attempts_total'
-        @conn_attempts.to_f
-      end
-    end
-  end
-
-  def log_matches(level, regex)
-    @log_lock.synchronize do
-      n = 0
-      @logs.each do |line|
-        next if level && !level.empty? && !line.downcase.include?("level=#{level.downcase}")
-
-        n += 1 if regex.match?(line)
-      end
-      n
-    end
   end
 end
 
@@ -442,7 +308,7 @@ def chaos_build_client(probe, _setup)
   )
 
   client = Quonfig::Client.new(options)
-  client.on_update { probe.on_config_update }
+  probe.client = client
   client
 end
 
@@ -492,6 +358,28 @@ end
 # unit-tested without booting toxiproxy (qfg-p35y).
 ChaosStopFlag = Quonfig::Chaos::StopFlag
 
+def chaos_now_ms
+  (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).to_i
+end
+
+def chaos_fire_event(tp, ev, injection_states)
+  at = (ev['at_ms'] || 0).to_i
+  if ev['inject']
+    st = chaos_apply_inject(tp, ev['inject'])
+    injection_states[ev['inject']['name']] = st if ev['inject']['name']
+    puts "[#{at}ms] inject #{ev['inject'].inspect}"
+  elsif ev['clear']
+    chaos_clear_inject(tp, injection_states[ev['clear']])
+    injection_states.delete(ev['clear'])
+    puts "[#{at}ms] clear #{ev['clear']}"
+  elsif ev['process']
+    chaos_apply_process(tp, ev['process'])
+    puts "[#{at}ms] process #{ev['process'].inspect}"
+  end
+rescue StandardError => e
+  puts "[#{at}ms] chaos event failed: #{e.class}: #{e.message}"
+end
+
 def chaos_run_scenario(tp, run)
   tp.clear_toxics('sse')
   tp.clear_toxics('http')
@@ -514,6 +402,30 @@ def chaos_run_scenario(tp, run)
   scheduled_threads = []
 
   begin
+    # t=0 (README "Timeline rules", rule 2; qfg-goi1.10.35): Client.new fetches
+    # inline, so the baseline and the chaos event threads start BEFORE it and
+    # the initial fetch counts against every within_ms. Pre-init events
+    # (at_ms <= 0) are applied synchronously so they are in place before the
+    # first fetch.
+    baseline_ms = chaos_now_ms
+    events = run['chaos'] || []
+    pre_init, scheduled = events.partition { |ev| (ev['at_ms'] || 0).to_i <= 0 }
+    pre_init.each { |ev| chaos_fire_event(tp, ev, injection_states) }
+
+    # Schedule chaos events. The scheduler uses stop_flag.wait under the
+    # hood so the ensure block's `stop_flag.set!` cancels any pending event
+    # — without that, a deferred "clear" from a scenario that ended early
+    # would fire DURING the next scenario and corrupt its toxiproxy state
+    # (qfg-p35y: scenario 07's clear half_open leaked into scenario 05,
+    # re-enabling SSE 16s into the 180s outage and preventing falling_back
+    # from engaging).
+    scheduled.each do |ev|
+      delay = [(ev['at_ms'] || 0).to_i - (chaos_now_ms - baseline_ms), 0].max
+      scheduled_threads << Quonfig::Chaos.schedule_event(stop_flag, delay) do
+        chaos_fire_event(tp, ev, injection_states)
+      end
+    end
+
     begin
       client = chaos_build_client(probe, setup)
     rescue StandardError => e
@@ -524,83 +436,31 @@ def chaos_run_scenario(tp, run)
     if client && user_callback_mode == 'throw'
       # Wrap on_update to throw — exercises Layer 1 callback-throw scenario.
       client.on_update do
-        probe.on_config_update
         raise 'simulated user-callback throw for chaos scenario 10'
       end
     end
 
     poller = chaos_spawn_poller(client, probe, stop_flag) if client
 
-    baseline_ms = (Time.now.to_f * 1000).to_i
-
-    # Schedule chaos events. The scheduler uses stop_flag.wait under the
-    # hood so the ensure block's `stop_flag.set!` cancels any pending event
-    # — without that, a deferred "clear" from a scenario that ended early
-    # would fire DURING the next scenario and corrupt its toxiproxy state
-    # (qfg-p35y: scenario 07's clear half_open leaked into scenario 05,
-    # re-enabling SSE 16s into the 180s outage and preventing falling_back
-    # from engaging).
-    (run['chaos'] || []).each do |ev|
-      at = (ev['at_ms'] || 0).to_i
-      scheduled_threads << Quonfig::Chaos.schedule_event(stop_flag, at) do
-        if ev['inject']
-          st = chaos_apply_inject(tp, ev['inject'])
-          injection_states[ev['inject']['name']] = st if ev['inject']['name']
-          puts "[#{at}ms] inject #{ev['inject'].inspect}"
-        elsif ev['clear']
-          chaos_clear_inject(tp, injection_states[ev['clear']])
-          injection_states.delete(ev['clear'])
-          puts "[#{at}ms] clear #{ev['clear']}"
-        elsif ev['process']
-          chaos_apply_process(tp, ev['process'])
-          puts "[#{at}ms] process #{ev['process'].inspect}"
-        end
-      rescue StandardError => e
-        puts "[#{at}ms] chaos event failed: #{e.class}: #{e.message}"
-      end
-    end
-
     states = (run['expectations'] || []).each_with_index.map do |e, i|
-      {
-        idx: i, exp: e, passed: false, failed: false, skipped: false,
-        hit_at: nil, held_since: nil, last_reason: ''
-      }
+      Quonfig::Chaos::Expectations.new_state(
+        i, e, skip_only: Quonfig::Chaos::Expressions.skip_only?(e['assert'])
+      )
     end
 
     poll_interval = CHAOS_POLL_MS / 1000.0
 
     loop do
-      elapsed = (Time.now.to_f * 1000).to_i - baseline_ms
+      elapsed = chaos_now_ms - baseline_ms
       break if elapsed >= wall_clock_ms
 
-      all_terminal = true
       states.each do |s|
-        next if s[:passed] || s[:failed] || s[:skipped]
-
-        result = Quonfig::Chaos::Expressions.evaluate(s[:exp]['assert'], probe)
-        s[:last_reason] = result.reason
-        s[:skipped_leaves] = result.skipped
-        if result.status == :skip
-          # Fully-skipped expectation (e.g. a bare server_metric): terminal,
-          # neither pass nor fail, reported as SKIPPED with its reason.
-          s[:skipped] = true
-          next
+        Quonfig::Chaos::Expectations.step(s, elapsed, chaos_now_ms) do
+          result = Quonfig::Chaos::Expressions.evaluate(s[:exp]['assert'], probe)
+          [result.status, result.reason, result.skipped]
         end
-        ok = result.pass?
-        if ok
-          if s[:held_since].nil?
-            s[:held_since] = (Time.now.to_f * 1000).to_i
-            s[:hit_at] = elapsed
-          end
-          hold_for = (s[:exp]['must_hold_for_ms'] || 0).to_i
-          s[:passed] = true if hold_for <= 0 || ((Time.now.to_f * 1000).to_i - s[:held_since]) >= hold_for
-        else
-          s[:held_since] = nil
-        end
-        s[:failed] = true if !s[:passed] && elapsed > s[:exp]['within_ms'].to_i
-        all_terminal = false unless s[:passed] || s[:failed] || s[:skipped]
       end
-      break if all_terminal
+      break if states.all? { |s| Quonfig::Chaos::Expectations.terminal?(s) }
 
       sleep poll_interval
     end
@@ -612,21 +472,15 @@ def chaos_run_scenario(tp, run)
     failed = 0
     skipped = 0
     states.each do |s|
-      exp = s[:exp]
-      label = "exp[#{s[:idx]}] within=#{exp['within_ms']}ms " \
-              "hold=#{exp['must_hold_for_ms'] || 0}ms: #{exp['assert']}"
       (s[:skipped_leaves] || []).each { |leaf| ChaosSkipTally.record(run['name'], s[:idx], leaf) }
       if s[:skipped]
         skipped += 1
-        details << "SKIP  #{label} — #{s[:last_reason]}"
       elsif s[:passed]
         passed += 1
-        partial = (s[:skipped_leaves] || []).map { |leaf| " [SKIPPED leaf: #{leaf}]" }.join
-        details << "PASS  #{label} (hit at #{s[:hit_at]}ms)#{partial}"
       else
         failed += 1
-        details << "FAIL  #{label} — last: #{s[:last_reason]}"
       end
+      details << Quonfig::Chaos::Expectations.describe(s)
     end
     snap = probe.snapshot
     details << "summary: #{passed} passed, #{failed} failed, #{skipped} skipped " \
@@ -685,11 +539,13 @@ def chaos_load_runs
     next if CHAOS_SKIP.include?(num)
 
     begin
-      doc = YAML.safe_load_file(f, aliases: true)
-    rescue StandardError => e
+      doc = Quonfig::Chaos::Expectations.load_scenario_file(f)
+    rescue Psych::Exception => e
       warn "chaos: failed to parse #{f}: #{e.class}: #{e.message}"
       next
     end
+    # An unknown expectation key (Quonfig::Chaos::Expectations::UnknownKeyError)
+    # propagates and fails the run, naming the key (README rule 4).
     (doc['tests'] || []).each do |run|
       out << [f, run]
     end
