@@ -754,12 +754,12 @@ class TestEnabled < Minitest::Test
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
-  # returns false for PROP_SEMVER_EQUAL rule when the given prop is not a valid semver
-  def test_returns_false_for_prop_semver_equal_rule_when_the_given_prop_is_not_a_valid_semver
+  # returns true for PROP_SEMVER_EQUAL rule when the given prop is an abbreviated major.minor version
+  def test_returns_true_for_prop_semver_equal_rule_when_the_given_prop_is_an_abbreviated_major_minor_version
     client = IntegrationTestHelpers.build_client
     scope = client.with_context({ 'app' => { 'version' => '2.0' } })
     actual = scope.enabled?('feature-flag.semver-equal')
-    assert_equal false, actual, 'scope.enabled?(feature-flag.semver-equal)'
+    assert_equal true, actual, 'scope.enabled?(feature-flag.semver-equal)'
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
@@ -814,6 +814,303 @@ class TestEnabled < Minitest::Test
     scope = client.with_context({ 'app' => { 'version' => '0.0.5' } })
     actual = scope.enabled?('feature-flag.semver-greater-than')
     assert_equal false, actual, 'scope.enabled?(feature-flag.semver-greater-than)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_IS_ONE_OF ["true"] when the context value is boolean true
+  def test_returns_true_for_prop_is_one_of_true_when_the_context_value_is_boolean_true
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'beta' => true } })
+    actual = scope.enabled?('feature-flag.is-one-of.bool')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.is-one-of.bool)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_IS_ONE_OF ["true"] when the context value is boolean false
+  def test_returns_false_for_prop_is_one_of_true_when_the_context_value_is_boolean_false
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'beta' => false } })
+    actual = scope.enabled?('feature-flag.is-one-of.bool')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.is-one-of.bool)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_IS_ONE_OF ["true"] when the context value is the string "true"
+  def test_returns_true_for_prop_is_one_of_true_when_the_context_value_is_the_string_true
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'beta' => 'true' } })
+    actual = scope.enabled?('feature-flag.is-one-of.bool')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.is-one-of.bool)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_IS_NOT_ONE_OF ["true"] when the context value is boolean true
+  def test_returns_false_for_prop_is_not_one_of_true_when_the_context_value_is_boolean_true
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'beta' => true } })
+    actual = scope.enabled?('feature-flag.is-not-one-of.bool')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.is-not-one-of.bool)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_IS_ONE_OF number strings when the context value is the integer 1
+  def test_returns_true_for_prop_is_one_of_number_strings_when_the_context_value_is_the_integer_1
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => 1 } })
+    actual = scope.enabled?('feature-flag.is-one-of.number')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.is-one-of.number)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_IS_ONE_OF number strings when the context value is the number 1.5
+  def test_returns_true_for_prop_is_one_of_number_strings_when_the_context_value_is_the_number_1_5
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => 1.5 } })
+    actual = scope.enabled?('feature-flag.is-one-of.number')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.is-one-of.number)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_IS_ONE_OF number strings when the context value is the integer 1234567
+  def test_returns_true_for_prop_is_one_of_number_strings_when_the_context_value_is_the_integer_1234567
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => 1_234_567 } })
+    actual = scope.enabled?('feature-flag.is-one-of.number')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.is-one-of.number)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_IS_ONE_OF number strings when the context value is the integer 2
+  def test_returns_false_for_prop_is_one_of_number_strings_when_the_context_value_is_the_integer_2
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => 2 } })
+    actual = scope.enabled?('feature-flag.is-one-of.number')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.is-one-of.number)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_ENDS_WITH_ONE_OF ["3"] when the context value is the integer 123
+  def test_returns_true_for_prop_ends_with_one_of_3_when_the_context_value_is_the_integer_123
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => 123 } })
+    actual = scope.enabled?('feature-flag.ends-with-one-of.number')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.ends-with-one-of.number)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_ENDS_WITH_ONE_OF ["3"] when the context value is the integer 124
+  def test_returns_false_for_prop_ends_with_one_of_3_when_the_context_value_is_the_integer_124
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => 124 } })
+    actual = scope.enabled?('feature-flag.ends-with-one-of.number')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.ends-with-one-of.number)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for IN_INT_RANGE [0, 10) when the context value is the start bound 0
+  def test_returns_true_for_in_int_range_0_10_when_the_context_value_is_the_start_bound_0
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => 0 } })
+    actual = scope.enabled?('feature-flag.in-int-range')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.in-int-range)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for IN_INT_RANGE [0, 10) when the context value is 9
+  def test_returns_true_for_in_int_range_0_10_when_the_context_value_is_9
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => 9 } })
+    actual = scope.enabled?('feature-flag.in-int-range')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.in-int-range)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for IN_INT_RANGE [0, 10) when the context value is the end bound 10
+  def test_returns_false_for_in_int_range_0_10_when_the_context_value_is_the_end_bound_10
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => 10 } })
+    actual = scope.enabled?('feature-flag.in-int-range')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.in-int-range)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for IN_INT_RANGE [0, 10) when the context value is -1
+  def test_returns_false_for_in_int_range_0_10_when_the_context_value_is_1
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => -1 } })
+    actual = scope.enabled?('feature-flag.in-int-range')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.in-int-range)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for IN_INT_RANGE with no end when the context value is 5000000000
+  def test_returns_true_for_in_int_range_with_no_end_when_the_context_value_is_5000000000
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => 5_000_000_000 } })
+    actual = scope.enabled?('feature-flag.in-int-range.open-end')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.in-int-range.open-end)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for IN_INT_RANGE with no start when the context value is -5
+  def test_returns_true_for_in_int_range_with_no_start_when_the_context_value_is_5
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'n' => -5 } })
+    actual = scope.enabled?('feature-flag.in-int-range.open-start')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.in-int-range.open-start)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_SEMVER_EQUAL 2.0.0 when the given prop is the prerelease 2.0.0-beta.1
+  def test_returns_false_for_prop_semver_equal_2_0_0_when_the_given_prop_is_the_prerelease_2_0_0_beta_1
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'app' => { 'version' => '2.0.0-beta.1' } })
+    actual = scope.enabled?('feature-flag.semver-equal')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.semver-equal)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_SEMVER_LESS_THAN 2.0.0 when the given prop is the prerelease 2.0.0-beta.1
+  def test_returns_true_for_prop_semver_less_than_2_0_0_when_the_given_prop_is_the_prerelease_2_0_0_beta_1
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'app' => { 'version' => '2.0.0-beta.1' } })
+    actual = scope.enabled?('feature-flag.semver-less-than')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.semver-less-than)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_SEMVER_GREATER_THAN 2.0.0 when the given prop is the prerelease 2.0.0-beta.1
+  def test_returns_false_for_prop_semver_greater_than_2_0_0_when_the_given_prop_is_the_prerelease_2_0_0_beta_1
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'app' => { 'version' => '2.0.0-beta.1' } })
+    actual = scope.enabled?('feature-flag.semver-greater-than')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.semver-greater-than)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_SEMVER_EQUAL 2.0.0 when the given prop differs only by build metadata
+  def test_returns_true_for_prop_semver_equal_2_0_0_when_the_given_prop_differs_only_by_build_metadata
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'app' => { 'version' => '2.0.0+build.5' } })
+    actual = scope.enabled?('feature-flag.semver-equal')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.semver-equal)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_SEMVER_LESS_THAN 2.0.0-beta when the given prop is the prerelease 2.0.0-alpha
+  def test_returns_true_for_prop_semver_less_than_2_0_0_beta_when_the_given_prop_is_the_prerelease_2_0_0_alpha
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'app' => { 'version' => '2.0.0-alpha' } })
+    actual = scope.enabled?('feature-flag.semver-less-than.prerelease')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.semver-less-than.prerelease)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_SEMVER_EQUAL 2.0.0 when the given prop is the abbreviated major version 2
+  def test_returns_true_for_prop_semver_equal_2_0_0_when_the_given_prop_is_the_abbreviated_major_version_2
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'app' => { 'version' => '2' } })
+    actual = scope.enabled?('feature-flag.semver-equal')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.semver-equal)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_SEMVER_EQUAL 2.0.0 when the given prop has a v prefix
+  def test_returns_false_for_prop_semver_equal_2_0_0_when_the_given_prop_has_a_v_prefix
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'app' => { 'version' => 'v2.0.0' } })
+    actual = scope.enabled?('feature-flag.semver-equal')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.semver-equal)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_BEFORE when the given prop is a date-only string
+  def test_returns_false_for_prop_before_when_the_given_prop_is_a_date_only_string
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'creation_date' => '2024-11-01' } })
+    actual = scope.enabled?('feature-flag.before')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.before)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_BEFORE when the given prop is an RFC3339 string without an offset
+  def test_returns_false_for_prop_before_when_the_given_prop_is_an_rfc3339_string_without_an_offset
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'creation_date' => '2024-11-01T00:00:00' } })
+    actual = scope.enabled?('feature-flag.before')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.before)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_BEFORE when the given prop is a free-form date string
+  def test_returns_false_for_prop_before_when_the_given_prop_is_a_free_form_date_string
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'creation_date' => 'Nov 1 2024' } })
+    actual = scope.enabled?('feature-flag.before')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.before)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_BEFORE when the given prop is an RFC3339 string with a numeric offset
+  def test_returns_true_for_prop_before_when_the_given_prop_is_an_rfc3339_string_with_a_numeric_offset
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'creation_date' => '2024-11-01T02:00:00+02:00' } })
+    actual = scope.enabled?('feature-flag.before')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.before)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_BEFORE when the given prop is an all-digit epoch-ms string
+  def test_returns_true_for_prop_before_when_the_given_prop_is_an_all_digit_epoch_ms_string
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'creation_date' => '1730419200000' } })
+    actual = scope.enabled?('feature-flag.before')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.before)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_BEFORE an RFC3339 criterion when the given prop is an earlier epoch-ms number
+  def test_returns_true_for_prop_before_an_rfc3339_criterion_when_the_given_prop_is_an_earlier_epoch_ms_number
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'creation_date' => 1_730_419_200_000 } })
+    actual = scope.enabled?('feature-flag.before.rfc3339-criterion')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.before.rfc3339-criterion)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_BEFORE an RFC3339 criterion when the given prop is a later RFC3339 string
+  def test_returns_false_for_prop_before_an_rfc3339_criterion_when_the_given_prop_is_a_later_rfc3339_string
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'creation_date' => '2025-01-01T00:00:00Z' } })
+    actual = scope.enabled?('feature-flag.before.rfc3339-criterion')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.before.rfc3339-criterion)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_AFTER an all-digit criterion "999" when the given prop is 500
+  def test_returns_false_for_prop_after_an_all_digit_criterion_999_when_the_given_prop_is_500
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'creation_date' => 500 } })
+    actual = scope.enabled?('feature-flag.after.numeric-string-criterion')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.after.numeric-string-criterion)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_AFTER an all-digit criterion "999" when the given prop is 1000
+  def test_returns_true_for_prop_after_an_all_digit_criterion_999_when_the_given_prop_is_1000
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'creation_date' => 1000 } })
+    actual = scope.enabled?('feature-flag.after.numeric-string-criterion')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.after.numeric-string-criterion)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_GREATER_THAN 30 when the given prop is a numeric string above the threshold
+  def test_returns_false_for_prop_greater_than_30_when_the_given_prop_is_a_numeric_string_above_the_threshold
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'age' => '35' } })
+    actual = scope.enabled?('feature-flag.greater-than')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.greater-than)'
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 end

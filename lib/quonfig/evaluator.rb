@@ -54,6 +54,16 @@ module Quonfig
     OP_IS_PRESENT                      = 'IS_PRESENT'
     OP_IS_NOT_PRESENT                  = 'IS_NOT_PRESENT'
 
+    MAX_SAFE_INTEGER = (2**53) - 1
+
+    # Timestamp grammar for PROP_BEFORE / PROP_AFTER; see #date_to_millis.
+    INTEGER_STRING = /\A-?[0-9]+\z/
+    RFC3339_TIMESTAMP = /
+      \A(?<y>[0-9]{4})-(?<mo>[0-9]{2})-(?<d>[0-9]{2})
+      T(?<h>[0-9]{2}):(?<mi>[0-9]{2}):(?<s>[0-9]{2})(?:\.(?<frac>[0-9]+))?
+      (?:Z|(?<sign>[+-])(?<oh>[0-9]{2}):(?<om>[0-9]{2}))\z
+    /x
+
     MAGIC_CURRENT_TIME_PROPS = %w[quonfig.current-time prefab.current-time reforge.current-time].freeze
 
     # PROP_MATCHES / PROP_DOES_NOT_MATCH match timeout (qfg-goi1.2.11). Ruby
@@ -282,8 +292,8 @@ module Quonfig
       when OP_PROP_SEMVER_LESS_THAN, OP_PROP_SEMVER_EQUAL, OP_PROP_SEMVER_GREATER_THAN
         mv = hget(match_value, :value)
         if context_exists && context_value.is_a?(String) && mv.is_a?(String)
-          sv_ctx = SemanticVersion.parse_quietly(context_value)
-          sv_mv  = SemanticVersion.parse_quietly(mv)
+          sv_ctx = SemanticVersion.parse_quietly(context_value, allow_abbreviated: true)
+          sv_mv  = SemanticVersion.parse_quietly(mv, allow_abbreviated: true)
           if sv_ctx && sv_mv
             cmp = (sv_ctx <=> sv_mv)
             case operator
@@ -356,10 +366,25 @@ module Quonfig
 
     # --- Type coercion helpers ----------------------------------------
 
+    # Canonical string form (qfg-goi1.5 R1) for *_ONE_OF, the string
+    # operators and HIERARCHICAL_MATCH: strings as-is, booleans as
+    # "true"/"false", and an integral number below 2^53 as plain digits
+    # whatever its runtime type, so 1.0 is "1" and 5e9 is "5000000000"
+    # (Float#to_s would give "1.0" and "5.0e9").
     def to_s_nil(v)
       return '' if v.nil?
+      return v if v.is_a?(String)
+      return canonical_number(v) if v.is_a?(Numeric) && !v.is_a?(Integer)
 
       v.to_s
+    end
+
+    def canonical_number(v)
+      return v.to_s unless v.real?
+      return v.to_s if v.respond_to?(:finite?) && !v.finite?
+      return v.to_s unless v == v.truncate && v.abs <= MAX_SAFE_INTEGER
+
+      v.to_i.to_s
     end
 
     def to_string_slice(v)
@@ -414,21 +439,43 @@ module Quonfig
       [start_v || min, end_v || max]
     end
 
+    # The ONE timestamp grammar for PROP_BEFORE / PROP_AFTER (qfg-goi1.5 R5),
+    # applied to both the context value and the criterion: a number (epoch
+    # ms, truncated), an all-digit string (epoch ms), or RFC3339 with an
+    # uppercase T and a Z or numeric offset (fractional seconds allowed,
+    # truncated to ms). Date-only, offset-less and free-form strings are not
+    # timestamps and never match. This replaces DateTime.parse, which read
+    # any of those (offset-less as UTC).
     def date_to_millis(val)
       case val
-      when Integer, Float
-        val.to_i
+      when Integer
+        val
+      when Float
+        val.finite? ? val.to_i : nil
       when String
-        # Try ISO-8601 / RFC3339 first, fall back to integer-string.
-        begin
-          t = DateTime.parse(val)
-          return (t.to_time.to_f * 1000).to_i
-        rescue ArgumentError, TypeError
-          # not a date; try integer
-        end
-        Integer(val, exception: false)
+        return Integer(val, 10) if INTEGER_STRING.match?(val)
 
+        rfc3339_to_millis(val)
       end
+    end
+
+    def rfc3339_to_millis(str)
+      m = RFC3339_TIMESTAMP.match(str)
+      return nil if m.nil?
+
+      y, mo, d, h, mi, s = %i[y mo d h mi s].map { |k| m[k].to_i }
+      return nil unless Date.valid_date?(y, mo, d) && h <= 23 && mi <= 59 && s <= 59
+
+      offset_seconds = 0
+      if m[:sign]
+        oh = m[:oh].to_i
+        om = m[:om].to_i
+        return nil if oh > 23 || om > 59
+
+        offset_seconds = ((oh * 3600) + (om * 60)) * (m[:sign] == '-' ? -1 : 1)
+      end
+      epoch_seconds = Time.utc(y, mo, d, h, mi, s).to_i - offset_seconds
+      (epoch_seconds * 1000) + (m[:frac] || '').ljust(3, '0')[0, 3].to_i
     end
   end
 
