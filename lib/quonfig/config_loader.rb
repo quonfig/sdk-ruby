@@ -448,6 +448,11 @@ module Quonfig
       # 200 cannot pin itself through later 304s).
       cycle_log.log(:warn, "Config fetch from #{source} returned a non-envelope 200 (#{e.message}); treating as a failed leg")
       :failed
+    rescue Quonfig::ConfigShape::AllInvalidError => e
+      # qfg-krjt: a payload with no loadable config is a leg error, so it can
+      # never install as an empty workspace.
+      cycle_log.log(:warn, "Config fetch from #{source}: #{e.message}; treating as a failed leg")
+      :failed
     rescue Faraday::ConnectionFailed => e
       @logger.debug "Connection failure fetching configs from #{source}: #{e.message}"
       :failed
@@ -472,10 +477,11 @@ module Quonfig
       data = body.is_a?(String) ? JSON.parse(body) : body
       raise NonEnvelopeError, 'missing meta.version' unless Quonfig::ConfigEnvelope.wire_envelope?(data)
 
-      Quonfig::ConfigEnvelope.new(
-        configs: data['configs'] || [],
-        meta: data['meta'] || {}
-      )
+      meta = data['meta'] || {}
+      # Skip one malformed config, keep the rest (qfg-krjt). Raises
+      # ConfigShape::AllInvalidError when none is loadable.
+      configs = Quonfig::ConfigShape.filter(data['configs'] || [], logger: @logger, version: meta['version'])
+      Quonfig::ConfigEnvelope.new(configs: configs, meta: meta)
     end
 
     def short_body(response)

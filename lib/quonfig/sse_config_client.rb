@@ -724,10 +724,18 @@ module Quonfig
           return nil
         end
 
-        envelope = Quonfig::ConfigEnvelope.new(
-          configs: parsed['configs'] || [],
-          meta: parsed['meta'] || {}
-        )
+        meta = parsed['meta'] || {}
+        # Skip one malformed config, keep the rest (qfg-krjt); an event with
+        # no loadable config is dropped like malformed JSON.
+        begin
+          configs = Quonfig::ConfigShape.filter(parsed['configs'] || [], logger: @logger || LOG,
+                                                                         version: meta['version'])
+        rescue Quonfig::ConfigShape::AllInvalidError => e
+          (@logger || LOG).error "SSE Streaming Error: #{e.message}; event dropped"
+          return nil
+        end
+
+        envelope = Quonfig::ConfigEnvelope.new(configs: configs, meta: meta)
         StreamEvent.new(envelope, id, data)
       end
     end
