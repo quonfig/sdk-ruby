@@ -676,6 +676,18 @@ process.
 
 There is intentionally no `client.healthy?` primitive.
 
+### A rejected SDK key
+
+When a whole config fetch cycle is rejected (no 200 or 304 on any leg, and a
+401, 403, 404 or 410 on the primary), the SDK key is invalid or revoked. The
+SDK logs one ERROR naming the status and host, stops streaming and polling,
+and retries with one fetch every 150-300 seconds for as long as the process
+runs. The first accepted fetch installs the config, logs one INFO, and resumes
+streaming and polling on its own; you do not need to rebuild the client. While
+this lasts `client.connection_state` is `:disconnected` and
+`client.terminal_failure?` is `true`. A rejection on the stream alone never
+does this: the SDK keeps reconnecting and its fallback poller decides.
+
 ## Telemetry
 
 With an SDK key the client sends usage telemetry to `telemetry_url` so the

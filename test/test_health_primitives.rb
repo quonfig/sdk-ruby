@@ -251,12 +251,14 @@ class TestHealthPrimitives < Minitest::Test
   # quonfig/client.py.
   # ------------------------------------------------------------------
 
-  # The fallback worker calls @config_loader.fetch! after each sleep. Tests
-  # never want a real fetch — install a no-op double so the supervisor stays
-  # alive without raising.
+  # The fallback worker runs @config_loader.fetch_cycle! after each sleep.
+  # Tests never want a real fetch — install a no-op double (a cycle that
+  # neither succeeds nor is auth-rejected) so the supervisor stays alive
+  # without raising.
   def stub_config_loader!(client)
     fake = Object.new
     def fake.fetch! = nil
+    def fake.fetch_cycle!(**) = Quonfig::ConfigLoader::FetchCycle.new(nil, {}, '')
     client.instance_variable_set(:@config_loader, fake)
   end
 
@@ -400,34 +402,29 @@ class TestHealthPrimitives < Minitest::Test
     client&.stop
   end
 
-  # qfg-i5xv: a terminal SSE classification (HTTP 401/403/404) MUST NOT engage
-  # the Layer 2 fallback poller. The same SDK key that 401'd over SSE will
-  # 401 over HTTP polling — engaging polling just moves the auth-failure
-  # storm from sse-restart to http-poll. The fallback poller is for transient
-  # disruption, not for "the customer's key is bad".
-  def test_terminal_sse_error_does_not_engage_polling_fallback
+  # qfg-goi1.10.26 (reverses qfg-i5xv): an auth-class SSE error is an
+  # ordinary drop. SSE alone never enters auth-failed (rule R2): the fallback
+  # poller engages on its usual schedule and its fetch cycle decides. Before
+  # 1.8.0 a single SSE 401 latched terminal_failure? and suppressed polling
+  # for the life of the client.
+  def test_auth_class_sse_error_engages_polling_fallback_like_any_drop
     client = make_client(poll_interval: 0.05)
     stub_config_loader!(client)
 
     callback = client.send(:sse_error_callback)
-    terminal_err = Quonfig::SSEConfigClient::SSEHTTPTerminalError.new(401)
-    callback.call(terminal_err)
+    callback.call(Quonfig::SSEConfigClient::SSEHTTPAuthError.new(401))
 
-    # Initial-fail path normally engages polling immediately; with a terminal
-    # classification that engagement must be suppressed.
-    sleep 0.05
-    assert_equal :disconnected, client.connection_state,
-                 'terminal SSE error must NOT trigger polling fallback'
-    refute client.instance_variable_get(:@poll_supervisor),
-           'no Layer 2 supervisor should be alive after terminal SSE error'
-
-    assert client.terminal_failure?,
-           'client must expose terminal_failure? to operators after a terminal SSE error'
+    wait_for(-> { client.connection_state == :falling_back }, max_wait: 2)
+    assert_equal :falling_back, client.connection_state,
+                 'an SSE 401 must engage the fallback poller (initial-fail path)'
+    refute client.terminal_failure?,
+           'an SSE 401 alone never sets terminal_failure? (only a rejected fetch cycle does)'
+    assert_logged([/Layer 2 fallback poller engaged/])
   ensure
     client&.stop
   end
 
-  def test_terminal_failure_predicate_false_until_terminal_error
+  def test_terminal_failure_predicate_false_until_auth_failed
     client = make_client(poll_interval: 0.05)
     stub_config_loader!(client)
 
@@ -436,11 +433,18 @@ class TestHealthPrimitives < Minitest::Test
     client.send(:handle_sse_state_change, :connected)
     refute client.terminal_failure?, 'terminal_failure? must remain false while connected'
 
-    # Transient (non-terminal) error must NOT flip the predicate.
     callback = client.send(:sse_error_callback)
     callback.call(Quonfig::SSEConfigClient::SSEHTTPStatusError.new(503))
-    refute client.terminal_failure?, 'a 503 (transient) must not be classified terminal'
+    refute client.terminal_failure?, 'a 503 (transient) must not set terminal_failure?'
+    callback.call(Quonfig::SSEConfigClient::SSEHTTPAuthError.new(403))
+    refute client.terminal_failure?, 'an SSE 403 must not set terminal_failure?'
   ensure
     client&.stop
+  end
+
+  # The deprecated qfg-i5xv names still resolve.
+  def test_deprecated_terminal_names_alias_the_auth_class
+    assert_same Quonfig::SSEConfigClient::SSEHTTPAuthError, Quonfig::SSEConfigClient::SSEHTTPTerminalError
+    assert_equal [401, 403, 404, 410], Quonfig::SSEConfigClient::TERMINAL_HTTP_CODES
   end
 end

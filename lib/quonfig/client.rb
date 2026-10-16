@@ -21,6 +21,10 @@ module Quonfig
   class Client
     LOG = Quonfig::InternalLogger.new(self)
 
+    # Auth-failed probe period bounds, rule R3 (qfg-goi1.10.26).
+    AUTH_PROBE_MIN_SECONDS = 150.0
+    AUTH_PROBE_MAX_SECONDS = 300.0
+
     # qfg-ryov: instance registry for the Process._fork hook. Every live
     # Client is tracked here so the hook can fan out after_fork_in_child
     # across all of them without the customer needing to name a specific
@@ -86,7 +90,11 @@ module Quonfig
       @sse_state = :idle
       @sse_ever_connected = false
       @fallback_engage_timer = nil
-      @sse_terminal_failure = false
+      # Auth-failed regime (rule R2-R4, qfg-goi1.10.26). Set by the poller's
+      # fetch cycle on entry, cleared by the first accepted probe. While set:
+      # no SSE, no polling, one probe per [150s, 300s]. Read by
+      # #terminal_failure? and #connection_state.
+      @auth_failed = false
       # The process that owns this client's threads, sockets, and store.
       # Re-stamped when a child takes ownership in #rebuild_in_child!. A pid
       # mismatch is PROOF that we are looking at a fork(2) child, which is
@@ -493,7 +501,7 @@ module Quonfig
       # (it had connected, it had errored, ...). None of them apply here.
       @sse_state = :idle
       @sse_ever_connected = false
-      @sse_terminal_failure = false
+      @auth_failed = false
       @sse_error_callback = nil
 
       # A client that never finished network init has nothing to rebuild.
@@ -581,6 +589,9 @@ module Quonfig
         # running. Saying so is the honest answer, and a diagnostic must not
         # be what triggers a blocking fetch.
         next :initializing if @fork_rebuild_pending
+        # Auth-failed is not a state of its own (R6): SSE and the poller are
+        # off, so the client is disconnected, never falling_back.
+        next :disconnected if @auth_failed
         next :falling_back if @poll_supervisor&.alive?
         # Liveness beats the stored flag (qfg-lv4n.1). A client whose SSE
         # session was torn down keeps a stale @sse_state; answering
@@ -1079,31 +1090,27 @@ module Quonfig
       @sse_error_callback ||= ->(error) { handle_sse_error(error) }
     end
 
-    def handle_sse_error(error)
-      # qfg-i5xv: classify terminal HTTP failures (401/403/404). The same SDK
-      # key that won't auth over SSE won't auth over HTTP polling either, so
-      # we must NOT engage the Layer 2 fallback — that just moves the
-      # auth-failure storm from one endpoint to another. Once flipped,
-      # @sse_terminal_failure latches: a buggy customer retry loop cannot
-      # un-classify the failure by driving the state machine.
-      @state_mutex.synchronize { @sse_terminal_failure = true } if error.is_a?(Quonfig::SSEConfigClient::SSEHTTPTerminalError)
+    # Every SSE error, auth-class included, is an ordinary drop: SSE alone
+    # never enters auth-failed (rule R2, qfg-goi1.10.26; this reverses the
+    # qfg-i5xv latch). The fallback poller engages on its usual schedule and
+    # its fetch cycle decides.
+    def handle_sse_error(_error)
       handle_sse_state_change(:error)
     end
 
     def handle_sse_state_change(new_state)
       state = new_state.to_sym
-      ever_connected, terminal = @state_mutex.synchronize do
+      ever_connected, auth_failed = @state_mutex.synchronize do
         @sse_state = state
         @sse_ever_connected = true if state == :connected
-        [@sse_ever_connected, @sse_terminal_failure]
+        [@sse_ever_connected, @auth_failed]
       end
 
       return unless @options.respond_to?(:fallback_poll_enabled) && @options.fallback_poll_enabled
       return if @stopped
-      # qfg-i5xv: a terminal SSE classification suppresses polling engage in
-      # every branch — the customer's key is bad and HTTP polling will fail
-      # identically. Operators surface this via #terminal_failure?.
-      return if terminal
+      # While auth-failed SSE is stopped; a late edge from the stream being
+      # torn down changes nothing (the probe loop owns the schedule).
+      return if auth_failed
 
       case state
       when :connected
@@ -1120,15 +1127,22 @@ module Quonfig
 
     public
 
-    # qfg-i5xv: true once the SSE layer has classified an HTTP response as
-    # terminal (401/403/404) — bad SDK key, revoked workspace permission,
-    # or wrong endpoint. The classification latches: the SDK will not
-    # auto-recover, and a customer-supplied retry must rebuild the client.
-    # Surfaced for operator alerting; `connection_state` still reports
-    # `:disconnected` to honor the documented connection_state vocabulary
-    # (supervisor-test-contract.md §"connectionState()" — values fixed).
+    # True while the client is auth-failed (since 1.8.0, qfg-goi1.10.26): a
+    # whole config fetch cycle got no 200/304 on any leg and a 401, 403, 404
+    # or 410 on the primary leg, which means the SDK key is invalid or
+    # revoked. It turns true when the fallback poller's cycle (or, with
+    # +enable_sse: false+, a poll) is rejected: about 120s after a mid-life
+    # stream drop, at once if SSE never connected. While true, SSE and polling
+    # are off and the client sends one fetch probe every 150-300s. It goes back
+    # to false on the first probe that gets a valid 200 or a 304, and the
+    # client resumes streaming and polling on its own; there is no need to
+    # rebuild the client.
+    #
+    # Before 1.8.0 this latched true on the first SSE 401/403/404 for the life
+    # of the client (qfg-i5xv). +connection_state+ reports +:disconnected+
+    # while this is true.
     def terminal_failure?
-      @state_mutex.synchronize { @sse_terminal_failure }
+      @state_mutex.synchronize { @auth_failed }
     end
 
     private
@@ -1179,7 +1193,7 @@ module Quonfig
 
         @fallback_engage_timer = Thread.new do
           Thread.current.report_on_exception = false
-          sleep grace_seconds
+          Quonfig::Waits.sleep(:engage, grace_seconds)
           @state_mutex.synchronize { @fallback_engage_timer = nil }
           start_polling unless @stopped
         end
@@ -1522,30 +1536,41 @@ module Quonfig
       # engage() (immediate Fetch, then ticker). A sleep-first worker made the
       # first post-engage data arrive a full extra interval late (~180s after
       # SSE loss with the default 60s interval, vs ~120s in go).
+      #
+      # Auth-failure rule (qfg-goi1.10.26, R2-R4): a poll cycle with no 200/304
+      # on any leg and an auth-class status on the primary enters auth-failed.
+      # The same worker then probes once per T in [150s, 300s] (polling mode:
+      # max(T, interval)) until a probe is accepted. The flag lives on the
+      # client, so a supervisor restart of this worker keeps probing.
       worker = lambda do |notify_delivered|
         loop do
           break if stopped_ref.call
 
-          result = @config_loader.fetch!
-          # Liveness honesty (qfg-41nh.6): stamp freshness only when the fetch
-          # actually SUCCEEDED. :updated and :not_modified (a 304, or a
-          # guard-rejected-but-successful response) are successes — the
-          # channel is healthy; :failed must NOT advance
-          # last_successful_refresh (pre-fix every tick stamped + notified
-          # regardless of outcome, so ready?/freshness reported healthy over
-          # an empty store through a total outage). on_update fires only on a
-          # real install, matching sdk-go (OnConfigUpdate fires in
-          # installEnvelope only).
-          if result != :failed
-            sync_evaluator_env_id!
-            record_refresh!
-            notify_delivered.call
+          if auth_failed?
+            Quonfig::Waits.sleep(:probe, auth_probe_wait(poll_seconds))
+            break if stopped_ref.call
+
+            case run_auth_probe(notify_delivered)
+            when :rejected then next
+            when :handed_to_sse then break
+            end
+            # Accepted in polling mode: resume at the interval, no immediate
+            # fetch (the probe just fetched).
+            Quonfig::Waits.sleep(:poll, poll_seconds)
+            next
           end
-          notify_on_update_callback if result == :updated
+
+          cycle = @config_loader.fetch_cycle!(log_mode: :poll)
+          if cycle.auth_rejected?
+            enter_auth_failed!(cycle) unless stopped_ref.call
+            next
+          end
+
+          after_poll_result(cycle.result, notify_delivered)
 
           break if stopped_ref.call
 
-          sleep poll_seconds
+          Quonfig::Waits.sleep(:poll, poll_seconds)
         end
       end
 
@@ -1558,6 +1583,85 @@ module Quonfig
       # stop path logged, at debug). Matches sdk-go's WARN on OnEngage — the
       # poller engaging means the SDK is in a degraded update mode.
       LOG.warn "[quonfig] Layer 2 fallback poller engaged (interval=#{poll_ms}ms)"
+    end
+
+    # Liveness honesty (qfg-41nh.6): stamp freshness only when the fetch
+    # actually SUCCEEDED. :updated and :not_modified (a 304, or a
+    # guard-rejected-but-successful response) are successes — the channel is
+    # healthy; :failed must NOT advance last_successful_refresh (pre-fix every
+    # tick stamped + notified regardless of outcome, so ready?/freshness
+    # reported healthy over an empty store through a total outage). on_update
+    # fires only on a real install, matching sdk-go (OnConfigUpdate fires in
+    # installEnvelope only).
+    def after_poll_result(result, notify_delivered)
+      if result != :failed
+        sync_evaluator_env_id!
+        record_refresh!
+        notify_delivered.call
+      end
+      notify_on_update_callback if result == :updated
+    end
+
+    def auth_failed?
+      @state_mutex.synchronize { @auth_failed }
+    end
+
+    # Rule R3: T uniform in [150s, 300s], re-drawn per probe, never doubled.
+    # With SSE disabled the wait is max(T, poll interval). Internal: tests
+    # reach it through Quonfig::Waits, it is not a customer option.
+    def auth_probe_wait(poll_seconds)
+      t = AUTH_PROBE_MIN_SECONDS + (rand * (AUTH_PROBE_MAX_SECONDS - AUTH_PROBE_MIN_SECONDS))
+      t = poll_seconds if !@options.enable_sse && poll_seconds > t
+      t
+    end
+
+    # Entry (R2-R5), on the poller's thread, in this order: SSE off (stream
+    # closed and its worker joined, the engage timer cancelled), the flag up,
+    # then one ERROR naming the status and the primary host, never the key.
+    def enter_auth_failed!(cycle)
+      cancel_fallback_engage_timer
+      sse = @state_mutex.synchronize do
+        @auth_failed = true
+        @sse_state = :idle
+        s = @sse_client
+        @sse_client = nil
+        s
+      end
+      begin
+        sse&.close
+      rescue StandardError => e
+        LOG.debug "Error closing SSE client on auth-failed entry: #{e.message}"
+      end
+      LOG.error "[quonfig] config fetch rejected (HTTP #{cycle.primary_status} from #{cycle.primary_host}): " \
+                'the SDK key is invalid or revoked (check the SDK key); streaming and polling stopped, ' \
+                'retrying every few minutes until it is accepted'
+    end
+
+    # One auth-failed probe: a fetch cycle across every leg (R3), logged at
+    # DEBUG only. The first valid 200 or a 304 on any leg exits (R4): one
+    # INFO, and SSE restarts from its base backoff (a brand-new stream
+    # client), handing the update channel back from this poller. With SSE
+    # disabled the poller resumes polling. Returns :rejected, :handed_to_sse
+    # or :resume_polling.
+    def run_auth_probe(notify_delivered)
+      cycle = @config_loader.fetch_cycle!(log_mode: :probe)
+      if cycle.result == :failed
+        LOG.debug "[quonfig] auth-failed probe rejected (HTTP #{cycle.primary_status} from #{cycle.primary_host}); " \
+                  'retrying later'
+        return :rejected
+      end
+
+      after_poll_result(cycle.result, notify_delivered)
+      handing_to_sse = @options.enable_sse && !@stopped
+      # Stop this poller first (from its own thread: WorkerSupervisor#stop only
+      # flags it) so connection_state never reads falling_back on the way out.
+      stop_fallback_poller('auth-recovered') if handing_to_sse
+      @state_mutex.synchronize { @auth_failed = false }
+      LOG.info '[quonfig] config fetch accepted; leaving auth-failed and resuming streaming and polling'
+      return :resume_polling unless handing_to_sse
+
+      start_sse
+      :handed_to_sse
     end
 
     # Invoke the customer-supplied on_update callback under a rescue. A raise
