@@ -50,4 +50,19 @@ class TestChaosProbe < Minitest::Test
     probe.client = FakeClient.new
     assert_equal 0, probe.snapshot[:last_refresh_ms]
   end
+
+  # 05 exp[3] (after_ms 305000) asserts fallbackPollerActive() == false once
+  # SSE is back. The SDK reports :falling_back exactly while its poll
+  # supervisor is alive, so a :connected sample means the poller is gone.
+  def test_fallback_clears_when_sdk_reports_connected_again
+    probe = ChaosProbe.new
+    probe.absorb_sdk_state(:connected)
+    probe.absorb_sdk_state(:falling_back)
+    assert probe.snapshot[:fallback_active]
+
+    probe.absorb_sdk_state(:connected)
+
+    refute probe.snapshot[:fallback_active], 'fallback_active stuck after recovery'
+    assert_equal 'connected', probe.snapshot[:conn_state]
+  end
 end

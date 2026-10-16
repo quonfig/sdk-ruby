@@ -39,6 +39,10 @@ class ChaosProbe
       when :connected
         @conn_attempts += 1 unless @conn_state == 'connected'
         @conn_state = 'connected'
+        # The SDK reports :falling_back exactly while its poll supervisor is
+        # alive, so :connected means the fallback poller has stopped. Without
+        # this the flag latched true after the first fallback (05 exp[3]).
+        @fallback_active = false
       when :falling_back
         # transition into fallback: if we were previously connected, that's a
         # Layer 1 restart edge.
