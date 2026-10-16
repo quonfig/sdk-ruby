@@ -51,10 +51,17 @@ module Quonfig
 
     LOG = Quonfig::InternalLogger.new(self)
 
-    # qfg-i5xv: HTTP status codes the SDK classifies as terminal — these will
-    # not heal by retrying (bad key, revoked permission, missing endpoint).
-    # Anything else (5xx, 429, network errors) stays on the transient path.
-    TERMINAL_HTTP_CODES = [401, 403, 404].freeze
+    # Auth-class statuses (rule R1, qfg-goi1.10.26). On the stream they keep the
+    # normal reconnect ladder: SSE alone never stops retrying and never enters
+    # auth-failed (R2); the client's fallback poller decides that from a whole
+    # fetch cycle. They only get their own log line: WARN once per status,
+    # re-armed by a 200, DEBUG otherwise (R5).
+    AUTH_HTTP_CODES = [401, 403, 404, 410].freeze
+
+    # @deprecated since 1.8.0. qfg-i5xv's "terminal" codes. Nothing is terminal
+    # any more (the latch is gone, qfg-goi1.10.26); kept as an alias of
+    # AUTH_HTTP_CODES for code that references the constant.
+    TERMINAL_HTTP_CODES = AUTH_HTTP_CODES
 
     # qfg-6y44: headroom added to +sse_read_timeout+ when configuring
     # Net::HTTP#read_timeout. The ReadDeadlineWatchdog already covers both the
@@ -88,6 +95,8 @@ module Quonfig
       @active_http = nil
 
       @last_event_id = nil
+      # Auth-class statuses already logged at WARN since the last 200 (R5).
+      @auth_warned = Set.new
       # qfg-7h5d.1.9 / qfg-41nh.6: latches true if a connection attempt ever
       # targets a non-primary sse_api_urls leg. The failover epic asserts SSE
       # does NOT fail over to the secondary (f05) — the stream is PINNED to
@@ -220,7 +229,7 @@ module Quonfig
           begin
             unless first_attempt
               increment_restart!
-              interruptible_sleep(jittered(delay))
+              interruptible_sleep(jittered(Quonfig::Waits.duration(:sse, delay)))
               break if @stopped.value
             end
             first_attempt = false
@@ -314,26 +323,7 @@ module Quonfig
 
       begin
         http.request(req) do |resp|
-          code = resp.code.to_i
-          if TERMINAL_HTTP_CODES.include?(code)
-            # qfg-i5xv: 401/403/404 will not heal by retrying — bad key,
-            # revoked permission, or wrong endpoint. Mark stopped *before*
-            # invoking on_error so the loop's terminal-error branch is
-            # already locked in if the parent callback inspects state, and
-            # so the inner rescue's `handle_error(e) unless @stopped.value`
-            # guard suppresses a second on_error edge.
-            err = SSEHTTPTerminalError.new(code)
-            @logger.error "SSE Streaming Terminal Error: HTTP #{code} for url #{url}; will not retry"
-            @stopped.make_true
-            invoke_on_error(err)
-            raise err
-          end
-          if code != 200
-            err = SSEHTTPStatusError.new(code)
-            @logger.error "SSE Streaming Error: HTTP #{code} for url #{url}"
-            invoke_on_error(err)
-            raise err
-          end
+          check_response_status!(resp.code.to_i, url)
 
           parser = EventParser.new
           # qfg-tj18: run_loop wraps the body in +:on_blocking+ which
@@ -365,6 +355,35 @@ module Quonfig
       end
     end
 
+    # Classify the stream response. Raises for any non-200 so run_loop applies
+    # its backoff.
+    #
+    # Auth class (401/403/404/410, qfg-goi1.10.26): no latch. The normal
+    # ladder applies and run_loop's handle_error fires on_error once, so the
+    # client schedules the fallback poller exactly as for any drop; that
+    # poller's fetch cycle is what decides auth-failed (R2). Logged WARN once
+    # per status until a 200 re-arms it, DEBUG otherwise (R5), so a revoked
+    # key does not log two ERRORs per attempt for the ~2 min before entry.
+    def check_response_status!(code, url)
+      if AUTH_HTTP_CODES.include?(code)
+        if @auth_warned.add?(code)
+          @logger.warn "SSE Streaming Error: HTTP #{code} for url #{url}; " \
+                       'the SDK key may be invalid or revoked (check the SDK key); retrying'
+        else
+          @logger.debug "SSE Streaming Error: HTTP #{code} for url #{url}; retrying"
+        end
+        raise SSEHTTPAuthError, code
+      end
+      if code != 200
+        err = SSEHTTPStatusError.new(code)
+        @logger.error "SSE Streaming Error: HTTP #{code} for url #{url}"
+        invoke_on_error(err)
+        raise err
+      end
+
+      @auth_warned.clear
+    end
+
     # Track the active connection so close() can interrupt a blocked
     # read_body from another thread. Guarded by @conn_mutex.
     def register_active(http)
@@ -376,7 +395,12 @@ module Quonfig
     end
 
     def handle_error(error)
-      @logger.error "SSE Streaming Error: #{error.inspect}"
+      if error.is_a?(SSEHTTPAuthError)
+        # Already logged once by check_response_status! (R5).
+        @logger.debug "SSE Streaming Error: #{error.inspect}"
+      else
+        @logger.error "SSE Streaming Error: #{error.inspect}"
+      end
       invoke_on_error(error)
     end
 
@@ -445,13 +469,14 @@ module Quonfig
       end
     end
 
-    # qfg-i5xv: terminal HTTP failures the SDK will not retry. 401 = bad key,
-    # 403 = revoked workspace permission, 404 = wrong endpoint / missing
-    # workspace. A subclass of SSEHTTPStatusError so existing on_error
-    # callbacks that only check `is_a?(SSEHTTPStatusError)` keep working,
-    # while customers that want to distinguish (alerting, OpenFeature
-    # provider error events) can dispatch on the subclass.
-    class SSEHTTPTerminalError < SSEHTTPStatusError; end
+    # An auth-class (401/403/404/410) stream response (qfg-goi1.10.26). A
+    # subclass of SSEHTTPStatusError so on_error callbacks that only check
+    # `is_a?(SSEHTTPStatusError)` keep working. The stream keeps retrying.
+    class SSEHTTPAuthError < SSEHTTPStatusError; end
+
+    # @deprecated since 1.8.0: qfg-i5xv's name for SSEHTTPAuthError. The stream
+    # no longer stops on these statuses.
+    SSEHTTPTerminalError = SSEHTTPAuthError # rubocop:disable Lint/UselessConstantScoping
 
     # Raised by the watchdog into the worker thread when the per-chunk
     # read deadline elapses. Caught by run_loop's rescue, indistinguishable

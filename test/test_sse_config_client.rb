@@ -222,19 +222,18 @@ class TestSSEConfigClient < Minitest::Test
     assert_logged([/SSE Streaming Error.*HTTP 500/])
   end
 
-  # qfg-i5xv: 401/403/404 are not recoverable by retrying — bad keys,
-  # revoked permissions, and missing workspaces will not heal on a reconnect.
-  # The SDK must classify these as terminal: invoke on_error with a
-  # SSEHTTPTerminalError sentinel, mark the client stopped, exit the loop,
-  # and DO NOT bump restart_total. At launch scale a single misconfigured
-  # customer key could otherwise hold an indefinite ~2 rpm reconnect attempt
-  # against api-delivery-sse — see bead description.
-  def assert_terminal_status_behavior(status_code, port)
+  # qfg-goi1.10.26 (reverses qfg-i5xv): an auth-class stream response
+  # (401/403/404/410) keeps the normal reconnect ladder. SSE alone never stops
+  # and never enters auth-failed; the client's fallback poller decides from a
+  # whole fetch cycle (rule R2). on_error fires once per attempt so the client
+  # schedules that poller as for any drop. Logging (R5): one WARN per status,
+  # re-armed only by a 200, DEBUG otherwise, never an ERROR.
+  def assert_auth_status_keeps_retrying(status_code, port)
     TerminalStatusEndpoint.status_code = status_code
     TerminalStatusEndpoint.hits = 0
 
     server, = start_webrick_server(port, TerminalStatusEndpoint)
-    errors = []
+    errors = Concurrent::Array.new
     client = nil
 
     begin
@@ -242,49 +241,51 @@ class TestSSEConfigClient < Minitest::Test
 
       prefab_options = OpenStruct.new(sse_api_urls: ["http://localhost:#{port}"], sdk_key: 'k')
       config_loader = OpenStruct.new(highwater_mark: 0)
-      sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
+      sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05,
+                                                          sse_max_reconnect_delay: 0.1)
       client = Quonfig::SSEConfigClient.new(
         prefab_options, config_loader, sse_options, nil,
         on_error: ->(e) { errors << e }
       )
 
       client.start { |_e, _ev, _s| }
-
-      # Give the loop more than enough time to retry many times if it
-      # was going to. With 0.05s initial reconnect delay and ~5s wall
-      # clock, a non-terminal classification would produce dozens of hits.
-      sleep 1.0
-      wait_for(-> { !client.instance_variable_get(:@worker).alive? }, max_wait: 3)
+      wait_for(-> { TerminalStatusEndpoint.hits >= 3 }, max_wait: 5)
+      assert client.alive?, "the stream worker keeps running on HTTP #{status_code}"
     ensure
       client&.close
       server.stop
     end
 
-    worker = client.instance_variable_get(:@worker)
-    refute worker&.alive?, "worker thread must exit cleanly on terminal HTTP #{status_code}"
-    assert_equal 1, TerminalStatusEndpoint.hits,
-                 "terminal HTTP #{status_code} must produce exactly one connect attempt (got #{TerminalStatusEndpoint.hits})"
-    assert_equal 0, client.restart_total,
-                 "terminal HTTP #{status_code} must NOT bump restart_total (got #{client.restart_total})"
-    assert_equal 1, errors.size,
-                 "on_error must fire exactly once for terminal HTTP #{status_code} (got #{errors.size})"
-    assert errors.first.is_a?(Quonfig::SSEConfigClient::SSEHTTPTerminalError),
-           "expected SSEHTTPTerminalError, got #{errors.first.class}"
+    assert_operator TerminalStatusEndpoint.hits, :>=, 3,
+                    "HTTP #{status_code} must stay on the reconnect ladder (got #{TerminalStatusEndpoint.hits} hits)"
+    assert_operator client.restart_total, :>=, 2
+    assert_operator errors.size, :>=, 2
+    assert(errors.all?(Quonfig::SSEConfigClient::SSEHTTPAuthError),
+           "expected SSEHTTPAuthError, got #{errors.map(&:class).uniq.inspect}")
     assert_equal status_code, errors.first.status_code
 
-    assert_logged([/SSE.*Terminal.*HTTP #{status_code}/])
+    lines = $logs.string.split("\n")
+    warns = lines.grep(/ W \[/).grep(/SSE.*HTTP #{status_code}/)
+    errs = lines.grep(/ E \[/)
+    assert_equal 1, warns.size, "exactly one WARN for a run of HTTP #{status_code}: #{lines}"
+    assert_empty errs, "no ERROR for an auth-class stream status: #{errs}"
+    $logs = nil
   end
 
-  def test_terminal_classification_401_unauthorized
-    assert_terminal_status_behavior(401, 4574)
+  def test_auth_class_401_keeps_retrying_and_warns_once
+    assert_auth_status_keeps_retrying(401, 4574)
   end
 
-  def test_terminal_classification_403_forbidden
-    assert_terminal_status_behavior(403, 4575)
+  def test_auth_class_403_keeps_retrying_and_warns_once
+    assert_auth_status_keeps_retrying(403, 4575)
   end
 
-  def test_terminal_classification_404_not_found
-    assert_terminal_status_behavior(404, 4576)
+  def test_auth_class_404_keeps_retrying_and_warns_once
+    assert_auth_status_keeps_retrying(404, 4576)
+  end
+
+  def test_auth_class_410_keeps_retrying_and_warns_once
+    assert_auth_status_keeps_retrying(410, 4579)
   end
 
   # qfg-i5xv: a 503 (or any 5xx) is transient — the SDK must keep retrying,
@@ -318,17 +319,15 @@ class TestSSEConfigClient < Minitest::Test
     refute worker&.alive?, 'worker should be stopped after client.close'
     assert client.restart_total >= 2,
            "transient 500 must keep retrying (restart_total=#{client.restart_total})"
-    refute errors.any?(Quonfig::SSEConfigClient::SSEHTTPTerminalError),
-           "transient 500 must NOT produce SSEHTTPTerminalError, got #{errors.map(&:class).uniq.inspect}"
+    refute errors.any?(Quonfig::SSEConfigClient::SSEHTTPAuthError),
+           "transient 500 must NOT produce SSEHTTPAuthError, got #{errors.map(&:class).uniq.inspect}"
 
     assert_logged([/SSE Streaming Error.*HTTP 500/])
   end
 
-  # qfg-i5xv: a healthy session followed by a 401 on reconnect must still
-  # deliver the healthy events normally, then stop cleanly when the terminal
-  # classification fires. Regression guard against a fix that short-circuits
-  # too early (e.g. checking the code before the read_body loop runs).
-  def test_terminal_classification_after_healthy_session
+  # qfg-goi1.10.26: a healthy session followed by 401s on reconnect delivers
+  # the healthy events, then keeps reconnecting (no latch).
+  def test_auth_class_after_healthy_session_keeps_reconnecting
     HealthyThenTerminalEndpoint.counter = 0
     HealthyThenTerminalEndpoint.healthy_hits = 0
     HealthyThenTerminalEndpoint.terminal_hits = 0
@@ -336,8 +335,8 @@ class TestSSEConfigClient < Minitest::Test
     HealthyThenTerminalEndpoint.terminal_status = 401
 
     server, = start_webrick_server(4578, HealthyThenTerminalEndpoint)
-    errors = []
-    seen = []
+    errors = Concurrent::Array.new
+    seen = Concurrent::Array.new
     client = nil
 
     begin
@@ -345,28 +344,29 @@ class TestSSEConfigClient < Minitest::Test
 
       prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4578'], sdk_key: 'k')
       config_loader = OpenStruct.new(highwater_mark: 0)
-      sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
+      sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05,
+                                                          sse_max_reconnect_delay: 0.1)
       client = Quonfig::SSEConfigClient.new(
         prefab_options, config_loader, sse_options, nil,
         on_error: ->(e) { errors << e }
       )
 
       client.start { |_envelope, event, _source| seen << event.id }
-      wait_for(-> { !client.instance_variable_get(:@worker).alive? }, max_wait: 5)
+      wait_for(-> { HealthyThenTerminalEndpoint.terminal_hits >= 2 }, max_wait: 5)
+      assert client.alive?, 'the stream worker keeps running after a 401'
     ensure
       client&.close
       server.stop
     end
 
     assert_equal 5, seen.size,
-                 "5 healthy events must be delivered before terminal classification fires (got #{seen.size})"
-    assert_equal 1, HealthyThenTerminalEndpoint.terminal_hits,
-                 "exactly one terminal hit (got #{HealthyThenTerminalEndpoint.terminal_hits})"
-    terminal_err = errors.find { |e| e.is_a?(Quonfig::SSEConfigClient::SSEHTTPTerminalError) }
-    refute_nil terminal_err, "expected terminal error, got #{errors.map(&:class).inspect}"
-    assert_equal 401, terminal_err.status_code
+                 "5 healthy events must be delivered before the 401s (got #{seen.size})"
+    assert_operator HealthyThenTerminalEndpoint.terminal_hits, :>=, 2
+    auth_err = errors.find { |e| e.is_a?(Quonfig::SSEConfigClient::SSEHTTPAuthError) }
+    refute_nil auth_err, "expected an auth-class error, got #{errors.map(&:class).inspect}"
+    assert_equal 401, auth_err.status_code
 
-    assert_logged([/SSE.*Terminal.*HTTP 401/])
+    assert_logged([/SSE Streaming Error: HTTP 401.*invalid or revoked/])
   end
 
   # qfg-41nh.6 (f05 invariant): SSE never fails over — failover is HTTP-poll

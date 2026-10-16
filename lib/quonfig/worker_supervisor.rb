@@ -95,6 +95,11 @@ module Quonfig
         t
       end
       return if thread.nil?
+      # Called from the worker itself (the poller leaving auth-failed hands
+      # back to SSE, qfg-goi1.10.26): the flag is enough. The worker returns,
+      # run_loop sees stop? and exits without a restart. Raising into or
+      # joining the current thread would kill it mid-handoff.
+      return if thread == Thread.current
 
       raise_shutdown(thread)
       thread.join(SHUTDOWN_TIMEOUT_SEC)
