@@ -144,3 +144,28 @@ jobs:
             sdk-ruby/chaos-*.log
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Post result to Slack
+        # Scheduled (weekly full) and hand-dispatched runs report every result
+        # to #incoming-webhook via the org secret SLACK_CI_WEBHOOK. PR and push
+        # runs never post, and neither does a release workflow calling this one
+        # via workflow_call (github.workflow is then the caller's name).
+        if: always() && github.workflow == 'Chaos' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_CI_WEBHOOK }}
+          STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SUITE: chaos (${{ github.event_name == 'schedule' && 'full' || inputs.mode || 'smoke' }})
+        run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "::error::SLACK_CI_WEBHOOK is not available to this run"
+            exit 1
+          fi
+          case "$STATUS" in
+            success) icon=":white_check_mark:" ;;
+            cancelled) icon=":heavy_minus_sign:" ;;
+            *) icon=":rotating_light:" ;;
+          esac
+          text="${icon} *${GITHUB_REPOSITORY}* ${SUITE} (${GITHUB_EVENT_NAME}): *${STATUS}* <${RUN_URL}|view run>"
+          jq -n --arg text "$text" '{text: $text}' |
+            curl -sSf -X POST -H 'Content-type: application/json' --data @- "$SLACK_WEBHOOK"

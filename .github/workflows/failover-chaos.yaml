@@ -122,3 +122,27 @@ jobs:
             sdk-ruby/chaos-*.log
           if-no-files-found: ignore
           retention-days: 7
+
+      - name: Post failure to Slack
+        # The nightly scheduled run posts to #incoming-webhook (org secret
+        # SLACK_CI_WEBHOOK) only when it is not green; a hand-dispatched run
+        # always posts. PR, push and workflow_call runs never post.
+        if: always() && github.workflow == 'Failover Chaos' && ((github.event_name == 'schedule' && job.status != 'success') || github.event_name == 'workflow_dispatch')
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_CI_WEBHOOK }}
+          STATUS: ${{ job.status }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SUITE: failover + ordering chaos
+        run: |
+          if [ -z "$SLACK_WEBHOOK" ]; then
+            echo "::error::SLACK_CI_WEBHOOK is not available to this run"
+            exit 1
+          fi
+          case "$STATUS" in
+            success) icon=":white_check_mark:" ;;
+            cancelled) icon=":heavy_minus_sign:" ;;
+            *) icon=":rotating_light:" ;;
+          esac
+          text="${icon} *${GITHUB_REPOSITORY}* ${SUITE} (${GITHUB_EVENT_NAME}): *${STATUS}* <${RUN_URL}|view run>"
+          jq -n --arg text "$text" '{text: $text}' |
+            curl -sSf -X POST -H 'Content-type: application/json' --data @- "$SLACK_WEBHOOK"
