@@ -309,14 +309,17 @@ class TestSSEConfigClient < Minitest::Test
       )
 
       client.start { |_e, _ev, _s| }
+      # Capture the thread before close: close sets @worker to nil, so
+      # reading it afterwards would make the liveness check vacuous.
+      worker = client.instance_variable_get(:@worker)
       wait_for -> { client.restart_total >= 2 }
     ensure
       client&.close
       server.stop
     end
 
-    worker = client.instance_variable_get(:@worker)
-    refute worker&.alive?, 'worker should be stopped after client.close'
+    refute_nil worker, 'worker thread should have been started'
+    refute worker.alive?, 'worker should be stopped after client.close'
     assert client.restart_total >= 2,
            "transient 500 must keep retrying (restart_total=#{client.restart_total})"
     refute errors.any?(Quonfig::SSEConfigClient::SSEHTTPAuthError),
