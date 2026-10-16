@@ -6,7 +6,9 @@ name: Chaos
 #
 # Two modes:
 #   - smoke   : skips 11-null-hypothesis (the 30-minute idle scenario);
-#               runs on every push to main + every PR (~6 min wall clock).
+#               runs on every push to main (~16 min wall clock). Not run
+#               on PRs: too slow to gate every PR, so failover-chaos.yaml
+#               (~2 min) is the PR-time chaos gate.
 #   - full    : every scenario; runs weekly (Mon 09:00 UTC), on workflow_dispatch (~48 min).
 #
 # NOTE: release.yml in this repo is intentionally not modified here.
@@ -23,7 +25,6 @@ on:
     # Weekly full suite (incl. 11-null-hypothesis) so the 30-minute
     # scenario runs even in weeks without a release.
     - cron: "0 9 * * 1"
-  pull_request:
   workflow_call:
     inputs:
       mode:
