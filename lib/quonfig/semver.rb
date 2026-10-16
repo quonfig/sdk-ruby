@@ -18,6 +18,11 @@ class SemanticVersion
     $
   /x
 
+  # Abbreviated "x" and "x.y" (qfg-goi1.5 Q5), read as x.0.0 and x.y.0 by
+  # the PROP_SEMVER_* operators, matching LaunchDarkly. A prerelease or build
+  # suffix needs the full x.y.z.
+  ABBREVIATED_PATTERN = /\A(?<major>0|[1-9]\d*)(?:\.(?<minor>0|[1-9]\d*))?\z/
+
   attr_reader :major, :minor, :patch, :prerelease, :build_metadata
 
   def self.parse(version_string)
@@ -36,7 +41,12 @@ class SemanticVersion
     )
   end
 
-  def self.parse_quietly(version_string)
+  def self.parse_quietly(version_string, allow_abbreviated: false)
+    if allow_abbreviated && version_string.is_a?(String)
+      match = ABBREVIATED_PATTERN.match(version_string)
+      return new(major: match[:major].to_i, minor: match[:minor].to_i, patch: 0) if match
+    end
+
     parse(version_string)
   rescue ArgumentError
     nil
