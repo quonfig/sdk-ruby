@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **UPGRADE: SSE reports `connected` at the first frame, not at the 200 response (qfg-goi1.10.9).** A stream connection now counts as connected, for `connection_state`, the reconnect backoff and the fallback poller, only after it delivers its first valid frame: a config envelope or a keepalive. Before, it counted as soon as the 200 response headers arrived.
+  - Against Quonfig's servers the headers and the first frame arrive together, so you should see no difference.
+  - `connection_state` now reports `:disconnected` (then `:falling_back`) when the stream ends before any frame, where it used to keep reporting `:connected` on stale config; a keepalive now counts as a live stream, so a quiet workspace no longer starts fallback polling while its stream is healthy.
+  - A connection that closes before any frame is now a failed attempt. The reconnect delay grows, the client reports disconnected, and the fallback poller takes over after its usual threshold.
+
+  Before this change, a server that answered 200 and closed at once left the SDK on stale config indefinitely while `connection_state` reported `:connected`.
+- **Changed (minor): the first-frame rule in the SSE worker (qfg-goi1.10.43).** A keepalive (a comment-only block such as `: keepalive`) now resets the reconnect backoff to its initial delay and cancels the fallback poller's engage timer (or stops an engaged poller), like an envelope; it does not advance `last_successful_refresh`. A 200 stream that ends before its first frame now calls the internal `on_error` path (logged at WARN), so the poller engages at once if SSE never connected, or after 2x the poll interval following a mid-life drop. `connection_state` still stays `:connected` across a clean reconnect after a session that delivered a frame, but only until that next connection either delivers its own first frame or ends without one. Contract: integration-test-data `v2026.10.16.4`, supervisor contract Test 9 (a)-(d) and the Test 2 reset amendment, in `test/test_sse_first_frame.rb`.
+- **Tests: unit and release tests now run integration-test-data `v2026.10.16.4`.** It also moves the two `get_or_raise` init-timeout cases to `http://192.0.2.1:1` (qfg-goi1.6). The chaos workflows stay on `v2026.10.16.2`.
+
 ## 1.8.0 - 2026-10-16
 
 - **UPGRADE: retry cadence and log levels change after a rejected 401/403/404/410 fetch cycle; a revoked key logs one config ERROR. `terminal_failure?` changes meaning. Minor (1.8.0): one auth-failure rule across the SDKs (qfg-goi1.10.26). This reverses the qfg-i5xv latch.**

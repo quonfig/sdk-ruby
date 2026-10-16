@@ -29,7 +29,7 @@ class TestGetOrRaise < Minitest::Test
   def test_get_or_raise_raises_the_correct_error_if_it_doesn_t_raise_on_init_timeout
     client = nil
     assert_raises(Quonfig::Errors::MissingDefaultError) do
-      client = IntegrationTestHelpers.build_network_client(api_url: 'https://app.staging-prefab.cloud', timeout_sec: 0.01, on_init_failure: :return)
+      client = IntegrationTestHelpers.build_network_client(api_url: 'http://192.0.2.1:1', timeout_sec: 0.01, on_init_failure: :return)
       client.get_or_raise('any-key')
     end
     $logs = nil
@@ -41,7 +41,7 @@ class TestGetOrRaise < Minitest::Test
   def test_get_or_raise_can_raise_an_error_if_the_client_does_not_initialize_in_time
     client = nil
     assert_raises(Quonfig::Errors::InitializationTimeoutError) do
-      client = IntegrationTestHelpers.build_network_client(api_url: 'https://app.staging-prefab.cloud', timeout_sec: 0.01, on_init_failure: :raise)
+      client = IntegrationTestHelpers.build_network_client(api_url: 'http://192.0.2.1:1', timeout_sec: 0.01, on_init_failure: :raise)
       client.get_or_raise('any-key')
     end
     $logs = nil
