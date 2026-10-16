@@ -6,8 +6,8 @@ name: Chaos
 #
 # Two modes:
 #   - smoke   : skips 11-null-hypothesis (the 30-minute idle scenario);
-#               runs on every push to main + every PR (~18 min wall clock).
-#   - full    : every scenario; runs on workflow_dispatch (~48 min).
+#               runs on every push to main + every PR (~6 min wall clock).
+#   - full    : every scenario; runs weekly (Mon 09:00 UTC), on workflow_dispatch (~48 min).
 #
 # NOTE: release.yml in this repo is intentionally not modified here.
 # A separate PR is fixing the release-gate problem in sdk-ruby's
@@ -19,6 +19,10 @@ name: Chaos
 on:
   push:
     branches: [main]
+  schedule:
+    # Weekly full suite (incl. 11-null-hypothesis) so the 30-minute
+    # scenario runs even in weeks without a release.
+    - cron: "0 9 * * 1"
   pull_request:
   workflow_call:
     inputs:
@@ -38,17 +42,19 @@ on:
 
 jobs:
   chaos:
-    name: Chaos (${{ inputs.mode || 'smoke' }})
-    # The "Checkout api-delivery" step needs secrets.QUONFIG_REPO_TOKEN to
-    # read the private api-delivery repo. GitHub does NOT expose Actions
-    # secrets to pull_request runs triggered by Dependabot, so the token
-    # input resolves to an empty string and checkout fails fast with
-    # "Input required and not supplied: token". Skip the job on Dependabot
-    # PRs — it is a release gate and still runs in full on every push to
-    # main after merge, and a human rebase/re-run gets the secret normally.
-    if: github.actor != 'dependabot[bot]'
+    name: Chaos (${{ github.event_name == 'schedule' && 'full' || inputs.mode || 'smoke' }})
     runs-on: ubuntu-latest
     timeout-minutes: 75
+    # The `secrets` context cannot be referenced in step `if:`
+    # conditions, so surface the token's presence as a job-level env
+    # var. Dependabot-triggered runs have no access to repo Actions
+    # secrets, so HAS_REPO_TOKEN is 'false' for them and the chaos
+    # harness steps below are skipped rather than hard failing. The job
+    # itself still runs, so its name renders to `Chaos (smoke)` and the
+    # required check is satisfied (a job-level `if:` skip reports the
+    # raw, unrendered name and blocks the PR forever).
+    env:
+      HAS_REPO_TOKEN: ${{ secrets.QUONFIG_REPO_TOKEN != '' }}
     steps:
       - name: Checkout sdk-ruby
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -67,6 +73,7 @@ jobs:
           ref: v2026.10.16.2
 
       - name: Checkout api-delivery
+        if: env.HAS_REPO_TOKEN == 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           # api-delivery is private; the default GITHUB_TOKEN cannot
@@ -84,17 +91,20 @@ jobs:
       # runs exist to catch api-delivery drift. Record the resolved SHA in the
       # run summary so a red run is reproducible.
       - name: Record api-delivery SHA
+        if: env.HAS_REPO_TOKEN == 'true'
         run: |
           sha="$(git -C api-delivery rev-parse HEAD)"
           echo "api-delivery @ main resolved to ${sha}"
           echo "api-delivery: \`main\` @ \`${sha}\`" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        if: env.HAS_REPO_TOKEN == 'true'
         with:
           go-version: '1.26'
           cache-dependency-path: api-delivery/go.sum
 
       - name: Set up Ruby
+        if: env.HAS_REPO_TOKEN == 'true'
         uses: ruby/setup-ruby@afeafc3d1ab54a631816aba4c914a0081c12ff2f  # v1.310.0
         with:
           ruby-version: '3.3'
@@ -102,9 +112,18 @@ jobs:
           working-directory: sdk-ruby
 
       - name: Verify docker compose available
+        if: env.HAS_REPO_TOKEN == 'true'
         run: docker compose version
 
+      - name: Skipped (no api-delivery access token)
+        if: env.HAS_REPO_TOKEN != 'true'
+        run: |
+          echo "QUONFIG_REPO_TOKEN is not available to this run" \
+               "(expected for Dependabot PRs)." \
+               "Skipping the chaos harness; Test jobs still gate this PR."
+
       - name: Run chaos harness
+        if: env.HAS_REPO_TOKEN == 'true'
         working-directory: sdk-ruby
         env:
           # Smoke skips 11-null-hypothesis (30 min idle). Full suite
@@ -112,7 +131,7 @@ jobs:
           # matching no scenario number; the earlier `&& '' ||` form
           # collapsed to '11' even on mode=full because '' is falsy in
           # GitHub expressions (qfg-hvlc). The wrapper honors CHAOS_SKIP.
-          CHAOS_SKIP: ${{ inputs.mode == 'full' && 'none' || '11' }}
+          CHAOS_SKIP: ${{ (github.event_name == 'schedule' || inputs.mode == 'full') && 'none' || '11' }}
         run: ./scripts/run-chaos.sh
 
       - name: Upload chaos logs on failure
