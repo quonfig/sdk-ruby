@@ -50,9 +50,11 @@ module Quonfig
         end
       end
 
+      version = "datadir:#{datadir}"
+      # Skip one malformed config file, keep the rest (qfg-krjt).
       Quonfig::ConfigEnvelope.new(
-        configs: configs,
-        meta: { 'version' => "datadir:#{datadir}", 'environment' => env_id }
+        configs: Quonfig::ConfigShape.filter(configs, version: version),
+        meta: { 'version' => version, 'environment' => env_id }
       )
     end
 

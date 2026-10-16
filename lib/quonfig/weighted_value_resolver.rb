@@ -43,7 +43,9 @@ module Quonfig
     private
 
     def weight_of(variant)
-      variant[:weight] || variant['weight']
+      # A missing weight counts as 0 (qfg-krjt); a present one is checked to
+      # be an Integer at decode (ConfigShape).
+      variant[:weight] || variant['weight'] || 0
     end
   end
 end
