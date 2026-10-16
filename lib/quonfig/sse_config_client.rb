@@ -361,7 +361,12 @@ module Quonfig
           Thread.handle_interrupt(SSEReadDeadlineExceeded => :immediate) do
             resp.read_body do |chunk|
               watchdog.reset!
-              break if @stopped.value
+              # Never +break+ here (qfg-yrly): a break returns into
+              # Net::HTTPResponse#reading_body, which then calls +body+ to
+              # drain the rest of the response with no block. On an endless
+              # SSE stream that blocks the worker forever. Raising skips the
+              # drain, and Net::HTTP closes the socket on the way out.
+              raise SSEStopRequested if @stopped.value
 
               parser.feed(chunk, on_frame: on_frame, &block)
             end
@@ -372,6 +377,8 @@ module Quonfig
           # next iteration.
           @logger.debug "SSE stream ended for url #{url}"
         end
+        url
+      rescue SSEStopRequested
         url
       ensure
         watchdog.stop
@@ -538,6 +545,12 @@ module Quonfig
     # read deadline elapses. Caught by run_loop's rescue, indistinguishable
     # from any other transport error for backoff/restart purposes.
     class SSEReadDeadlineExceeded < StandardError; end
+
+    # Private: raised from inside +read_body+ when +close+ has been called,
+    # so the worker leaves the stream without Net::HTTP draining the body
+    # (qfg-yrly). Rescued in +stream_once+; never reaches callers.
+    class SSEStopRequested < StandardError; end
+    private_constant :SSEStopRequested
 
     # Background watchdog that interrupts the worker thread if no chunk
     # arrives within +deadline_s+ seconds. Uses Thread#raise — the only
