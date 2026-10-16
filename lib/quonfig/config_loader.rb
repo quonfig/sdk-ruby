@@ -565,18 +565,20 @@ module Quonfig
         # (Thread#raise, Timeout) then leaves the held generation where it
         # was, so the same-generation redelivery that follows installs again
         # and repairs the store instead of being ignored as a duplicate.
+        #
+        # The new config set is built off to the side and swapped in with one
+        # reference write (qfg-i86q), so a concurrent lookup never sees a flag
+        # from this envelope with a segment from the last one, or a key that
+        # is momentarily absent.
         unless @store.nil?
-          new_keys = next_map.keys.to_set
-          old_keys = @store.keys.to_set
-          # Drop keys that disappeared server-side.
-          (old_keys - new_keys).each { |k| @store.delete(k) } if @store.respond_to?(:delete)
-
+          next_configs = {}
           envelope.configs.each do |cfg|
             key = config_key(cfg)
             next if key.nil?
 
-            @store.set(key, cfg)
+            next_configs[key] = cfg
           end
+          @store.replace_all(next_configs)
         end
 
         # qfg-9dxb.3 Fix A: an unversioned install (generation <= 0) carries no

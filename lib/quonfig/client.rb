@@ -1277,10 +1277,8 @@ module Quonfig
     # propagates through the auto-reload path. Records a refresh timestamp.
     # Caller is responsible for firing on_update.
     def apply_datadir_envelope(envelope)
-      new_keys = envelope.configs.map { |cfg| cfg['key'] }.compact.to_set
-      old_keys = @store.keys.to_set
-      (old_keys - new_keys).each { |k| @store.delete(k) }
-      envelope.configs.each { |cfg| @store.set(cfg['key'], cfg) }
+      # One atomic swap, like a network install (qfg-i86q).
+      @store.replace_all(envelope.configs.to_h { |cfg| [cfg['key'], cfg] })
       # qfg-pinh: evaluate against the installed envelope's meta.environment,
       # matching sdk-go. In datadir mode the loader stamps meta.environment =
       # the resolved env (the `environment:` pin or QUONFIG_ENVIRONMENT), so

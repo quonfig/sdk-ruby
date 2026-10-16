@@ -47,7 +47,33 @@ module Quonfig
     # the legacy "return nil if absent" shape can rescue and recover (see
     # IntegrationTestHelpers.assert_resolved, which folds a missing-key
     # raise into the test's expected default).
+    # The whole lookup reads one store snapshot (qfg-i86q): the flag, the
+    # segments it references and any decryptWith key all come from the same
+    # envelope even if an install lands mid-evaluation.
     def get(key, context = nil)
+      return get_unpinned(key, context) unless @store.respond_to?(:pinned)
+
+      @store.pinned { get_unpinned(key, context) }
+    end
+
+    # Post-evaluation value resolution. Mirrors sdk-node Resolver#resolveValue
+    # and sdk-go resolver.Resolve:
+    # - "provided" + ENV_VAR  → read ENV[lookup], coerce to config's valueType
+    # - confidential + decryptWith → look up the key config, decrypt
+    # - everything else passes through unchanged
+    def resolve_value(value, config, context = nil, &on_weighted_index)
+      resolve_value_on_path(value, config, context, [], &on_weighted_index)
+    end
+
+    # Integration shims for code that expects a ConfigResolver. Keep these
+    # narrow; the real ConfigResolver still owns the production hot path.
+    def symbolize_json_names?
+      false
+    end
+
+    private
+
+    def get_unpinned(key, context)
       config = raw(key)
       raise Quonfig::Errors::MissingDefaultError, key if config.nil?
 
@@ -74,23 +100,6 @@ module Quonfig
         hash_property_missing: !hash_missing.empty?
       )
     end
-
-    # Post-evaluation value resolution. Mirrors sdk-node Resolver#resolveValue
-    # and sdk-go resolver.Resolve:
-    # - "provided" + ENV_VAR  → read ENV[lookup], coerce to config's valueType
-    # - confidential + decryptWith → look up the key config, decrypt
-    # - everything else passes through unchanged
-    def resolve_value(value, config, context = nil, &on_weighted_index)
-      resolve_value_on_path(value, config, context, [], &on_weighted_index)
-    end
-
-    # Integration shims for code that expects a ConfigResolver. Keep these
-    # narrow; the real ConfigResolver still owns the production hot path.
-    def symbolize_json_names?
-      false
-    end
-
-    private
 
     # resolve_value plus +key_path+: the config keys already being resolved
     # above this one through decryptWith, so a decryptWith cycle raises a
