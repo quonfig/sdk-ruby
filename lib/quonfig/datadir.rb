@@ -59,9 +59,7 @@ module Quonfig
     # Convenience: load the envelope and populate a fresh ConfigStore.
     def load_store(datadir, environment = nil)
       envelope = load_envelope(datadir, environment)
-      store = Quonfig::ConfigStore.new
-      envelope.configs.each { |cfg| store.set(cfg['key'], cfg) }
-      store
+      Quonfig::ConfigStore.new(envelope.configs.to_h { |cfg| [cfg['key'], cfg] })
     end
 
     def resolve_environment(quonfig_path, environment)

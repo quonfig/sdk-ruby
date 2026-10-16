@@ -8,18 +8,20 @@ require 'test_helper'
 # the same-generation redelivery that follows (SSE re-sends the current
 # envelope on every connect) was ignored and the store was never repaired.
 class TestConfigLoaderTornInstall < Minitest::Test
-  # A store whose N-th #set raises, standing in for an async interrupt that
-  # lands mid-write.
+  # A store whose N-th #replace_all raises, standing in for an async
+  # interrupt that lands during the store write. Since qfg-i86q the write is
+  # one atomic swap, so the interrupt leaves the store on the old set (never
+  # a torn mix); the generation must still not advance.
   class InterruptingStore < Quonfig::ConfigStore
-    def initialize(raise_on_set:)
+    def initialize(raise_on_replace:)
       super()
-      @raise_on_set = raise_on_set
-      @sets = 0
+      @raise_on_replace = raise_on_replace
+      @replaces = 0
     end
 
-    def set(key, value)
-      @sets += 1
-      raise Interrupt, 'simulated interrupt mid-install' if @sets == @raise_on_set
+    def replace_all(configs)
+      @replaces += 1
+      raise Interrupt, 'simulated interrupt mid-install' if @replaces == @raise_on_replace
 
       super
     end
@@ -37,17 +39,17 @@ class TestConfigLoaderTornInstall < Minitest::Test
   end
 
   def test_same_generation_redelivery_repairs_a_store_torn_by_an_interrupt
-    store = InterruptingStore.new(raise_on_set: 2)
+    store = InterruptingStore.new(raise_on_replace: 1)
     options = Quonfig::Options.new(sdk_key: '1-test-sdk-key', api_urls: ['http://127.0.0.1:1'],
                                    enable_sse: false, fallback_poll_enabled: false)
     loader = Quonfig::ConfigLoader.new(store, options)
 
     assert_raises(Interrupt) { loader.apply_envelope(envelope(5)) }
-    assert_nil store.get('torn.c'), 'precondition: the interrupted install left the store torn'
+    assert_empty store.keys, 'precondition: the interrupted install left the store on the old (empty) set'
 
     loader.apply_envelope(envelope(5))
 
     assert_equal %w[torn.a torn.b torn.c], store.keys.sort,
-                 'same-generation redelivery must repair the torn store'
+                 'same-generation redelivery must install after an interrupted write'
   end
 end
