@@ -529,9 +529,12 @@ class TestSSEConfigClient < Minitest::Test
 
       private
 
-      def stream_once
+      # Fakes the real contract: the first valid frame raises on_frame before
+      # its envelope is yielded (qfg-goi1.10.43).
+      def stream_once(on_frame = nil)
         @stream_calls += 1
         envelope = Quonfig::ConfigEnvelope.new(configs: [], meta: {})
+        on_frame&.call
         yield Quonfig::StreamEvent.new(envelope, @stream_calls.to_s, '{}')
         # Simulate clean FIN — return immediately, no blocking IO so the
         # only blocking call in run_loop is the inter-iteration sleep.
@@ -590,10 +593,11 @@ class TestSSEConfigClient < Minitest::Test
 
     private
 
-    def stream_once
+    def stream_once(on_frame = nil)
       @stream_calls += 1
       @event_count.times do |i|
         envelope = Quonfig::ConfigEnvelope.new(configs: [], meta: {})
+        on_frame&.call
         yield Quonfig::StreamEvent.new(envelope, (i + 1).to_s, '{}')
       end
       # Long sleep so the test can assert without racing the reconnect loop.

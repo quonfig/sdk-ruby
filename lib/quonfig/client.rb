@@ -1090,6 +1090,10 @@ module Quonfig
       @sse_error_callback ||= ->(error) { handle_sse_error(error) }
     end
 
+    def sse_connected_callback
+      @sse_connected_callback ||= -> { handle_sse_state_change(:connected) unless @stopped }
+    end
+
     # Every SSE error, auth-class included, is an ordinary drop: SSE alone
     # never enters auth-failed (rule R2, qfg-goi1.10.26; this reverses the
     # qfg-i5xv latch). The fallback poller engages on its usual schedule and
@@ -1494,7 +1498,12 @@ module Quonfig
         @config_loader,
         nil,
         nil,
-        on_error: sse_error_callback
+        on_error: sse_error_callback,
+        # First-frame rule (qfg-goi1.10.43): connected at the connection's
+        # first valid frame, keepalive included, never on the 200 headers.
+        # Cancels the engage timer / disengages the poller without stamping
+        # last_successful_refresh (only an install or fetch does that).
+        on_connected: sse_connected_callback
       )
       @sse_client.start do |envelope, _event, _source|
         next if @stopped

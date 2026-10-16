@@ -34,10 +34,12 @@ module Quonfig
       #
       # sse_initial_reconnect_delay / sse_max_reconnect_delay: backoff bounds.
       # Each failed reconnect doubles the delay (with +/-50% jitter) up to the
-      # max. A successful event delivery resets the delay to the initial
-      # value — matches sdk-python's policy. A clean server-initiated FIN is
-      # treated as "not a failure for backoff purposes" because LBs recycling
-      # connections is normal; the reconnect counter still increments.
+      # max. A connection that delivers its first valid frame (a config
+      # envelope or a keepalive) resets the delay to the initial value. A
+      # clean server-initiated FIN after such a frame is "not a failure for
+      # backoff purposes" because LBs recycling connections is normal; the
+      # reconnect counter still increments. A connection that ends before any
+      # frame is a failed attempt (qfg-goi1.10.43).
       def initialize(sse_read_timeout: 90,
                      sse_connect_timeout: 10,
                      sse_initial_reconnect_delay: 1.0,
@@ -76,13 +78,22 @@ module Quonfig
 
     # +on_error+: optional callable invoked on every SSE error edge. Parent
     # Quonfig::Client wires this to drive @sse_state -> :error so that
-    # +connection_state+ reflects the disconnect (qfg-47c2.27).
-    def initialize(prefab_options, config_loader, options = nil, logger = nil, on_error: nil)
+    # +connection_state+ reflects the disconnect (qfg-47c2.27). A connection
+    # that ends before its first valid frame, clean EOF included, is an error
+    # edge too (qfg-goi1.10.43).
+    #
+    # +on_connected+: optional callable invoked once per connection, at its
+    # first valid frame (a keepalive, or a data block that validates as a
+    # config envelope), before that frame's envelope reaches +on_envelope+.
+    # Never on the 200 headers alone (supervisor-test-contract.md "Rule — a
+    # connection is `connected` at its first valid frame").
+    def initialize(prefab_options, config_loader, options = nil, logger = nil, on_error: nil, on_connected: nil)
       @prefab_options = prefab_options
       @options = options || Options.new
       @config_loader = config_loader
       @logger = logger || LOG
       @on_error = on_error
+      @on_connected = on_connected
 
       @stopped = Concurrent::AtomicBoolean.new(false)
       @restart_total = 0
@@ -234,10 +245,18 @@ module Quonfig
             end
             first_attempt = false
 
-            connected_at_least_once = false
+            # First-frame rule (qfg-goi1.10.43): this connection counts as
+            # connected only at its first valid frame. Raised once, from the
+            # parser, before the frame's envelope is installed.
+            frame_seen = false
+            on_frame = lambda do
+              next if frame_seen
+
+              frame_seen = true
+              invoke_on_connected
+            end
             begin
-              stream_once do |event|
-                connected_at_least_once = true
+              ended_url = stream_once(on_frame) do |event|
                 # Persist the most recent id so the next reconnect resumes
                 # from there via Last-Event-Id. Updated *before* the user
                 # callback runs so a raising listener still advances the
@@ -248,22 +267,30 @@ module Quonfig
                 # listener must not look like a transport error and trigger
                 # a reconnect.
                 invoke_on_envelope_safely(on_envelope, event)
-                # A connection healthy enough to deliver a real envelope
-                # earns a reset of the backoff. Sustained outages never
-                # reach this branch (no event ever delivered) so the
-                # exponential growth still holds.
-                delay = @options.sse_initial_reconnect_delay
               end
+              # A clean EOF before any frame (200 headers then close) is a
+              # failed attempt, exactly like a connect error: report it so
+              # the client leaves :connected and arms the fallback poller.
+              # This is what bounds ruby's transparent reconnect: connected
+              # survives a clean-EOF reconnect only until the next connection
+              # ends frameless.
+              handle_frameless_end(ended_url) unless frame_seen || @stopped.value
             rescue StandardError => e
               handle_error(e) unless @stopped.value
             end
 
-            # Backoff only grows on failed connect attempts. A server-
-            # initiated clean FIN after a healthy session (normal LB
-            # recycling) reuses the same delay — punishing it would make
-            # us look broken under benign rolling restarts. Matches
-            # sdk-go's `connectedOK` distinction.
-            delay = [delay * 2, @options.sse_max_reconnect_delay].min unless connected_at_least_once
+            # The backoff resets only for a connection that delivered a
+            # frame; it then reconnects at the initial delay even after a
+            # clean FIN (normal LB recycling) or an IO error later in the
+            # session. Every other attempt (connect error, non-200, or a
+            # frameless 200) doubles it. Sustained outages never deliver a
+            # frame, so the exponential growth still holds. Matches sdk-go's
+            # connectOnce "frame seen" result.
+            delay = if frame_seen
+                      @options.sse_initial_reconnect_delay
+                    else
+                      [delay * 2, @options.sse_max_reconnect_delay].min
+                    end
           rescue SSEReadDeadlineExceeded => e
             # Paranoid backstop (qfg-tj18). A watchdog raise that landed
             # outside +stream_once+ — typically in +interruptible_sleep+
@@ -279,7 +306,8 @@ module Quonfig
 
     # Opens one SSE request and yields each parsed event until the stream
     # ends (clean FIN, error, or stop). Raises on transport errors so the
-    # caller can apply backoff. Clean FIN returns without raising.
+    # caller can apply backoff. Clean FIN returns the URL without raising.
+    # +on_frame+ is called at every valid frame (see EventParser#feed).
     #
     # A watchdog thread closes the socket if no bytes arrive within
     # +sse_read_timeout+. Net::HTTP#read_timeout is NOT reliable for the
@@ -288,7 +316,7 @@ module Quonfig
     # against a configured deadline). sdk-go and sdk-node hit the same
     # gotcha and solve it the same way: per-chunk reset, async close on
     # expiry (chaos scenario 02 — sse_silent_stall).
-    def stream_once(&block)
+    def stream_once(on_frame = nil, &block)
       base = current_url
       # f05 latch: record if this connection attempt targets a non-primary
       # stream leg. With the pin in #current_url this is structurally false;
@@ -335,7 +363,7 @@ module Quonfig
               watchdog.reset!
               break if @stopped.value
 
-              parser.feed(chunk, &block)
+              parser.feed(chunk, on_frame: on_frame, &block)
             end
           end
           # read_body returned cleanly — either a server-initiated FIN, or
@@ -344,6 +372,7 @@ module Quonfig
           # next iteration.
           @logger.debug "SSE stream ended for url #{url}"
         end
+        url
       ensure
         watchdog.stop
         register_active(nil)
@@ -392,6 +421,25 @@ module Quonfig
 
     def increment_restart!
       @restart_mutex.synchronize { @restart_total += 1 }
+    end
+
+    # A connection that returned 200 and ended cleanly before its first valid
+    # frame (qfg-goi1.10.43).
+    def handle_frameless_end(url)
+      err = SSEFramelessSessionError.new
+      @logger.warn "SSE Streaming Error: stream for url #{url} ended before its first frame; " \
+                   'treating it as a failed attempt'
+      invoke_on_error(err)
+    end
+
+    def invoke_on_connected
+      return unless @on_connected
+
+      begin
+        @on_connected.call
+      rescue StandardError => e
+        @logger.error "SSE on_connected callback raised: #{e.inspect}"
+      end
     end
 
     def handle_error(error)
@@ -478,6 +526,14 @@ module Quonfig
     # no longer stops on these statuses.
     SSEHTTPTerminalError = SSEHTTPAuthError # rubocop:disable Lint/UselessConstantScoping
 
+    # Passed to on_error when a 200 stream ends cleanly before its first valid
+    # frame (qfg-goi1.10.43). Not raised.
+    class SSEFramelessSessionError < StandardError
+      def initialize(msg = 'SSE stream ended before its first frame')
+        super
+      end
+    end
+
     # Raised by the watchdog into the worker thread when the per-chunk
     # read deadline elapses. Caught by run_loop's rescue, indistinguishable
     # from any other transport error for backoff/restart purposes.
@@ -560,7 +616,7 @@ module Quonfig
     #   - chunks that split a line mid-way
     #   - any of CR / LF / CRLF as line terminators
     #   - +data:+, +data: + (optional space per SSE spec)
-    #   - +:comment+ lines (keepalives — ignored)
+    #   - +:comment+ lines (keepalives; a comment-only block is a frame)
     #   - multi-line +data:+ (concatenated with +\n+, per spec)
     # Ignores +event:+ and +retry:+ — api-delivery does not emit them and the
     # Quonfig wire contract does not honor reconnect-time directives.
@@ -573,16 +629,34 @@ module Quonfig
         @data = +''
         @have_data = false
         @id = nil
+        @saw_comment = false
+        @saw_field = false
       end
 
-      def feed(chunk)
+      # Yields each config envelope. +on_frame+ (optional) is called at every
+      # valid frame, before that frame's envelope is yielded. A valid frame is
+      # a block ended by a blank line that is either comment-only (the
+      # +: keepalive+ heartbeat; +:+ alone counts) or carries +data:+ that
+      # decodes and validates as a config envelope. A block cut off by EOF, a
+      # malformed or non-envelope data block, an +id:+-only block and a bare
+      # blank line are not frames (qfg-goi1.10.43).
+      def feed(chunk, on_frame: nil)
         @reader.feed(chunk) do |line|
           if line.empty?
+            comment_only = @saw_comment && !@saw_field
+            @saw_comment = false
+            @saw_field = false
             event = flush
-            yield event if event
+            if event
+              on_frame&.call
+              yield event
+            elsif comment_only
+              on_frame&.call
+            end
           elsif line.start_with?(':')
-            # comment / keepalive — ignore
+            @saw_comment = true
           else
+            @saw_field = true
             process_field(line)
           end
         end
