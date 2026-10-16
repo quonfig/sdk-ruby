@@ -10,6 +10,22 @@ require 'test_helper'
 require 'integration/test_helpers'
 
 class TestTelemetry < Minitest::Test
+  # Matches a telemetry selectedValue of exactly { 'string' => '*****<5 hex>' }:
+  # the redaction shape, without pinning the hash input (YAML
+  # `selected_value: { redacted: true }`).
+  class RedactedSelectedValueMatcher
+    PATTERN = /\A\*{5}[0-9a-f]{5}\z/
+
+    def ==(other)
+      other.is_a?(Hash) && other.keys == ['string'] && other['string'].is_a?(String) &&
+        PATTERN.match?(other['string'])
+    end
+
+    def inspect
+      "{ 'string' => #{PATTERN.inspect} }"
+    end
+  end
+
   # reason is STATIC for config with no targeting rules
   def test_reason_is_static_for_config_with_no_targeting_rules
     sink = IntegrationTestHelpers::TelemetrySink.start
@@ -311,6 +327,46 @@ class TestTelemetry < Minitest::Test
     returned = Hash.new { |h, k| h[k] = [] }
     returned['a.secret.config'] << client.get_or_raise('a.secret.config')
     IntegrationTestHelpers.assert_telemetry_post(self, client, sink, :evaluation_summary, [{ 'key' => 'a.secret.config', 'type' => 'CONFIG', 'value' => 'hello.world', 'value_type' => 'string', 'count' => 1, 'reason' => 1, 'selected_value' => { 'string' => '*****936c9' }, 'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0 } }],
+                                                 endpoint: '/api/v1/telemetry', returned: returned)
+  ensure
+    client&.stop
+    sink&.stop
+  end
+
+  # confidential weighted variant is redacted in selectedValue
+  def test_confidential_weighted_variant_is_redacted_in_selectedvalue
+    sink = IntegrationTestHelpers::TelemetrySink.start
+    client = IntegrationTestHelpers.build_telemetry_client(sink)
+    returned = Hash.new { |h, k| h[k] = [] }
+    scope = client.with_context({ 'user' => { 'tracking_id' => '92a202f2' } })
+    returned['confidential.weighted.variant'] << scope.get_or_raise('confidential.weighted.variant')
+    IntegrationTestHelpers.assert_telemetry_post(self, client, sink, :evaluation_summary, [{ 'key' => 'confidential.weighted.variant', 'type' => 'CONFIG', 'value' => 'weighted-secret-variant', 'value_type' => 'string', 'count' => 1, 'reason' => 3, 'selected_value' => { 'string' => '*****364b0' }, 'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0, 'weighted_value_index' => 0 } }],
+                                                 endpoint: '/api/v1/telemetry', returned: returned)
+  ensure
+    client&.stop
+    sink&.stop
+  end
+
+  # confidential ENV_VAR-provided value is redacted in selectedValue
+  def test_confidential_env_var_provided_value_is_redacted_in_selectedvalue
+    sink = IntegrationTestHelpers::TelemetrySink.start
+    client = IntegrationTestHelpers.build_telemetry_client(sink)
+    returned = Hash.new { |h, k| h[k] = [] }
+    returned['confidential.provided.a.number'] << client.get_or_raise('confidential.provided.a.number')
+    IntegrationTestHelpers.assert_telemetry_post(self, client, sink, :evaluation_summary, [{ 'key' => 'confidential.provided.a.number', 'type' => 'CONFIG', 'value' => '1234', 'value_type' => 'string', 'count' => 1, 'reason' => 1, 'selected_value' => RedactedSelectedValueMatcher.new, 'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0 } }],
+                                                 endpoint: '/api/v1/telemetry', returned: returned)
+  ensure
+    client&.stop
+    sink&.stop
+  end
+
+  # non-confidential ENV_VAR-provided value is reported as its resolved value
+  def test_non_confidential_env_var_provided_value_is_reported_as_its_resolved_value
+    sink = IntegrationTestHelpers::TelemetrySink.start
+    client = IntegrationTestHelpers.build_telemetry_client(sink)
+    returned = Hash.new { |h, k| h[k] = [] }
+    returned['provided.a.number'] << client.get_or_raise('provided.a.number')
+    IntegrationTestHelpers.assert_telemetry_post(self, client, sink, :evaluation_summary, [{ 'key' => 'provided.a.number', 'type' => 'CONFIG', 'value' => 1234, 'value_type' => 'int', 'count' => 1, 'reason' => 1, 'selected_value' => { 'int' => 1234 }, 'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0 } }],
                                                  endpoint: '/api/v1/telemetry', returned: returned)
   ensure
     client&.stop
