@@ -34,28 +34,28 @@ module Quonfig
     end
 
     # Log methods
-    def trace(message = nil, &block)
-      log_message(:trace, message, &block)
+    def trace(message = nil, event: nil, &block)
+      log_message(:trace, message, event: event, &block)
     end
 
-    def debug(message = nil, &block)
-      log_message(:debug, message, &block)
+    def debug(message = nil, event: nil, &block)
+      log_message(:debug, message, event: event, &block)
     end
 
-    def info(message = nil, &block)
-      log_message(:info, message, &block)
+    def info(message = nil, event: nil, &block)
+      log_message(:info, message, event: event, &block)
     end
 
-    def warn(message = nil, &block)
-      log_message(:warn, message, &block)
+    def warn(message = nil, event: nil, &block)
+      log_message(:warn, message, event: event, &block)
     end
 
-    def error(message = nil, &block)
-      log_message(:error, message, &block)
+    def error(message = nil, event: nil, &block)
+      log_message(:error, message, event: event, &block)
     end
 
-    def fatal(message = nil, &block)
-      log_message(:fatal, message, &block)
+    def fatal(message = nil, event: nil, &block)
+      log_message(:fatal, message, event: event, &block)
     end
 
     def level
@@ -172,7 +172,10 @@ module Quonfig
       level_str&.downcase&.to_sym
     end
 
-    def log_message(level, message, &block)
+    # +event+ (e.g. 'quonfig.init.failed') is a structured field: SemanticLogger
+    # gets it as the payload ({ event: ... }); plain Logger-shaped sinks only
+    # get the message, which already carries the full line.
+    def log_message(level, message, event: nil, &block)
       override = Quonfig::InternalLogger.user_logger
       if override
         write_to_user_logger(override, level, message, &block)
@@ -180,7 +183,11 @@ module Quonfig
       end
 
       if @using_semantic
-        @logger.send(level, message, &block)
+        if event
+          @logger.send(level, message, { event: event }, &block)
+        else
+          @logger.send(level, message, &block)
+        end
       else
         # stdlib Logger doesn't have trace
         level = :debug if level == :trace

@@ -117,7 +117,7 @@ class TestInitFailure < Minitest::Test
 
     assert_equal :unauthorized, err&.reason
     assert_operator elapsed, :<, 4
-    assert_logged [/\[quonfig\] init FAILED: SDK key rejected \(401\) by every delivery leg\. .*raising now/]
+    assert_logged [/\[quonfig\] init FAILED: SDK key rejected \(401\) by primary and secondary\. .*raising now/]
   end
 
   def test_wait_blocks_past_the_timeout_until_delivery_returns
@@ -225,5 +225,124 @@ class TestInitFailure < Minitest::Test
 
     assert_equal 1, $logs.string.scan('on_init_failure=:return is deprecated; use :continue').size
     assert_logged [/on_init_failure=:return is deprecated; use :continue/]
+  end
+
+  # A Client whose init backoff and progress cadence the test controls.
+  def scripted_client_class(backoff: nil, progress_every: nil)
+    Class.new(Quonfig::Client) do
+      define_method(:init_backoff_s) { |attempt| backoff ? instance_exec(attempt, &backoff) : super(attempt) }
+      define_method(:init_progress_every_s) { progress_every || super() }
+    end
+  end
+
+  # Refused legs fail in a few ms. A backoff that ends a hair before the
+  # deadline used to start one more attempt with a ~3ms Timeout budget, which
+  # fired mid-connect and turned a plain outage into a "hang" (reason :timeout).
+  def test_refused_legs_raise_unavailable_even_when_the_backoff_ends_just_before_the_deadline
+    leaves_3ms = lambda do |_attempt|
+      deadline = @init_started_at + (@options.init_timeout_ms / 1000.0)
+      [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC) - 0.003, 0].max
+    end
+    klass = scripted_client_class(backoff: leaves_3ms)
+    err = begin
+      klass.new(**client_opts(api_urls: REFUSED, init_timeout_ms: 500))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+
+    refute_nil err
+    refute_kind_of Quonfig::Errors::InitializationTimeoutError, err
+    assert_equal :unavailable, err.reason
+    assert_logged [/init FAILED: no config after 0\.5s/]
+  end
+
+  def test_details_getters_before_ready_report_provider_not_ready
+    client = Quonfig::Client.new(**client_opts(api_urls: REFUSED, init_timeout_ms: 200, on_init_failure: :continue))
+    details = client.get_string_details('missing.flag')
+
+    assert_equal 'ERROR', details.reason
+    assert_equal Quonfig::EvaluationDetails::ERROR_PROVIDER_NOT_READY, details.error_code
+    assert_equal 'PROVIDER_NOT_READY', details.error_code
+    assert_nil details.value
+    assert_equal 'DEFAULT', client.get('flag.init', 'DEFAULT')
+    assert_logged [/STARTING ON CODE DEFAULTS/]
+  ensure
+    client&.stop
+  end
+
+  def test_details_getters_after_heal_evaluate_normally
+    leg = delivery_leg(healthy_after: 0.5)
+    client = Quonfig::Client.new(**client_opts(api_urls: [leg], init_timeout_ms: 200, on_init_failure: :continue,
+                                               enable_polling: true, fallback_poll_interval_ms: 100))
+    assert client.wait_for_ready(timeout_ms: 5000)
+    details = client.get_string_details('flag.init')
+    assert_equal 'LIVE', details.value
+    assert_nil details.error_code
+    assert_logged [/init recovered/]
+  ensure
+    client&.stop
+  end
+
+  # Section C: progress every 5s (here 0.3s) until the timeout, even while
+  # the SDK is sleeping a long backoff between attempts.
+  def test_progress_warn_fires_on_its_cadence_during_a_long_backoff
+    klass = scripted_client_class(backoff: ->(_a) { 0.9 }, progress_every: 0.3)
+    assert_raises(Quonfig::Errors::InitializationError) do
+      klass.new(**client_opts(api_urls: REFUSED, init_timeout_ms: 1000))
+    end
+
+    progress = $logs.string.lines.grep(/still waiting for config/)
+    assert_operator progress.size, :>=, 2, progress.join
+    assert_match(/still waiting for config \(0\.3s elapsed of 1s, attempt 1\)\. primary=/, progress.first)
+    assert_logged [/still waiting for config/]
+  end
+
+  # :wait logs its timeout WARN at init_timeout_ms, not after the backoff
+  # that happens to straddle it.
+  def test_wait_timeout_warn_fires_at_the_deadline
+    leg = delivery_leg(healthy_after: 1.2)
+    klass = scripted_client_class(backoff: ->(_a) { 1.5 })
+    client = klass.new(**client_opts(api_urls: [leg], init_timeout_ms: 500, on_init_failure: :wait))
+
+    assert_predicate client, :ready?
+    assert_logged [/init: no config after 0\.5s\. onInitFailure=wait: still blocking startup/]
+  ensure
+    client&.stop
+  end
+
+  def test_auth_line_names_the_single_leg
+    err = begin
+      Quonfig::Client.new(**client_opts(api_urls: [delivery_leg(status: 401)], init_timeout_ms: 4000))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+    assert_equal :unauthorized, err&.reason
+    assert_logged [/SDK key rejected \(401\) by primary\. Check the key/]
+  end
+
+  # The heal line names the leg. A stream install leaves resolved_from empty
+  # and used to read "via stream".
+  def test_heal_line_names_the_leg_for_a_stream_install
+    client = Quonfig::Client.new(**client_opts(api_urls: REFUSED, init_timeout_ms: 100, on_init_failure: :continue))
+    client.send(:log_init_recovered, Process.clock_gettime(Process::CLOCK_MONOTONIC) - 1)
+
+    assert_logged [/init recovered: config loaded after \d+\.\ds via primary\. Now serving live config/]
+    refute_includes $logs.to_s, 'via stream'
+  ensure
+    client&.stop
+  end
+
+  # Structured loggers get event=quonfig.init.<name> (section C).
+  def test_init_lines_carry_a_structured_event_name
+    assert_raises(Quonfig::Errors::InitializationError) do
+      Quonfig::Client.new(**client_opts(api_urls: REFUSED, init_timeout_ms: 300))
+    end
+
+    log = $logs.string
+    assert_match(/init: config not loaded yet.*quonfig\.init\.retrying/, log)
+    assert_match(/init FAILED: no config.*quonfig\.init\.failed/, log)
+    assert_logged [/init FAILED/]
   end
 end
