@@ -80,8 +80,16 @@ module Quonfig
         @mutex = Mutex.new
       end
 
+      # Send this cycle's remaining lines to DEBUG. The init loop calls it when
+      # it gives up on an attempt that is still in flight: its legs keep running
+      # on their own threads up to the hedge abort, and their late failures are
+      # already summarized in the init ERROR (qfg-9p4i.10).
+      def silence!
+        @silenced = true
+      end
+
       def log(level, msg, auth: false)
-        return @logger.debug(msg) if @mode == :probe
+        return @logger.debug(msg) if @mode == :probe || @silenced
 
         if @mode == :poll && auth
           hold = @mutex.synchronize do
@@ -222,13 +230,13 @@ module Quonfig
     # leg's status (rule R2, qfg-goi1.10.26). +log_mode+ is one of CycleLog's
     # modes; the poller passes :poll for an ordinary cycle and :probe while
     # auth-failed.
-    def fetch_cycle!(log_mode: :normal)
+    def fetch_cycle!(log_mode: :normal, cycle_log: nil)
       urls = Array(@options.config_api_urls)
       statuses = Concurrent::Map.new
       leg_errors = Concurrent::Map.new
       return FetchCycle.new(:failed, statuses, '', leg_errors) if urls.empty?
 
-      cycle_log = CycleLog.new(@logger, log_mode)
+      cycle_log ||= new_cycle_log(log_mode)
       # Single leg (or no secondary configured): no hedge, just fetch on the
       # calling thread under the SEQUENTIAL per-URL timeout (config_fetch_timeout_ms
       # is unchanged and still governs any non-hedged path). Preserves the
@@ -243,6 +251,12 @@ module Quonfig
       cycle = FetchCycle.new(result, statuses, host_of(urls[0]), leg_errors)
       cycle_log.release(drop: cycle.auth_rejected?)
       cycle
+    end
+
+    # A CycleLog over this loader's logger, for a caller that wants to hold on
+    # to it (see CycleLog#silence!).
+    def new_cycle_log(mode = :normal)
+      CycleLog.new(@logger, mode)
     end
 
     # Apply a ConfigEnvelope (from SSE) to the store. Called by the SSE client

@@ -1089,14 +1089,18 @@ module Quonfig
     # path that hands an envelope to the cache: datadir load, initial HTTP
     # fetch, SSE event apply, and polling worker fetch.
     def record_refresh!
-      @state_mutex.synchronize { @last_successful_refresh = Time.now.utc }
-      return unless @init_heal_pending
+      healed_from = @state_mutex.synchronize do
+        @last_successful_refresh = Time.now.utc
+        next nil unless @init_heal_pending
 
-      # First install after an init that continued (or a caught failure)
-      # without config: the section C heal line, at WARN so the filter level
-      # that saw the failure also sees the recovery.
-      @init_heal_pending = false
-      log_init_recovered(@init_started_at || monotonic_now)
+        # First install after an init that continued without config. Cleared
+        # under the lock so racing installers log the heal exactly once.
+        @init_heal_pending = false
+        @init_started_at || monotonic_now
+      end
+      # The section C heal line, at WARN so the filter level that saw the
+      # failure also sees the recovery. Logged outside the lock.
+      log_init_recovered(healed_from) if healed_from
     end
 
     def sse_restart_total
@@ -1447,14 +1451,17 @@ module Quonfig
 
         attempt += 1
         cycle = nil
+        cycle_log = @config_loader.new_cycle_log
         begin
           if mode == Quonfig::Options::ON_INITIALIZATION_FAILURE::WAIT
-            cycle = @config_loader.fetch_cycle!
+            cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log)
           else
-            Timeout.timeout(deadline - monotonic_now) { cycle = @config_loader.fetch_cycle! }
+            Timeout.timeout(deadline - monotonic_now) { cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log) }
           end
         rescue Timeout::Error
-          # An attempt was still in flight at init_timeout_ms (a hang).
+          # An attempt was still in flight at init_timeout_ms (a hang). Its legs
+          # run on until the hedge abort; their late lines go to DEBUG.
+          cycle_log.silence!
           errs = format_leg_errors(urls, {}, in_flight: true)
           return init_timed_out(mode, timeout_s, errs, hung: true)
         end
@@ -1549,8 +1556,10 @@ module Quonfig
     # keeps retrying; #record_refresh! logs the heal, and the not-ready reporter
     # logs the outage on the section C cadence until then.
     def init_continue_on_defaults(errs)
-      @init_heal_pending = true
-      @init_last_errs = errs
+      @state_mutex.synchronize do
+        @init_heal_pending = true
+        @init_last_errs = errs
+      end
       start_not_ready_reporter
       nil
     end
@@ -1568,8 +1577,9 @@ module Quonfig
           break if @stopped || ready?
 
           since = (monotonic_now - @init_started_at).round
+          errs = @state_mutex.synchronize { @init_last_errs }
           LOG.warn "[quonfig] still not connected to Quonfig delivery (#{since / 60}m#{since % 60}s since start); " \
-                   "serving defaults. #{@init_last_errs}"
+                   "serving defaults. #{errs}"
         end
       rescue StandardError
         nil

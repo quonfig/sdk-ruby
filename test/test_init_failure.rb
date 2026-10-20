@@ -3,6 +3,7 @@
 require 'test_helper'
 require 'webrick'
 require 'json'
+require 'socket'
 
 # on_init_failure :fail / :wait / :continue, the readiness API, the
 # InitializationError family and the init log contract (qfg-9p4i.10;
@@ -176,6 +177,44 @@ class TestInitFailure < Minitest::Test
     client.stop
     refute client.wait_for_ready, 'a stopped client never becomes ready'
     assert_logged [/STARTING ON CODE DEFAULTS/]
+  end
+
+  # A leg that accepts the connection and never answers.
+  def hung_leg
+    server = TCPServer.new('127.0.0.1', 0)
+    @hung_sockets = []
+    @hung_thread = Thread.new do
+      loop { @hung_sockets << server.accept }
+    rescue StandardError
+      nil
+    end
+    @hung_server = server
+    "http://127.0.0.1:#{server.addr[1]}"
+  end
+
+  # An attempt still in flight at the timeout keeps its legs running until the
+  # hedge abort. Their late failures must not surface as WARNs after Client.new
+  # has already raised (they leaked into the next test's log capture on CI).
+  def test_hung_attempt_legs_do_not_log_after_init_raised
+    legs = [hung_leg, 'http://127.0.0.1:1']
+    err = begin
+      Quonfig::Client.new(**client_opts(api_urls: legs, init_timeout_ms: 200, config_fetch_hedge_delay_ms: 50,
+                                        config_fetch_hedge_abort_ms: 600))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+    assert_kind_of Quonfig::Errors::InitializationTimeoutError, err
+    $logs.truncate(0)
+    $logs.rewind
+    sleep 1.0 # past the 600ms hedge abort of the hung primary leg
+
+    late = $logs.string.lines.grep(/ W |ConfigLoader.* E /)
+    assert_empty late, "late leg WARNs after init raised: #{late}"
+  ensure
+    @hung_server&.close
+    @hung_thread&.kill
+    @hung_sockets&.each(&:close)
   end
 
   def test_deprecated_alias_warns_once_per_process
