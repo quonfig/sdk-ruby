@@ -98,7 +98,7 @@ class TestClientNetworkMode < Minitest::Test
 
   def test_initialize_raises_on_fetch_failure_by_default
     # No server started -> connection refused everywhere
-    assert_raises(RuntimeError, Quonfig::Errors::InitializationTimeoutError) do
+    assert_raises(Quonfig::Errors::InitializationError) do
       Quonfig::Client.new(
         sdk_key: 'test-key',
         api_urls: ['http://127.0.0.1:1'], # almost certainly unreachable
@@ -118,11 +118,11 @@ class TestClientNetworkMode < Minitest::Test
       enable_sse: false,
       enable_polling: false,
       initialization_timeout_sec: 2,
-      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN
+      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::CONTINUE
     )
 
     assert_empty client.keys
-    assert_logged [/Initialization did not complete cleanly/]
+    assert_logged [/onInitFailure=continue/]
   ensure
     client&.stop
   end
@@ -267,7 +267,7 @@ class TestClientNetworkMode < Minitest::Test
   end
 
   # qfg-41nh.6 (WS2.4, liveness honesty): during a TOTAL outage with
-  # on_init_failure: :return, the fallback poll worker must not stamp
+  # on_init_failure: :continue, the fallback poll worker must not stamp
   # record_refresh! or fire on_update on failed ticks. Pre-fix the worker
   # stamped + notified on EVERY tick regardless of fetch outcome, so ready?
   # reported true over an EMPTY store and last_successful_refresh advanced
@@ -282,7 +282,7 @@ class TestClientNetworkMode < Minitest::Test
       fallback_poll_enabled: true,
       fallback_poll_interval_ms: 100,
       init_timeout_ms: 2000,
-      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN,
+      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::CONTINUE,
       context_upload_mode: :none,
       collect_evaluation_summaries: false
     )
@@ -299,7 +299,7 @@ class TestClientNetworkMode < Minitest::Test
     assert_equal 0, updates, 'on_update must not fire on failed poll ticks'
 
     assert_logged [
-      /Initialization did not complete cleanly/,
+      /onInitFailure=continue/,
       /fallback poller engaged/
     ]
   ensure

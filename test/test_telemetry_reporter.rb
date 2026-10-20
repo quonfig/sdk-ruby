@@ -30,7 +30,7 @@ class TestTelemetryReporter < Minitest::Test
       api_urls: ['https://primary.example.com'],
       enable_sse: false,
       enable_polling: false,
-      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN,
+      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::CONTINUE,
       context_upload_mode: :periodic_example
     ).tap do |opts|
       opts.instance_variable_set(:@telemetry_destination, telemetry_destination)

@@ -94,7 +94,7 @@ class TestThreadSafety < Minitest::Test
     parent_store = Quonfig::ConfigStore.new
     parent_store.set('shared.key', { 'key' => 'shared.key', 'value' => 'parent' })
 
-    # `on_init_failure: :return` so the fork's network init logs+returns
+    # `on_init_failure: :continue` so the fork's network init logs+returns
     # instead of raising — we don't have a real api-delivery in unit tests.
     parent = Quonfig::Client.new(
       Quonfig::Options.new(
@@ -103,7 +103,7 @@ class TestThreadSafety < Minitest::Test
         enable_sse: false,
         enable_polling: false,
         initialization_timeout_sec: 1,
-        on_init_failure: :return
+        on_init_failure: :continue
       ),
       store: parent_store
     )
@@ -117,9 +117,9 @@ class TestThreadSafety < Minitest::Test
     assert child.options.is_fork, 'forked Options must carry is_fork = true'
 
     # The fork hits a non-listening port and logs a warn under
-    # on_init_failure: :return — acknowledge it so common_helpers teardown
+    # on_init_failure: :continue — acknowledge it so common_helpers teardown
     # doesn't flag it as unexpected.
-    assert_logged([/Initialization did not complete cleanly/])
+    assert_logged([/onInitFailure=continue/])
   ensure
     parent&.stop
     child&.stop

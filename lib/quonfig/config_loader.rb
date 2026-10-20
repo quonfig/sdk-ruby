@@ -29,12 +29,26 @@ module Quonfig
     # response: timeout, connection failure). +primary_host+ is host:port of
     # the primary leg, for the entry ERROR (never the key).
     class FetchCycle
-      attr_reader :result, :statuses, :primary_host
+      attr_reader :result, :statuses, :primary_host, :leg_errors
 
-      def initialize(result, statuses, primary_host)
+      # +leg_errors+ maps a config_api_urls index to a one-line description of
+      # why that leg failed (host-free, key-free), for the init log contract.
+      def initialize(result, statuses, primary_host, leg_errors = {})
         @result = result
         @statuses = statuses
         @primary_host = primary_host
+        @leg_errors = leg_errors
+      end
+
+      # Every leg answered and every answer was in the auth class (401/403,
+      # plus 404/410 per rule R1): the key is rejected (init-failure design
+      # B.3, "401/403 from both legs"). Stricter than #auth_rejected? (the
+      # poller's rule R2, primary leg only), because init short-circuits on it.
+      def all_legs_unauthorized?(leg_count)
+        return false unless @result == :failed
+
+        values = @statuses.values
+        values.size >= leg_count && values.all? { |s| AUTH_STATUSES.include?(s) }
       end
 
       def primary_status
@@ -211,7 +225,8 @@ module Quonfig
     def fetch_cycle!(log_mode: :normal)
       urls = Array(@options.config_api_urls)
       statuses = Concurrent::Map.new
-      return FetchCycle.new(:failed, statuses, '') if urls.empty?
+      leg_errors = Concurrent::Map.new
+      return FetchCycle.new(:failed, statuses, '', leg_errors) if urls.empty?
 
       cycle_log = CycleLog.new(@logger, log_mode)
       # Single leg (or no secondary configured): no hedge, just fetch on the
@@ -220,11 +235,12 @@ module Quonfig
       # synchronous, single-request-per-call shape the legacy/mock callers depend
       # on.
       result = if urls.length < 2
-                 fetch_from(urls[0], 0, timeout_ms: config_fetch_timeout_ms, statuses: statuses, cycle_log: cycle_log)
+                 fetch_from(urls[0], 0, timeout_ms: config_fetch_timeout_ms, statuses: statuses,
+                                        cycle_log: cycle_log, leg_errors: leg_errors)
                else
-                 fetch_hedged(urls, statuses: statuses, cycle_log: cycle_log)
+                 fetch_hedged(urls, statuses: statuses, cycle_log: cycle_log, leg_errors: leg_errors)
                end
-      cycle = FetchCycle.new(result, statuses, host_of(urls[0]))
+      cycle = FetchCycle.new(result, statuses, host_of(urls[0]), leg_errors)
       cycle_log.release(drop: cycle.auth_rejected?)
       cycle
     end
@@ -265,7 +281,7 @@ module Quonfig
     # the hedge abort inside fetch_from, and heals forward through the
     # reject-older guard. We never join the slow leg — a hung primary must not
     # block a successful secondary install.
-    def fetch_hedged(urls, statuses: nil, cycle_log: nil)
+    def fetch_hedged(urls, statuses: nil, cycle_log: nil, leg_errors: nil)
       hedge_delay_s = hedge_delay_ms / 1000.0
       abort_ms = hedge_abort_ms
 
@@ -293,7 +309,8 @@ module Quonfig
         Thread.new do
           result = :failed
           begin
-            result = fetch_from(urls[index], index, timeout_ms: abort_ms, statuses: statuses, cycle_log: cycle_log)
+            result = fetch_from(urls[index], index, timeout_ms: abort_ms, statuses: statuses, cycle_log: cycle_log,
+                                                    leg_errors: leg_errors)
           rescue StandardError => e
             @logger.debug "Hedge leg #{index} failed: #{e.class}: #{e.message}"
           ensure
@@ -402,8 +419,9 @@ module Quonfig
       ''
     end
 
-    def fetch_from(source, index = nil, timeout_ms: nil, statuses: nil, cycle_log: nil)
+    def fetch_from(source, index = nil, timeout_ms: nil, statuses: nil, cycle_log: nil, leg_errors: nil)
       cycle_log ||= CycleLog.new(@logger, :normal)
+      note = ->(msg) { leg_errors[index || 0] = msg.to_s[0, 200] if leg_errors }
       # qfg-7h5d.1.9 / .1.14: bound this single per-leg attempt so a hung upstream
       # aborts (Faraday::TimeoutError, caught below as :failed). On the hedged
       # path the caller passes config_fetch_hedge_abort_ms; on the sequential /
@@ -435,28 +453,34 @@ module Quonfig
         @logger.debug "Configs not modified (304) from #{source}"
         :not_modified
       when 401, 403
+        note.call("HTTP #{response.status} (SDK key rejected)")
         cycle_log.log(:warn, "Config fetch rejected (#{response.status}) from #{source}: #{short_body(response)}", auth: true)
         :failed
       else
+        note.call("HTTP #{response.status}")
         cycle_log.log(:info, "Config fetch failed: status #{response.status} from #{source}",
                       auth: AUTH_STATUSES.include?(response.status.to_i))
         :failed
       end
     rescue NonEnvelopeError => e
+      note.call("non-envelope 200 (#{e.message})")
       # qfg-9dxb.3: a non-envelope 200 is a leg error, NOT an install — the
       # hedge/failover proceeds and this leg's ETag is never stored (so a junk
       # 200 cannot pin itself through later 304s).
       cycle_log.log(:warn, "Config fetch from #{source} returned a non-envelope 200 (#{e.message}); treating as a failed leg")
       :failed
     rescue Quonfig::ConfigShape::AllInvalidError => e
+      note.call(e.message)
       # qfg-krjt: a payload with no loadable config is a leg error, so it can
       # never install as an empty workspace.
       cycle_log.log(:warn, "Config fetch from #{source}: #{e.message}; treating as a failed leg")
       :failed
     rescue Faraday::ConnectionFailed => e
+      note.call(e.message)
       @logger.debug "Connection failure fetching configs from #{source}: #{e.message}"
       :failed
     rescue StandardError => e
+      note.call("#{e.class}: #{e.message}")
       cycle_log.log(:warn, "Unexpected error fetching configs from #{source}: #{e.message}")
       :failed
     end

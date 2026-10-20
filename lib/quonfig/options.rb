@@ -13,6 +13,11 @@ module Quonfig
                 :telemetry_max_retained_bytes, :telemetry_max_retained_age_ms
     attr_accessor :is_fork
 
+    # The deprecated on_init_failure spelling passed (:raise / :return), or nil.
+    attr_reader :on_init_failure_alias
+    # An unrecognized on_init_failure value (treated as :fail), or nil.
+    attr_reader :on_init_failure_unknown
+
     # Default fallback poll interval, in milliseconds. The SDK polls api-delivery
     # at this cadence only when SSE is unavailable for >= 2x this value.
     DEFAULT_FALLBACK_POLL_INTERVAL_MS = 60_000
@@ -76,9 +81,42 @@ module Quonfig
       ms == ms.to_i ? ms.to_i : ms
     end
 
+    # What Client.new does when no config has loaded by +init_timeout_ms+
+    # (qfg-9p4i.10; project/plans/2026-10-05-init-failure-design.md B.1-B.3):
+    #
+    # - +:fail+ (default): raise Quonfig::Errors::InitializationError. Every
+    #   delivery leg answering 401/403 raises at once, without waiting out the
+    #   timeout.
+    # - +:wait+: keep blocking and retrying with no upper bound.
+    # - +:continue+: return a client over an empty store (getters answer with
+    #   the caller's default) that keeps retrying in the background.
+    #
+    # +:raise+ and +:return+ are the deprecated earlier spellings of +:fail+ and
+    # +:continue+. They are still accepted and log a one-time WARN.
     module ON_INITIALIZATION_FAILURE
+      FAIL = :fail
+      WAIT = :wait
+      CONTINUE = :continue
+      # @deprecated Use FAIL.
       RAISE = :raise
+      # @deprecated Use CONTINUE.
       RETURN = :return
+
+      MODES = [FAIL, WAIT, CONTINUE].freeze
+      ALIASES = { RAISE => FAIL, RETURN => CONTINUE }.freeze
+
+      # [canonical mode, deprecated alias given or nil, unknown value or nil].
+      # Strings are accepted ('fail', ':raise'). An unknown value resolves to
+      # FAIL, the safe default, and is reported so the client can warn.
+      def self.resolve(value)
+        return [FAIL, nil, nil] if value.nil?
+
+        sym = value.to_s.delete_prefix(':').to_sym
+        return [sym, nil, nil] if MODES.include?(sym)
+        return [ALIASES[sym], sym, nil] if ALIASES.key?(sym)
+
+        [FAIL, nil, value]
+      end
     end
 
     module ON_NO_DEFAULT
@@ -271,7 +309,7 @@ module Quonfig
       on_no_default: ON_NO_DEFAULT::RAISE,
       init_timeout_ms: nil,
       initialization_timeout_sec: nil,
-      on_init_failure: ON_INITIALIZATION_FAILURE::RAISE,
+      on_init_failure: ON_INITIALIZATION_FAILURE::FAIL,
       config_fetch_timeout_ms: nil,
       config_fetch_hedge_delay_ms: nil,
       config_fetch_hedge_abort_ms: nil,
@@ -334,7 +372,10 @@ module Quonfig
                          else
                            DEFAULT_INIT_TIMEOUT_MS
                          end
-      @on_init_failure = on_init_failure
+      # Stored canonical (:fail / :wait / :continue); the deprecated spelling
+      # the caller used, if any, is kept for the client's one-time WARN.
+      @on_init_failure, @on_init_failure_alias, @on_init_failure_unknown =
+        ON_INITIALIZATION_FAILURE.resolve(on_init_failure)
       # qfg-7h5d.1.9: per-URL config-fetch timeout. nil → DEFAULT_CONFIG_FETCH_TIMEOUT_MS.
       @config_fetch_timeout_ms = config_fetch_timeout_ms || DEFAULT_CONFIG_FETCH_TIMEOUT_MS
       # qfg-7h5d.1.14: parallel-failover hedge knobs. nil → defaults. The hedge

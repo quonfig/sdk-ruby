@@ -259,6 +259,36 @@ for the cross-SDK story (sdk-node, sdk-go, sdk-ruby, sdk-python, sdk-java).
 | `QUONFIG_DEV_CONTEXT`       | `false` turns off the developer context (`quonfig-user.email` from `qfg login`). An explicit `enable_quonfig_user_context:` wins. See [Developer context](#developer-context-on-by-default). |
 | `QUONFIG_DOMAIN`            | Base domain used to derive api, sse, and telemetry URLs. Defaults to `quonfig.com`. Set to `quonfig-staging.com` to point at staging. Explicit `api_urls:` / `telemetry_url:` kwargs override this. |
 
+## Startup failure (`on_init_failure`)
+
+`Client.new` fetches config from both delivery legs (primary, then the
+secondary in parallel) and retries through blips with a jittered backoff
+(0.5s, 1s, 2s ... capped at 30s) for up to `init_timeout_ms` (default 10s).
+A healthy boot logs nothing above DEBUG. If no config has loaded by then,
+`on_init_failure` decides:
+
+| Value | At `init_timeout_ms` | Every leg rejects the SDK key (401/403/404/410) |
+|---|---|---|
+| `:fail` (default) | Raises `Quonfig::Errors::InitializationError` (`reason` `:unavailable`), or its subclass `InitializationTimeoutError` (`reason` `:timeout`) when an attempt was still in flight. No client is returned, so your orchestrator's restart is the retry. | Raises at once (`reason` `:unauthorized`). |
+| `:wait` | Keeps blocking and retrying, with no upper bound, logging a WARN every 30s. | Logs an ERROR and keeps retrying. |
+| `:continue` | Returns a client with no config: getters return your default (and `get_or_raise` raises `MissingDefaultError`). It keeps retrying in the background and serves live config as soon as it lands. | Returns at once. |
+
+```ruby
+begin
+  client = Quonfig::Client.new(sdk_key: key, on_init_failure: :fail, init_timeout_ms: 10_000)
+rescue Quonfig::Errors::InitializationError => e
+  e.reason # => :unavailable, :unauthorized or :timeout
+  e.errors # => "primary=primary.quonfig.com:443: ...; secondary=secondary.quonfig.com:443: ..."
+  raise
+end
+```
+
+Readiness: `client.ready?` is true once config has loaded, and
+`client.wait_for_ready(timeout_ms: nil)` blocks until it has (true) or the
+timeout runs out (false). Under `:wait`, point your readiness probe at
+`ready?`. `:raise` and `:return` are the deprecated spellings of `:fail` and
+`:continue`; they still work and log a one-time WARN.
+
 ## Constructor options
 
 ```ruby
@@ -270,6 +300,7 @@ Quonfig::Client.new(
   fallback_poll_enabled:     true,
   fallback_poll_interval_ms: 60_000,
   init_timeout_ms:           10_000,
+  on_init_failure:           :fail,
   on_no_default:             :raise,
   global_context:            {},
   datadir:                   '/path/to/workspace',
@@ -288,6 +319,7 @@ Quonfig::Client.new(
 | `fallback_poll_enabled`   | `Boolean`                  | `true`                                                              | Engage HTTP polling as a fallback when SSE is unavailable for >= 2x `fallback_poll_interval_ms`. Deprecated alias: `enable_polling`. |
 | `fallback_poll_interval_ms` | `Integer` (ms)           | `60_000`                                                            | Interval between fallback HTTP polls, in milliseconds. Deprecated alias: `poll_interval` (seconds, multiplied by 1000 internally). |
 | `init_timeout_ms` | `Integer` (ms)             | `10_000`                                                            | Maximum time to wait for the initial config load, in milliseconds. Deprecated alias: `initialization_timeout_sec` (seconds, multiplied by 1000 internally). |
+| `on_init_failure` | `Symbol`                   | `:fail`                                                             | What `Client.new` does when no config has loaded by `init_timeout_ms`: `:fail`, `:wait` or `:continue`. See [Startup failure](#startup-failure-on_init_failure). Deprecated aliases: `:raise` (= `:fail`), `:return` (= `:continue`). |
 | `on_no_default`   | `Symbol`                   | `:raise`                                                            | Behavior when a key has no value and no default: `:raise` (raise `Quonfig::Errors::MissingDefaultError`) or `:return_nil`. |
 | `global_context`  | `Hash`                     | `{}`                                                                | Context applied to every evaluation.                                                              |
 | `enable_quonfig_user_context` | `Boolean` or `nil`  | `nil` (on, unless `QUONFIG_DEV_CONTEXT=false`)                      | Add the `qfg login` email as `quonfig-user.email`. See [Developer context](#developer-context-on-by-default). |
@@ -500,7 +532,7 @@ Caveats:
   in-process SSE state is moot.
 - The first lookup in a forked child **blocks** on that child's own config
   fetch, under the same `init_timeout_ms` and `on_init_failure` options a
-  fresh client uses. **The default is `on_init_failure: :raise`**, so if the
+  fresh client uses. **The default is `on_init_failure: :fail`**, so if the
   child's fetch fails against every `api_urls` leg (primary and secondary
   both unreachable) the failure **raises out of that first lookup**, exactly
   as `Client.new` would at boot, and later lookups keep raising — without
@@ -508,7 +540,7 @@ Caveats:
   the client serves config normally again. On 1.3.0 and earlier a child in
   that situation silently served the parent's snapshot instead. If you would
   rather a forked child serve defaults through an outage, set
-  `on_init_failure: :return`: a failed fetch then logs one line and the child
+  `on_init_failure: :continue`: a failed fetch then logs one line and the child
   serves defaults until its stream or poller lands the first envelope.
 - **Other threads wait.** Every thread that reaches the client while that
   first fetch is in flight blocks on it and then sees the fetched config. One
