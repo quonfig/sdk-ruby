@@ -16,6 +16,8 @@ module Quonfig
   # +error_code+ (only when reason == "ERROR") is one of:
   #   "FLAG_NOT_FOUND" — the key was unknown to the store
   #   "TYPE_MISMATCH"  — the resolved value didn't satisfy the requested type
+  #   "PROVIDER_NOT_READY" — the client has no config yet (init continued
+  #                          on code defaults, or a caught init failure)
   #   "GENERAL"        — any other failure
   class EvaluationDetails
     REASON_STATIC          = 'STATIC'
@@ -27,6 +29,7 @@ module Quonfig
     ERROR_FLAG_NOT_FOUND = 'FLAG_NOT_FOUND'
     ERROR_TYPE_MISMATCH  = 'TYPE_MISMATCH'
     ERROR_GENERAL        = 'GENERAL'
+    ERROR_PROVIDER_NOT_READY = 'PROVIDER_NOT_READY'
 
     attr_reader :value, :reason, :error_code, :error_message, :variant, :flag_metadata
 
