@@ -29,3 +29,16 @@ updates:
     groups:
       ruby-minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # Runtime dependencies of the published gem (gemspec add_dependency).
+      # Our constraint is the floor customers must install, so a major bump
+      # here forces every customer onto that major. Raise these floors
+      # deliberately in a release, not via Dependabot.
+      - dependency-name: "activesupport"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "concurrent-ruby"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "faraday"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "listen"
+        update-types: ["version-update:semver-major"]
