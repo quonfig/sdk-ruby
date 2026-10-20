@@ -1456,7 +1456,9 @@ module Quonfig
           if mode == Quonfig::Options::ON_INITIALIZATION_FAILURE::WAIT
             cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log)
           else
-            Timeout.timeout(deadline - monotonic_now) { cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log) }
+            # Never 0: Timeout.timeout(0) means "no timeout".
+            budget = [deadline - monotonic_now, 0.001].max
+            Timeout.timeout(budget) { cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log) }
           end
         rescue Timeout::Error
           # An attempt was still in flight at init_timeout_ms (a hang). Its legs
