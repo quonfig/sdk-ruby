@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **UPGRADE (minor): `on_init_failure` takes `:fail`, `:wait` or `:continue` (qfg-9p4i.10).** `:fail` is the default, as `:raise` was, so a boot that cannot load config still raises. What changes for you:
+  - `Client.new` now **retries** a fast failure (refused connection, DNS, 5xx) with a jittered 0.5s, 1s, 2s ... backoff until `init_timeout_ms` (default 10s) instead of raising on the first failed attempt. A boot during a short blip now succeeds, and a boot with delivery down raises after `init_timeout_ms`, not at once.
+  - When every delivery leg rejects the SDK key (401/403/404/410) the init call does not wait: `:fail` raises at once, `:continue` returns at once.
+  - The raised error is now `Quonfig::Errors::InitializationError` (`reason`: `:unavailable`, `:unauthorized` or `:timeout`; `errors`: the per-leg summary with hosts only). A hang still raises `Quonfig::Errors::InitializationTimeoutError`, now a subclass of it. **If you rescued `RuntimeError` around `Client.new`, rescue `Quonfig::Errors::InitializationError` instead**; it still descends from `StandardError` via `Quonfig::Error`.
+  - New `:wait` keeps blocking and retrying with no upper bound. `:continue` (the new name for `:return`) returns a client over an empty store that keeps retrying in the background.
+  - `:raise` and `:return` (and `ON_INITIALIZATION_FAILURE::RAISE` / `RETURN`) still work as deprecated aliases and log a one-time WARN. `Options#on_init_failure` now reads back the canonical value (`:fail` for `:raise`). An unknown value runs as `:fail` with a WARN.
+- **Added (minor): `Client#wait_for_ready(timeout_ms: nil)`.** Blocks until the client has config; returns `true`, or `false` when the timeout runs out or the client is stopped. `ready?` is unchanged.
+- **Changed (minor): init logging follows the cross-SDK contract.** A first failed attempt logs one WARN (`[quonfig] init: config not loaded yet, retrying until initTimeout (10s). primary=<host>: <error>; secondary=<host>: <error>`), then a WARN every 5s; the timeout logs one ERROR naming the options; a recovery logs `[quonfig] init recovered: ...` at WARN. A `:continue` client that is still not connected logs a WARN every 30s for 5 minutes, then every 5 minutes. The old `Initialization did not complete cleanly` line is gone. Hosts are logged, never the SDK key.
+- **Tests: unit and release tests now run integration-test-data `v2026.10.20`.** It adds the init-failure cases (fail by default, fail on refused/hung/401 legs, continue, and the `:raise`/`:return` aliases) and drops the Prefab-era keys. The chaos workflows stay on `v2026.10.16.2`.
+
 ## 1.9.0 - 2026-10-20
 
 - **UPGRADE: SSE reports `connected` at the first frame, not at the 200 response (qfg-goi1.10.9).** A stream connection now counts as connected, for `connection_state`, the reconnect backoff and the fallback poller, only after it delivers its first valid frame: a config envelope or a keepalive. Before, it counted as soon as the 200 response headers arrived.

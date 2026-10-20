@@ -291,7 +291,7 @@ class TestForkSafety < Minitest::Test
       assert_respond_to client, :after_fork_in_child
     ensure
       client.stop
-      assert_logged([/Initialization did not complete cleanly/])
+      assert_logged([/onInitFailure=continue/])
     end
   end
 
@@ -318,7 +318,7 @@ class TestForkSafety < Minitest::Test
     ensure
       client.stop
       server.stop
-      assert_logged([/Initialization did not complete cleanly/])
+      assert_logged([/onInitFailure=continue/])
     end
   end
 
@@ -370,7 +370,7 @@ class TestForkSafety < Minitest::Test
     ensure
       client.stop
       server.stop
-      assert_logged([/Initialization did not complete cleanly/])
+      assert_logged([/onInitFailure=continue/])
     end
   end
 
@@ -394,7 +394,7 @@ class TestForkSafety < Minitest::Test
       client.get(CONFIG_KEY, nil)
 
       assert_logged([
-                      /Initialization did not complete cleanly/,
+                      /onInitFailure=continue/,
                       /re-initialized after fork pid=#{Process.pid} components=sse/
                     ])
     ensure
@@ -427,7 +427,7 @@ class TestForkSafety < Minitest::Test
     assert_equal :disconnected, client.connection_state
   ensure
     server.stop
-    assert_logged([/Initialization did not complete cleanly/])
+    assert_logged([/onInitFailure=continue/])
   end
 
   # The Process._fork hook (Ruby 3.1+) must be installed at load time on
@@ -480,7 +480,7 @@ class TestForkSafety < Minitest::Test
       client.stop
       server.stop
       server_thread&.join(2)
-      assert_logged([/Initialization did not complete cleanly/])
+      assert_logged([/onInitFailure=continue/])
     end
   end
 
@@ -525,7 +525,7 @@ class TestForkSafety < Minitest::Test
       client.stop
       server.stop
       server_thread&.join(2)
-      assert_logged([/Initialization did not complete cleanly/])
+      assert_logged([/onInitFailure=continue/])
     end
   end
 
@@ -817,7 +817,7 @@ class TestForkSafety < Minitest::Test
       client.stop
       server.stop
       server_thread&.join(2)
-      assert_logged([/Initialization did not complete cleanly/])
+      assert_logged([/onInitFailure=continue/])
     end
   end
 
@@ -884,7 +884,7 @@ class TestForkSafety < Minitest::Test
       client.stop
       server.stop
       server_thread&.join(2)
-      assert_logged([/Initialization did not complete cleanly/])
+      assert_logged([/onInitFailure=continue/])
     end
   end
 
@@ -952,7 +952,7 @@ class TestForkSafety < Minitest::Test
       second.stop
       server.stop
       server_thread&.join(2)
-      assert_logged([/Initialization did not complete cleanly/])
+      assert_logged([/onInitFailure=continue/])
     end
   end
 
@@ -1017,7 +1017,7 @@ class TestForkSafety < Minitest::Test
       client.stop
       server.stop
       server_thread&.join(2)
-      assert_logged([/Initialization did not complete cleanly/])
+      assert_logged([/onInitFailure=continue/])
     end
   end
 
@@ -1142,7 +1142,7 @@ class TestForkSafety < Minitest::Test
       client.stop
       server.stop
       server_thread&.join(2)
-      assert_logged([/Initialization did not complete cleanly/])
+      assert_logged([/onInitFailure=continue/])
     end
   end
 
@@ -1376,7 +1376,7 @@ class TestForkSafety < Minitest::Test
         data_dir_auto_reload: false,
         # D7 (:raise parity) is exercised on its own below; keep this test
         # about where the failure path DIALS, not about how it reports.
-        on_init_failure: :return,
+        on_init_failure: :continue,
         context_upload_mode: :none,
         collect_evaluation_summaries: false
       ).tap do |opts|
@@ -1572,7 +1572,7 @@ class TestForkSafety < Minitest::Test
     client = build_client_for_fork_tests(
       port: PORT_RAISE,
       api_urls: ["http://127.0.0.1:#{PORT_RAISE}"],
-      on_init_failure: :raise,
+      on_init_failure: :fail,
       # No update channel: the child cannot heal, so "keeps raising" is
       # deterministic rather than a race with the stream.
       enable_sse: false,
@@ -1592,23 +1592,29 @@ class TestForkSafety < Minitest::Test
           rescue StandardError => e
             "raised #{e.class}"
           end
+        second_started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
         second =
           begin
             "returned #{client.get(CONFIG_KEY, 'DEFAULT').inspect}"
           rescue StandardError => e
             "raised #{e.class}"
           end
-        { 'first' => first, 'second' => second }
+        second_s = Process.clock_gettime(Process::CLOCK_MONOTONIC) - second_started
+        { 'first' => first, 'second' => second, 'second_s' => second_s }
       end
 
       refute report['error'], "child errored: #{report['error']}"
-      assert_equal 'raised RuntimeError', report['first'],
-                   'under on_init_failure: :raise the first use in a child must raise the init ' \
+      assert_equal 'raised Quonfig::Errors::InitializationError', report['first'],
+                   'under on_init_failure: :fail the first use in a child must raise the init ' \
                    'error, exactly as a freshly constructed client would'
-      assert_equal 'raised RuntimeError', report['second'],
-                   'under :raise a child that never became ready must keep raising'
-      assert_equal 1, ConfigsEndpoint.hits - config_hits_before,
-                   'a child that is already known to have failed init must not re-fetch on every call'
+      assert_equal 'raised Quonfig::Errors::InitializationError', report['second'],
+                   'under :fail a child that never became ready must keep raising'
+      # The first use retries until init_timeout_ms (qfg-9p4i.10), so it may
+      # fetch more than once; the second must raise the sticky error at once
+      # instead of re-running that blocking fetch loop.
+      assert_operator report['second_s'], :<, 0.3,
+                      'a child that is already known to have failed init must not re-fetch on every call'
+      assert_operator ConfigsEndpoint.hits - config_hits_before, :>=, 1
     ensure
       ConfigsEndpoint.mode!(:ok)
       StreamEndpoint.close_all!
@@ -1633,12 +1639,12 @@ class TestForkSafety < Minitest::Test
     raiser = build_client_for_fork_tests(
       port: PORT_RAISE_SSE,
       api_urls: ["http://127.0.0.1:#{PORT_RAISE_SSE}"],
-      on_init_failure: :raise
+      on_init_failure: :fail
     )
     returner = build_client_for_fork_tests(
       port: PORT_RAISE_SSE,
       api_urls: ["http://127.0.0.1:#{PORT_RAISE_SSE}"],
-      on_init_failure: :return
+      on_init_failure: :continue
     )
 
     begin
@@ -1671,13 +1677,13 @@ class TestForkSafety < Minitest::Test
       end
 
       refute report['error'], "child errored: #{report['error']}"
-      assert_equal 'raised RuntimeError', report['first']
+      assert_equal 'raised Quonfig::Errors::InitializationError', report['first']
       assert report['sse_started'],
              'the update channel must still be started when the rebuild fails, so the child can heal'
       assert report['healed'],
              'once the stream installed an envelope the child must stop raising and serve config'
       assert_equal 'returned "DEFAULT"', report['return_mode'],
-                   'on_init_failure: :return must be unchanged — default returned, nothing raised'
+                   'on_init_failure: :continue must be unchanged — default returned, nothing raised'
     ensure
       ConfigsEndpoint.mode!(:ok)
       StreamEndpoint.close_all!
@@ -2169,7 +2175,7 @@ class TestForkSafety < Minitest::Test
   end
 
   # Build a Client wired to a local WEBrick SSE server. We bypass the
-  # synchronous HTTP fetch by stubbing on_init_failure: :return — the fork
+  # synchronous HTTP fetch by stubbing on_init_failure: :continue — the fork
   # tests care about the SSE thread lifecycle, not the initial GET. Telemetry
   # is fully off so the suite never opens a socket to the real telemetry
   # service (see build_telemetry_client_for_fork_tests for the one test that
@@ -2183,7 +2189,7 @@ class TestForkSafety < Minitest::Test
           enable_sse: true,
           enable_polling: false,
           initialization_timeout_sec: 1,
-          on_init_failure: :return,
+          on_init_failure: :continue,
           context_upload_mode: :none,
           collect_evaluation_summaries: false
         }.merge(overrides)

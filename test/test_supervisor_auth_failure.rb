@@ -261,7 +261,7 @@ class TestSupervisorAuthFailure < Minitest::Test
       environment: nil,
       enable_sse: enable_sse,
       logger: @rig.logger,
-      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN,
+      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::CONTINUE,
       init_timeout_ms: 8000,
       context_upload_mode: :none,
       collect_evaluation_summaries: false,
@@ -521,7 +521,12 @@ class TestSupervisorAuthFailure < Minitest::Test
       probes = waits(during, :probe)
       assert_equal exit_cycle - 1, probes.size
       probes.each { |t| assert_includes(150.0..300.0, t) }
-      assert_equal 1, logs(ev, :error).size, "exactly one ERROR for the whole run: #{logs(ev, :error)}"
+      # Contract (c) counts ERRORs from entry on; before entry the init call
+      # logs its own one ERROR for the rejected key (qfg-9p4i.10, log contract).
+      assert_equal 1, logs(during, :error).size, "exactly one ERROR from entry on: #{logs(during, :error)}"
+      init_errors = logs(ev[0...entry_index(ev)], :error)
+      assert_equal 1, init_errors.size, "one init ERROR before entry: #{init_errors}"
+      assert_match(/init FAILED: SDK key rejected \(#{status}\)/, init_errors.first[2])
       refute client.terminal_failure?
       assert_equal 100 + exit_cycle, client.held_generation
     end

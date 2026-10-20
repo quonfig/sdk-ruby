@@ -55,7 +55,7 @@ class TestClientTelemetry < Minitest::Test
       api_urls: ['https://primary.example.com'],
       enable_sse: false,
       enable_polling: false,
-      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN
+      on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::CONTINUE
     ).tap { |o| o.instance_variable_set(:@telemetry_destination, 'https://t.example.com') }
 
     fake_conn = FakeHttpConnection.new

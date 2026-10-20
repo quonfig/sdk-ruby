@@ -69,20 +69,6 @@ module IntegrationTestHelpers
     )
   end
 
-  # A client whose initial network fetch cannot succeed (unreachable api_url +
-  # tiny init timeout) for the initialization_timeout / on_init_failure cases.
-  def self.build_network_client(api_url:, timeout_sec:, on_init_failure:)
-    Quonfig::Client.new(
-      sdk_key: 'test-unused',
-      api_urls: [api_url.to_s.empty? ? 'https://127.0.0.1:1' : api_url],
-      initialization_timeout_sec: timeout_sec,
-      on_init_failure: on_init_failure,
-      enable_sse: false,
-      enable_polling: false,
-      enable_quonfig_user_context: false
-    )
-  end
-
   # Drop the EXPECTED_WARNINGS lines from the captured log so the teardown
   # only trips on unexpected output.
   def self.acknowledge_expected_warnings

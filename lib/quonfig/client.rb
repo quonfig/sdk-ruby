@@ -21,6 +21,12 @@ module Quonfig
   class Client
     LOG = Quonfig::InternalLogger.new(self)
 
+    # Init fetch loop cadence (qfg-9p4i.10; init-failure design B.3, C).
+    INIT_PROGRESS_EVERY_S = 5
+    INIT_WAIT_PROGRESS_EVERY_S = 30
+    INIT_BACKOFF_CAP_S = 30.0
+    private_constant :INIT_PROGRESS_EVERY_S, :INIT_WAIT_PROGRESS_EVERY_S, :INIT_BACKOFF_CAP_S
+
     # Auth-failed probe period bounds, rule R3 (qfg-goi1.10.26).
     AUTH_PROBE_MIN_SECONDS = 150.0
     AUTH_PROBE_MAX_SECONDS = 300.0
@@ -62,6 +68,7 @@ module Quonfig
           Quonfig::Options.new(option_kwargs)
         end
       Quonfig::InternalLogger.user_logger = @options.logger if @options.logger
+      warn_on_init_failure_spelling(@options)
       @global_context = build_initial_global_context(@options)
       @instance_hash = SecureRandom.uuid
       @store = store || Quonfig::ConfigStore.new
@@ -621,6 +628,33 @@ module Quonfig
       !last_successful_refresh.nil?
     end
 
+    # Block until the client has config (see #ready?), up to +timeout_ms+ (nil
+    # = no bound). Returns true once ready, false if the timeout ran out or the
+    # client was stopped first (qfg-9p4i.10; init-failure design B.4). Never
+    # raises for an outage: under on_init_failure: :continue this is how a
+    # caller waits for the background retry to heal.
+    #
+    # In a forked child that has not used the client yet, this runs the
+    # child's re-initialization (as any first use does) and keeps waiting if
+    # that fails.
+    def wait_for_ready(timeout_ms: nil)
+      deadline = timeout_ms && (monotonic_now + (timeout_ms / 1000.0))
+      begin
+        ensure_initialized_after_fork
+      rescue Quonfig::Errors::InitializationError
+        nil
+      end
+      loop do
+        return true if ready?
+        return false if @stopped
+        return false if deadline && monotonic_now >= deadline
+
+        sleep WAIT_FOR_READY_POLL_S
+      end
+    end
+
+    WAIT_FOR_READY_POLL_S = 0.05
+
     # Meta.generation of the currently-held envelope (0 before the first install
     # or when the backend does not emit a generation). Canonical ordering: an
     # established client never regresses to a lower generation.
@@ -794,6 +828,10 @@ module Quonfig
 
       cancel_fallback_engage_timer
 
+      # Sleep-only thread with no I/O and nothing to drain: killing it is safe.
+      @not_ready_reporter&.kill
+      @not_ready_reporter = nil
+
       begin
         @poll_supervisor&.stop
       rescue StandardError => e
@@ -829,6 +867,8 @@ module Quonfig
       @telemetry_reporter = nil
       @datadir_watcher = nil
       @fallback_engage_timer = nil
+      @not_ready_reporter = nil
+      @init_heal_pending = false
 
       # Dropping our reference is not enough for the reporter: its
       # `Kernel.at_exit { final_drain_on_exit }` closure is process-wide, it
@@ -939,9 +979,9 @@ module Quonfig
         end
       end
 
-      return unless @options.on_init_failure == Quonfig::Options::ON_INITIALIZATION_FAILURE::RAISE
+      return unless @options.on_init_failure == Quonfig::Options::ON_INITIALIZATION_FAILURE::FAIL
 
-      # Parity with a fresh Client.new, which raises under :raise. Stored so
+      # Parity with a fresh Client.new, which raises under :fail. Stored so
       # later calls keep raising rather than re-running the fetch on every
       # lookup.
       @fork_rebuild_error = err
@@ -1049,7 +1089,18 @@ module Quonfig
     # path that hands an envelope to the cache: datadir load, initial HTTP
     # fetch, SSE event apply, and polling worker fetch.
     def record_refresh!
-      @state_mutex.synchronize { @last_successful_refresh = Time.now.utc }
+      healed_from = @state_mutex.synchronize do
+        @last_successful_refresh = Time.now.utc
+        next nil unless @init_heal_pending
+
+        # First install after an init that continued without config. Cleared
+        # under the lock so racing installers log the heal exactly once.
+        @init_heal_pending = false
+        @init_started_at || monotonic_now
+      end
+      # The section C heal line, at WARN so the filter level that saw the
+      # failure also sees the recovery. Logged outside the lock.
+      log_init_recovered(healed_from) if healed_from
     end
 
     def sse_restart_total
@@ -1367,27 +1418,212 @@ module Quonfig
       start_polling if @options.enable_polling && !sse_started
     end
 
+    # The init call's fetch loop (qfg-9p4i.10; init-failure design B.3 and the
+    # section C log contract). Attempts the hedged primary+secondary fetch, and
+    # between failed attempts sleeps a jittered 0.5s, 1s, 2s ... (30s cap) until
+    # one installs. At init_timeout_ms, on_init_failure decides:
+    #
+    # - :fail     raise InitializationError (reason :unavailable), or
+    #             InitializationTimeoutError when an attempt was still in flight
+    # - :wait     keep going with no upper bound
+    # - :continue return over the empty store; the update channel started by
+    #             the caller keeps retrying and heals it
+    #
+    # Every leg answering 401/403 short-circuits :fail and :continue at once;
+    # :wait logs it and keeps retrying (the key may be provisioned late).
     def perform_initial_fetch
-      timeout = (@options.init_timeout_ms || 10_000) / 1000.0
-      result = :failed
+      mode = @options.on_init_failure
+      timeout_ms = @options.init_timeout_ms || Quonfig::Options::DEFAULT_INIT_TIMEOUT_MS
+      timeout_s = timeout_ms / 1000.0
+      start = monotonic_now
+      @init_started_at = start
+      deadline = start + timeout_s
+      urls = Array(@options.config_api_urls)
+      LOG.debug "[quonfig] init: fetching config (initTimeout=#{format_secs(timeout_s)}, onInitFailure=#{mode})"
 
-      begin
-        Timeout.timeout(timeout) do
-          result = @config_loader.fetch!
+      attempt = 0
+      errs = ''
+      next_progress = start + INIT_PROGRESS_EVERY_S
+      timed_out_logged = false
+
+      loop do
+        return if @stopped
+
+        attempt += 1
+        cycle = nil
+        cycle_log = @config_loader.new_cycle_log
+        begin
+          if mode == Quonfig::Options::ON_INITIALIZATION_FAILURE::WAIT
+            cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log)
+          else
+            # Never 0: Timeout.timeout(0) means "no timeout".
+            budget = [deadline - monotonic_now, 0.001].max
+            Timeout.timeout(budget) { cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log) }
+          end
+        rescue Timeout::Error
+          # An attempt was still in flight at init_timeout_ms (a hang). Its legs
+          # run on until the hedge abort; their late lines go to DEBUG.
+          cycle_log.silence!
+          errs = format_leg_errors(urls, {}, in_flight: true)
+          return init_timed_out(mode, timeout_s, errs, hung: true)
         end
-      rescue Timeout::Error
-        handle_init_failure(
-          Quonfig::Errors::InitializationTimeoutError.new(timeout, nil)
-        )
-        return
+
+        if cycle.result != :failed
+          log_init_recovered(start, attempt) if attempt > 1
+          sync_evaluator_env_id!
+          record_refresh!
+          return
+        end
+
+        errs = format_leg_errors(urls, cycle.leg_errors)
+        now = monotonic_now
+        if cycle.all_legs_unauthorized?(urls.length)
+          status = cycle.statuses.values.first
+          case mode
+          when Quonfig::Options::ON_INITIALIZATION_FAILURE::WAIT
+            LOG.error "[quonfig] init: SDK key rejected (#{status}) by every delivery leg. Check the key and " \
+                      "environment. onInitFailure=wait: still retrying. #{errs}"
+          else
+            msg = "[quonfig] init FAILED: SDK key rejected (#{status}) by every delivery leg. Check the key " \
+                  "and environment. onInitFailure=#{mode}: " \
+                  "#{mode == Quonfig::Options::ON_INITIALIZATION_FAILURE::FAIL ? 'raising now' : 'starting on code defaults now'}."
+            LOG.error msg
+            return init_continue_on_defaults(errs) if mode == Quonfig::Options::ON_INITIALIZATION_FAILURE::CONTINUE
+
+            raise Quonfig::Errors::InitializationError.new(
+              "Quonfig init failed: SDK key rejected (#{status}) by every delivery leg. #{errs}",
+              reason: :unauthorized, errors: errs
+            )
+          end
+        elsif attempt == 1
+          LOG.warn "[quonfig] init: config not loaded yet, retrying until initTimeout (#{format_secs(timeout_s)}). #{errs}"
+        end
+
+        if now >= deadline
+          return init_timed_out(mode, timeout_s, errs, hung: false) unless mode == Quonfig::Options::ON_INITIALIZATION_FAILURE::WAIT
+
+          unless timed_out_logged
+            timed_out_logged = true
+            next_progress = now + INIT_WAIT_PROGRESS_EVERY_S
+            LOG.warn "[quonfig] init: no config after #{format('%.1f', now - start)}s. onInitFailure=wait: still " \
+                     "blocking startup and retrying indefinitely. #{errs}. Use onInitFailure=fail or continue to bound startup."
+          end
+        end
+
+        if now >= next_progress && attempt > 1
+          if now < deadline
+            LOG.warn "[quonfig] init: still waiting for config (#{format('%.1f', now - start)}s elapsed of " \
+                     "#{format_secs(timeout_s)}, attempt #{attempt}). #{errs}"
+            next_progress += INIT_PROGRESS_EVERY_S while next_progress <= now
+          else
+            LOG.warn "[quonfig] init: still blocked waiting for config (#{(now - start).round}s elapsed, " \
+                     "attempt #{attempt}). #{errs}"
+            next_progress += INIT_WAIT_PROGRESS_EVERY_S while next_progress <= now
+          end
+        end
+
+        delay = init_backoff_s(attempt)
+        delay = [delay, deadline - now].min if now < deadline && mode != Quonfig::Options::ON_INITIALIZATION_FAILURE::WAIT
+        sleep delay if delay.positive?
+        # The backoff ran up to the deadline: decide on the last attempt's
+        # outcome rather than starting an attempt with no time left.
+        return init_timed_out(mode, timeout_s, errs, hung: false) if mode != Quonfig::Options::ON_INITIALIZATION_FAILURE::WAIT && monotonic_now >= deadline
+      end
+    end
+
+    # 0.5s, 1s, 2s, 4s ... capped at 30s, jittered +/-20%.
+    def init_backoff_s(attempt)
+      base = [0.5 * (2**(attempt - 1)), INIT_BACKOFF_CAP_S].min
+      base * (0.8 + (rand * 0.4))
+    end
+
+    def init_timed_out(mode, timeout_s, errs, hung:)
+      elapsed = format('%.1f', timeout_s)
+      if mode == Quonfig::Options::ON_INITIALIZATION_FAILURE::CONTINUE
+        LOG.error "[quonfig] init: no config after #{elapsed}s. onInitFailure=continue: STARTING ON CODE DEFAULTS. " \
+                  'This instance may disagree with the rest of your fleet. Retrying in background.'
+        return init_continue_on_defaults(errs)
       end
 
-      if result == :failed
-        handle_init_failure(RuntimeError.new('Config fetch failed against all api_urls'))
-      else
-        sync_evaluator_env_id!
-        record_refresh!
+      LOG.error "[quonfig] init FAILED: no config after #{elapsed}s. #{errs}. onInitFailure=fail: raising " \
+                'Quonfig::Errors::InitializationError. Options: on_init_failure: :wait to keep waiting, ' \
+                'on_init_failure: :continue to start on code defaults, or raise init_timeout_ms.'
+      message = "Quonfig init failed: no config after #{elapsed}s. #{errs}"
+      raise Quonfig::Errors::InitializationTimeoutError.new(timeout_s, nil, message: message, errors: errs) if hung
+
+      raise Quonfig::Errors::InitializationError.new(message, reason: :unavailable, errors: errs)
+    end
+
+    # :continue over an empty store. The update channel the caller starts next
+    # keeps retrying; #record_refresh! logs the heal, and the not-ready reporter
+    # logs the outage on the section C cadence until then.
+    def init_continue_on_defaults(errs)
+      @state_mutex.synchronize do
+        @init_heal_pending = true
+        @init_last_errs = errs
       end
+      start_not_ready_reporter
+      nil
+    end
+
+    # WARN every 30s for 5 minutes, then every 5 minutes, while a :continue
+    # client has no config (section C, "Background retry while not ready").
+    def start_not_ready_reporter
+      return if @not_ready_reporter&.alive?
+
+      @not_ready_reporter = Thread.new do
+        Thread.current.name = 'quonfig-not-ready-reporter' if Thread.current.respond_to?(:name=)
+        loop do
+          elapsed = monotonic_now - @init_started_at
+          sleep(elapsed < 300 ? 30 : 300)
+          break if @stopped || ready?
+
+          since = (monotonic_now - @init_started_at).round
+          errs = @state_mutex.synchronize { @init_last_errs }
+          LOG.warn "[quonfig] still not connected to Quonfig delivery (#{since / 60}m#{since % 60}s since start); " \
+                   "serving defaults. #{errs}"
+        end
+      rescue StandardError
+        nil
+      end
+    end
+
+    def log_init_recovered(start, _attempt = nil)
+      via = @config_loader.respond_to?(:resolved_from) ? @config_loader.resolved_from : ''
+      via = 'stream' if via.to_s.empty?
+      version = @config_loader.respond_to?(:version) ? @config_loader.version : nil
+      LOG.warn "[quonfig] init recovered: config loaded after #{format('%.1f', monotonic_now - start)}s via #{via}" \
+               "#{" (version #{version})" if version}. Now serving live config."
+    end
+
+    # primary=<host>: <error>; secondary=<host>: <error>. Hosts only, never the
+    # SDK key or URL credentials.
+    def format_leg_errors(urls, leg_errors, in_flight: false)
+      urls.each_with_index.map do |url, i|
+        label = case i
+                when 0 then 'primary'
+                when 1 then 'secondary'
+                else "url#{i}"
+                end
+        err = leg_errors[i] || (in_flight ? 'no response before initTimeout' : 'no response')
+        "#{label}=#{safe_host(url)}: #{err}"
+      end.join('; ')
+    end
+
+    def safe_host(url)
+      uri = URI.parse(url.to_s)
+      uri.host ? "#{uri.host}:#{uri.port}" : '?'
+    rescue URI::InvalidURIError
+      '?'
+    end
+
+    # "10s" for whole seconds, "0.5s" otherwise.
+    def format_secs(secs)
+      secs == secs.to_i ? "#{secs.to_i}s" : "#{secs}s"
+    end
+
+    def monotonic_now
+      Process.clock_gettime(Process::CLOCK_MONOTONIC)
     end
 
     # qfg-pinh: In SDK-key DELIVERY mode the server's `meta.environment` is
@@ -1429,6 +1665,23 @@ module Quonfig
         '(SDK-key) mode; the active environment is determined by the SDK key, ' \
         'so this setting is ignored (it applies only when loading from a local data dir)'
       )
+    end
+
+    DEPRECATED_INIT_FAILURE_WARNED = Set.new
+    DEPRECATED_INIT_FAILURE_MUTEX = Mutex.new
+    private_constant :DEPRECATED_INIT_FAILURE_WARNED, :DEPRECATED_INIT_FAILURE_MUTEX
+
+    # One WARN per process per deprecated spelling (section C), and a WARN for
+    # an unrecognized value, which runs as :fail.
+    def warn_on_init_failure_spelling(options)
+      if (bad = options.on_init_failure_unknown)
+        LOG.warn "[quonfig] unknown on_init_failure #{bad.inspect}; using :fail (expected :fail, :wait or :continue)"
+      end
+      old = options.on_init_failure_alias
+      return if old.nil?
+
+      first = DEPRECATED_INIT_FAILURE_MUTEX.synchronize { DEPRECATED_INIT_FAILURE_WARNED.add?(old) }
+      LOG.warn "[quonfig] on_init_failure=:#{old} is deprecated; use :#{options.on_init_failure}" if first
     end
 
     # qfg-7h5d.1.14: the per-leg hedge abort MUST be < init_timeout_ms, otherwise
@@ -1474,15 +1727,6 @@ module Quonfig
         '[quonfig] explicit api_urls disables automatic failover to the ' \
         'secondary; pass both primary and secondary URLs to keep it'
       )
-    end
-
-    def handle_init_failure(err)
-      if @options.on_init_failure == Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN
-        LOG.warn "[quonfig] Initialization did not complete cleanly; continuing with empty store: #{err.message}"
-        return
-      end
-
-      raise err
     end
 
     # Returns true if SSE started successfully, false otherwise. A false here
