@@ -118,11 +118,3 @@ Lint/UnusedBlockArgument:
 Naming/MethodName:
   Exclude:
     - 'test/**/*'
-
-# test/integration/test_*.rb is emitted by the integration-test-data
-# generator and CI fails if it differs from a fresh generation, so it cannot
-# be autocorrected locally. The generator prints millisecond literals like
-# 10000 without separators.
-Style/NumericLiterals:
-  Exclude:
-    - 'test/integration/**/*'
