@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fix (patch): the init deadline reason follows sdk-go (qfg-9p4i.17.14, design decision 10).** A new init attempt now starts whenever time remains before `init_timeout_ms`, however little. Before, a retry was skipped with under 250ms left and the boot was decided on the previous attempt, so an attempt that fails fast followed by a delivery that blackholes until the deadline raised `reason: :unavailable` where sdk-go raises `InitializationTimeoutError` (`reason: :timeout`). An attempt still in flight at the deadline decides the reason (`:timeout` only if none of its legs answered); a deadline that lands in the backoff is decided by the last completed attempt (`:timeout` only if every leg timed out). Test: `test/test_init_failure.rb`.
 - **Fix (patch): init-failure conformance (qfg-9p4i.17.4).**
   - `init_timeout_ms` <= 0 now runs exactly one fetch attempt, lets it finish, then applies `on_init_failure`. Before, the attempt got a 1ms budget, so it was cut off before it could answer and the boot raised `InitializationTimeoutError` even against a healthy delivery.
   - Config-fetch log lines (including the per-leg lines logged during init) show `scheme://host:port`, never URL userinfo (`user:pass@`), and no longer log the body of a 401/403 response. A non-JSON 200 body no longer reaches the init error's `errors`. The wall-clock fetch timeout message also drops userinfo.
