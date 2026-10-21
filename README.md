@@ -283,6 +283,15 @@ rescue Quonfig::Errors::InitializationError => e
 end
 ```
 
+`init_timeout_ms` <= 0 runs exactly one fetch attempt and lets it finish (it
+is bounded by the per-leg fetch timeouts), then applies `on_init_failure` as
+in the table: `:fail` raises, `:continue` starts on code defaults and keeps
+retrying, `:wait` keeps retrying. It never means "no deadline".
+
+Init log lines and `InitializationError#message` / `#errors` name delivery
+hosts (`host:port`) and HTTP statuses only, never URL credentials
+(`user:pass@`) or upstream response bodies.
+
 Readiness: `client.ready?` is true once config has loaded, and
 `client.wait_for_ready(timeout_ms: nil)` blocks until it has (true) or the
 timeout runs out (false). Under `:wait`, point your readiness probe at
@@ -318,7 +327,7 @@ Quonfig::Client.new(
 | `enable_sse`              | `Boolean`                  | `true`                                                              | Receive real-time updates over Server-Sent Events.                                                |
 | `fallback_poll_enabled`   | `Boolean`                  | `true`                                                              | Engage HTTP polling as a fallback when SSE is unavailable for >= 2x `fallback_poll_interval_ms`. Deprecated alias: `enable_polling`. |
 | `fallback_poll_interval_ms` | `Integer` (ms)           | `60_000`                                                            | Interval between fallback HTTP polls, in milliseconds. Deprecated alias: `poll_interval` (seconds, multiplied by 1000 internally). |
-| `init_timeout_ms` | `Integer` (ms)             | `10_000`                                                            | Maximum time to wait for the initial config load, in milliseconds. Deprecated alias: `initialization_timeout_sec` (seconds, multiplied by 1000 internally). |
+| `init_timeout_ms` | `Integer` (ms)             | `10_000`                                                            | Maximum time to wait for the initial config load, in milliseconds. `<= 0` runs exactly one attempt, then applies `on_init_failure`. Deprecated alias: `initialization_timeout_sec` (seconds, multiplied by 1000 internally). |
 | `on_init_failure` | `Symbol`                   | `:fail`                                                             | What `Client.new` does when no config has loaded by `init_timeout_ms`: `:fail`, `:wait` or `:continue`. See [Startup failure](#startup-failure-on_init_failure). Deprecated aliases: `:raise` (= `:fail`), `:return` (= `:continue`). |
 | `on_no_default`   | `Symbol`                   | `:raise`                                                            | Behavior when a key has no value and no default: `:raise` (raise `Quonfig::Errors::MissingDefaultError`) or `:return_nil`. |
 | `global_context`  | `Hash`                     | `{}`                                                                | Context applied to every evaluation.                                                              |

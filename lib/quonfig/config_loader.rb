@@ -24,6 +24,29 @@ module Quonfig
     # poller then enters auth-failed (Client#start_polling).
     AUTH_STATUSES = [401, 403, 404, 410].freeze
 
+    # The leg error recorded when a leg ended on a timeout (its per-leg
+    # deadline or the hedge abort). The init loop reads it to tell a hung
+    # attempt from one that failed fast (init-failure design, decision 7).
+    LEG_TIMED_OUT = 'timed out'
+
+    # host:port of +url+ (scheme kept when present), never its userinfo, path
+    # or query. For log lines and leg errors (init-failure design, decision 9).
+    def self.display_url(url)
+      return url.to_s unless url.is_a?(String) || url.is_a?(URI::Generic)
+
+      uri = URI.parse(url.to_s)
+      return redact_userinfo(url.to_s) unless uri.host
+
+      "#{"#{uri.scheme}://" if uri.scheme}#{uri.host}:#{uri.port}"
+    rescue URI::InvalidURIError
+      redact_userinfo(url.to_s)
+    end
+
+    # Strip "user:pass@" from every URL in +text+.
+    def self.redact_userinfo(text)
+      text.to_s.gsub(%r{(//)[^/@\s]+@}, '\\1')
+    end
+
     # Result of one fetch cycle across the configured legs. +statuses+ maps a
     # config_api_urls index to the HTTP status that leg returned (0 = no
     # response: timeout, connection failure). +primary_host+ is host:port of
@@ -230,10 +253,14 @@ module Quonfig
     # leg's status (rule R2, qfg-goi1.10.26). +log_mode+ is one of CycleLog's
     # modes; the poller passes :poll for an ordinary cycle and :probe while
     # auth-failed.
-    def fetch_cycle!(log_mode: :normal, cycle_log: nil)
+    #
+    # +leg_errors+ lets a caller pass in the map the legs record their errors
+    # into, so it can still read them if it abandons the cycle mid-flight (the
+    # init loop at init_timeout_ms).
+    def fetch_cycle!(log_mode: :normal, cycle_log: nil, leg_errors: nil)
       urls = Array(@options.config_api_urls)
       statuses = Concurrent::Map.new
-      leg_errors = Concurrent::Map.new
+      leg_errors ||= Concurrent::Map.new
       return FetchCycle.new(:failed, statuses, '', leg_errors) if urls.empty?
 
       cycle_log ||= new_cycle_log(log_mode)
@@ -435,7 +462,8 @@ module Quonfig
 
     def fetch_from(source, index = nil, timeout_ms: nil, statuses: nil, cycle_log: nil, leg_errors: nil)
       cycle_log ||= CycleLog.new(@logger, :normal)
-      note = ->(msg) { leg_errors[index || 0] = msg.to_s[0, 200] if leg_errors }
+      where = self.class.display_url(source)
+      note = ->(msg) { leg_errors[index || 0] = self.class.redact_userinfo(msg)[0, 200] if leg_errors }
       # qfg-7h5d.1.9 / .1.14: bound this single per-leg attempt so a hung upstream
       # aborts (Faraday::TimeoutError, caught below as :failed). On the hedged
       # path the caller passes config_fetch_hedge_abort_ms; on the sequential /
@@ -464,15 +492,16 @@ module Quonfig
         # an equal/older payload — surface that so the caller doesn't double-count.
         result == :not_modified ? :not_modified : :updated
       when 304
-        @logger.debug "Configs not modified (304) from #{source}"
+        @logger.debug "Configs not modified (304) from #{where}"
         :not_modified
       when 401, 403
         note.call("HTTP #{response.status} (SDK key rejected)")
-        cycle_log.log(:warn, "Config fetch rejected (#{response.status}) from #{source}: #{short_body(response)}", auth: true)
+        # Never the response body: it is upstream content (decision 9).
+        cycle_log.log(:warn, "Config fetch rejected (#{response.status}) from #{where}", auth: true)
         :failed
       else
         note.call("HTTP #{response.status}")
-        cycle_log.log(:info, "Config fetch failed: status #{response.status} from #{source}",
+        cycle_log.log(:info, "Config fetch failed: status #{response.status} from #{where}",
                       auth: AUTH_STATUSES.include?(response.status.to_i))
         :failed
       end
@@ -481,21 +510,30 @@ module Quonfig
       # qfg-9dxb.3: a non-envelope 200 is a leg error, NOT an install — the
       # hedge/failover proceeds and this leg's ETag is never stored (so a junk
       # 200 cannot pin itself through later 304s).
-      cycle_log.log(:warn, "Config fetch from #{source} returned a non-envelope 200 (#{e.message}); treating as a failed leg")
+      cycle_log.log(:warn, "Config fetch from #{where} returned a non-envelope 200 (#{e.message}); treating as a failed leg")
       :failed
     rescue Quonfig::ConfigShape::AllInvalidError => e
       note.call(e.message)
       # qfg-krjt: a payload with no loadable config is a leg error, so it can
       # never install as an empty workspace.
-      cycle_log.log(:warn, "Config fetch from #{source}: #{e.message}; treating as a failed leg")
+      cycle_log.log(:warn, "Config fetch from #{where}: #{e.message}; treating as a failed leg")
+      :failed
+    rescue JSON::ParserError
+      # The parser's message quotes the body; never pass it on (decision 9).
+      note.call('non-JSON 200 body')
+      cycle_log.log(:warn, "Config fetch from #{where} returned a non-JSON 200; treating as a failed leg")
+      :failed
+    rescue Faraday::TimeoutError
+      note.call(LEG_TIMED_OUT)
+      cycle_log.log(:warn, "Timeout error fetching configs from #{where}")
       :failed
     rescue Faraday::ConnectionFailed => e
       note.call(e.message)
-      @logger.debug "Connection failure fetching configs from #{source}: #{e.message}"
+      @logger.debug "Connection failure fetching configs from #{where}: #{self.class.redact_userinfo(e.message)}"
       :failed
     rescue StandardError => e
       note.call("#{e.class}: #{e.message}")
-      cycle_log.log(:warn, "Unexpected error fetching configs from #{source}: #{e.message}")
+      cycle_log.log(:warn, "Unexpected error fetching configs from #{where}: #{self.class.redact_userinfo(e.message)}")
       :failed
     end
 
@@ -520,13 +558,6 @@ module Quonfig
       # ConfigShape::AllInvalidError when none is loadable.
       configs = Quonfig::ConfigShape.filter(data['configs'] || [], logger: @logger, version: meta['version'])
       Quonfig::ConfigEnvelope.new(configs: configs, meta: meta)
-    end
-
-    def short_body(response)
-      return '' if response.body.nil?
-
-      str = response.body.to_s
-      str.length > 200 ? "#{str[0, 200]}..." : str
     end
 
     def install_envelope(envelope, source:, source_index: nil)
@@ -561,12 +592,12 @@ module Quonfig
             # Unversioned payload while a real generation is held: not provably
             # older (it carries no ordering info), so a silent no-op — NOT
             # counted as guardRejected.
-            @logger.debug "Unversioned payload ignored: held generation #{@held_generation} (source=#{source})"
+            @logger.debug "Unversioned payload ignored: held generation #{@held_generation} (source=#{self.class.display_url(source)})"
             return :not_modified
           end
 
           if incoming_gen < @held_generation
-            @logger.debug "Reject-older guard: dropping incoming generation #{incoming_gen} < held #{@held_generation} (source=#{source})"
+            @logger.debug "Reject-older guard: dropping incoming generation #{incoming_gen} < held #{@held_generation} (source=#{self.class.display_url(source)})"
             # Failover observability (qfg-41nh.18): count the guard rejection.
             # This single guard covers BOTH the HTTP config-fetch path and the
             # SSE message path (apply_envelope) — every network install funnels
@@ -586,7 +617,7 @@ module Quonfig
             # `guardRejected` made a healthy client report failover activity from
             # init alone. Not installed, not counted — but still :not_modified, so
             # the caller's liveness stamp is unchanged.
-            @logger.debug "Same-generation re-delivery: ignoring incoming generation #{incoming_gen} (source=#{source})"
+            @logger.debug "Same-generation re-delivery: ignoring incoming generation #{incoming_gen} (source=#{self.class.display_url(source)})"
           end
           return :not_modified
         end
