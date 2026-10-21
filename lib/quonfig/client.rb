@@ -25,11 +25,7 @@ module Quonfig
     INIT_PROGRESS_EVERY_S = 5
     INIT_WAIT_PROGRESS_EVERY_S = 30
     INIT_BACKOFF_CAP_S = 30.0
-    # A retry is only started when at least this much of init_timeout_ms is
-    # left. A shorter attempt would be cut mid-connect by its Timeout guard
-    # and misread as a hang (reason :timeout) when every leg had just refused.
-    INIT_MIN_ATTEMPT_S = 0.25
-    private_constant :INIT_PROGRESS_EVERY_S, :INIT_WAIT_PROGRESS_EVERY_S, :INIT_BACKOFF_CAP_S, :INIT_MIN_ATTEMPT_S
+    private_constant :INIT_PROGRESS_EVERY_S, :INIT_WAIT_PROGRESS_EVERY_S, :INIT_BACKOFF_CAP_S
 
     # Auth-failed probe period bounds, rule R3 (qfg-goi1.10.26).
     AUTH_PROBE_MIN_SECONDS = 150.0
@@ -1552,12 +1548,12 @@ module Quonfig
 
         report.call(now)
 
+        # Decision 10 (sdk-go's rule): a new attempt starts whenever time
+        # remains before the deadline, however little. If the deadline cuts it
+        # off, it is the last attempt and decides the reason (the rescue
+        # above); if the deadline lands in this backoff, this attempt decides.
         wake = now + init_backoff_s(attempt)
-        if !waiting && (deadline - wake < INIT_MIN_ATTEMPT_S)
-          # Too little time left for a real attempt: sleep out the deadline and
-          # decide on this attempt's outcome instead of starting a starved one.
-          wake = deadline
-        end
+        wake = deadline if !waiting && wake > deadline
         wake_points = -> { [next_progress, (deadline if waiting && !timed_out_logged)].compact }
         init_sleep_until(wake, wake_points) { |t| report.call(t) }
         return init_timed_out(mode, timeout_s, errs, hung: last_hung) if !waiting && monotonic_now >= deadline

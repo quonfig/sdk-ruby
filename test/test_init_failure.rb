@@ -242,28 +242,6 @@ class TestInitFailure < Minitest::Test
     end
   end
 
-  # Refused legs fail in a few ms. A backoff that ends a hair before the
-  # deadline used to start one more attempt with a ~3ms Timeout budget, which
-  # fired mid-connect and turned a plain outage into a "hang" (reason :timeout).
-  def test_refused_legs_raise_unavailable_even_when_the_backoff_ends_just_before_the_deadline
-    leaves_3ms = lambda do |_attempt|
-      deadline = @init_started_at + (@options.init_timeout_ms / 1000.0)
-      [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC) - 0.003, 0].max
-    end
-    klass = scripted_client_class(backoff: leaves_3ms)
-    err = begin
-      klass.new(**client_opts(api_urls: REFUSED, init_timeout_ms: 500))
-      nil
-    rescue Quonfig::Errors::InitializationError => e
-      e
-    end
-
-    refute_nil err
-    refute_kind_of Quonfig::Errors::InitializationTimeoutError, err
-    assert_equal :unavailable, err.reason
-    assert_logged [/init FAILED: no config after 0\.5s/]
-  end
-
   def test_details_getters_before_ready_report_provider_not_ready
     client = Quonfig::Client.new(**client_opts(api_urls: REFUSED, init_timeout_ms: 200, on_init_failure: :continue))
     details = client.get_string_details('missing.flag')
@@ -508,5 +486,143 @@ class TestInitFailure < Minitest::Test
     assert_kind_of Quonfig::Errors::InitializationTimeoutError, err
     assert_match(/primary=10\.255\.255\.1:443: timed out/, err.errors)
     assert_logged [/explicit api_urls disables automatic failover/, /init: config not loaded yet/, /init FAILED/]
+  end
+
+  # --- Decision 10 (qfg-9p4i.17.14): the deadline reason follows sdk-go ---
+
+  # A leg that answers +status+ to its first +answers+ requests, then accepts
+  # every later connection and never replies (a blackhole).
+  def answers_then_hangs(status: 503, answers: 1)
+    server = TCPServer.new('127.0.0.1', 0)
+    @held_sockets ||= []
+    @held_servers ||= []
+    @held_threads ||= []
+    served = 0
+    @held_threads << Thread.new do
+      loop do
+        sock = server.accept
+        if served < answers
+          served += 1
+          while (line = sock.gets) && line != "\r\n"; end
+          sock.write("HTTP/1.1 #{status} Err\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+          sock.close
+        else
+          @held_sockets << sock
+        end
+      end
+    rescue StandardError
+      nil
+    end
+    @held_servers << server
+    "http://127.0.0.1:#{server.addr[1]}"
+  end
+
+  # Hung legs log late WARNs on their own threads; the assertions above cover
+  # what matters, so drop the capture before teardown checks it.
+  def release_held_legs
+    sleep 0.05
+    $logs = nil
+    @held_servers&.each { |s| s.close rescue nil } # rubocop:disable Style/RescueModifier
+    @held_threads&.each(&:kill)
+    @held_sockets&.each { |s| s.close rescue nil } # rubocop:disable Style/RescueModifier
+  end
+
+  # A backoff after attempt 1 that leaves +left_s+ before the deadline, then a
+  # backoff long enough that the deadline always lands inside it.
+  def backoff_leaving(left_s)
+    lambda do |attempt|
+      next 10.0 unless attempt == 1
+
+      deadline = @init_started_at + (@options.init_timeout_ms / 1000.0)
+      [deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC) - left_s, 0].max
+    end
+  end
+
+  def init_error
+    yield
+    nil
+  rescue Quonfig::Errors::InitializationError => e
+    e
+  end
+
+  # (1) Attempt 1 fails fast (503). With time left before the deadline a new
+  # attempt starts, as in sdk-go, even with under 250ms left; it is
+  # blackholed, so it is in flight at the deadline with no leg answered: the
+  # reason is :timeout, whatever attempt 1 did.
+  def test_later_attempt_blackholed_until_the_deadline_raises_timeout
+    klass = scripted_client_class(backoff: backoff_leaving(0.15))
+    err = init_error { klass.new(**client_opts(api_urls: [answers_then_hangs], init_timeout_ms: 600)) }
+
+    assert_kind_of Quonfig::Errors::InitializationTimeoutError, err
+    assert_equal :timeout, err.reason
+    assert_match(/primary=127\.0\.0\.1:\d+: no response before initTimeout/, err.errors)
+  ensure
+    release_held_legs
+  end
+
+  # Scheduling: a fast-failing outage keeps starting attempts while time
+  # remains, even with under 250ms left, and stays :unavailable.
+  def test_new_attempt_starts_whenever_time_remains_before_the_deadline
+    leg = delivery_leg(status: 503)
+    port = Integer(leg[/:(\d+)\z/, 1])
+    klass = scripted_client_class(backoff: backoff_leaving(0.15))
+    err = init_error { klass.new(**client_opts(api_urls: [leg], init_timeout_ms: 600)) }
+
+    assert_equal 2, @requests[port]
+    refute_kind_of Quonfig::Errors::InitializationTimeoutError, err
+    assert_equal :unavailable, err.reason
+    assert_logged [/explicit api_urls disables automatic failover/, /init: config not loaded yet/, /init FAILED/]
+  end
+
+  # (2) The deadline cuts attempt 1: the primary failed fast and the secondary
+  # hangs. One leg answered, so the attempt did not hang: :unavailable.
+  def test_deadline_cutting_attempt_one_with_a_fast_failed_leg_raises_unavailable
+    legs = [delivery_leg(status: 503), answers_then_hangs(answers: 0)]
+    err = init_error do
+      Quonfig::Client.new(**client_opts(api_urls: legs, init_timeout_ms: 400, config_fetch_hedge_delay_ms: 50,
+                                        config_fetch_hedge_abort_ms: 2000))
+    end
+
+    refute_kind_of Quonfig::Errors::InitializationTimeoutError, err
+    assert_equal :unavailable, err.reason
+    assert_match(/primary=127\.0\.0\.1:\d+: HTTP 503; secondary=127\.0\.0\.1:\d+: no response before initTimeout/,
+                 err.errors)
+  ensure
+    release_held_legs
+  end
+
+  # (3) The deadline lands in the backoff after an attempt whose primary
+  # answered (401 or 503) while the secondary timed out. That attempt did not
+  # hang, so the reason is :unavailable.
+  [401, 503].each do |status|
+    define_method(:"test_deadline_in_backoff_after_primary_#{status}_and_secondary_timeout_raises_unavailable") do
+      legs = [delivery_leg(status: status), answers_then_hangs(answers: 0)]
+      klass = scripted_client_class(backoff: ->(_attempt) { 10.0 })
+      err = init_error do
+        klass.new(**client_opts(api_urls: legs, init_timeout_ms: 800, config_fetch_hedge_delay_ms: 50,
+                                config_fetch_hedge_abort_ms: 200))
+      end
+
+      refute_kind_of Quonfig::Errors::InitializationTimeoutError, err
+      assert_equal :unavailable, err.reason
+      assert_match(/primary=127\.0\.0\.1:\d+: HTTP #{status}[^;]*; secondary=127\.0\.0\.1:\d+: timed out/, err.errors)
+    ensure
+      release_held_legs
+    end
+  end
+
+  # (4) Every leg hangs throughout, across attempts that complete on the hedge
+  # abort and the one the deadline cuts: :timeout.
+  def test_all_legs_hung_throughout_raises_timeout
+    legs = [answers_then_hangs(answers: 0), answers_then_hangs(answers: 0)]
+    err = init_error do
+      Quonfig::Client.new(**client_opts(api_urls: legs, init_timeout_ms: 900, config_fetch_hedge_delay_ms: 50,
+                                        config_fetch_hedge_abort_ms: 200))
+    end
+
+    assert_kind_of Quonfig::Errors::InitializationTimeoutError, err
+    assert_equal :timeout, err.reason
+  ensure
+    release_held_legs
   end
 end
