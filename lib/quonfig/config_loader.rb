@@ -528,13 +528,21 @@ module Quonfig
       cycle_log.log(:warn, "Timeout error fetching configs from #{where}")
       :failed
     rescue Faraday::ConnectionFailed => e
-      note.call(e.message)
+      # The Net::HTTP adapter wraps a connect timeout (Net::OpenTimeout) in
+      # ConnectionFailed. That is a hang, not a fast failure (decision 7).
+      note.call(connect_timeout?(e) ? LEG_TIMED_OUT : e.message)
       @logger.debug "Connection failure fetching configs from #{where}: #{self.class.redact_userinfo(e.message)}"
       :failed
     rescue StandardError => e
       note.call("#{e.class}: #{e.message}")
       cycle_log.log(:warn, "Unexpected error fetching configs from #{where}: #{self.class.redact_userinfo(e.message)}")
       :failed
+    end
+
+    def connect_timeout?(err)
+      cause = err.respond_to?(:wrapped_exception) ? err.wrapped_exception : nil
+      cause ||= err.cause
+      cause.is_a?(Timeout::Error) || cause.is_a?(Errno::ETIMEDOUT)
     end
 
     def etag_for(index)

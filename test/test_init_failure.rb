@@ -489,4 +489,24 @@ class TestInitFailure < Minitest::Test
     @hung_thread&.kill
     @hung_sockets&.each(&:close)
   end
+
+  # D2: a connect timeout is a hang, not a fast failure. Faraday's Net::HTTP
+  # adapter wraps Net::OpenTimeout in ConnectionFailed, so a blackholed
+  # delivery host must still raise :timeout, as sdk-go does for a dial timeout.
+  def test_connect_timeout_counts_as_hung
+    conn = Object.new
+    def conn.get(*)
+      raise Faraday::ConnectionFailed, Net::OpenTimeout.new('execution expired')
+    end
+    err = Quonfig::HttpConnection.stub(:new, ->(*_args, **_kw) { conn }) do
+      Quonfig::Client.new(**client_opts(api_urls: ['http://10.255.255.1:443'], init_timeout_ms: 300))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+
+    assert_kind_of Quonfig::Errors::InitializationTimeoutError, err
+    assert_match(/primary=10\.255\.255\.1:443: timed out/, err.errors)
+    assert_logged [/explicit api_urls disables automatic failover/, /init: config not loaded yet/, /init FAILED/]
+  end
 end
