@@ -1435,11 +1435,18 @@ module Quonfig
     # - :continue return over the empty store; the update channel started by
     #             the caller keeps retrying and heals it
     #
-    # Every leg answering 401/403 short-circuits :fail and :continue at once;
-    # :wait logs it and keeps retrying (the key may be provisioned late).
+    # Every leg answering an auth-class status (401/403/404/410) short-circuits
+    # :fail and :continue at once; :wait logs it and keeps retrying (the key
+    # may be provisioned late).
+    #
+    # init_timeout_ms <= 0 runs exactly one attempt, lets it finish (bounded by
+    # the per-leg fetch timeouts, not the init deadline), then applies
+    # on_init_failure. :wait keeps retrying after it (decision 8, qfg-9p4i.17).
     def perform_initial_fetch
       mode = @options.on_init_failure
       timeout_ms = @options.init_timeout_ms || Quonfig::Options::DEFAULT_INIT_TIMEOUT_MS
+      timeout_ms = 0 if timeout_ms.negative?
+      one_shot = timeout_ms.zero?
       timeout_s = timeout_ms / 1000.0
       start = monotonic_now
       @init_started_at = start
@@ -1484,20 +1491,23 @@ module Quonfig
         attempt += 1
         cycle = nil
         cycle_log = @config_loader.new_cycle_log
+        leg_errors = Concurrent::Map.new
         begin
-          if waiting
-            cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log)
+          if waiting || one_shot
+            cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log, leg_errors: leg_errors)
           else
             # Never 0: Timeout.timeout(0) means "no timeout".
             budget = [deadline - monotonic_now, 0.001].max
-            Timeout.timeout(budget) { cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log) }
+            Timeout.timeout(budget) { cycle = @config_loader.fetch_cycle!(cycle_log: cycle_log, leg_errors: leg_errors) }
           end
         rescue Timeout::Error
-          # An attempt was still in flight at init_timeout_ms (a hang). Its legs
-          # run on until the hedge abort; their late lines go to DEBUG.
+          # An attempt was still in flight at init_timeout_ms. Its legs run on
+          # until the hedge abort; their late lines go to DEBUG. Keep the leg
+          # errors already known: a leg that failed fast means the attempt did
+          # not hang, so the reason is :unavailable (decision 7).
           cycle_log.silence!
-          errs = format_leg_errors(urls, {}, in_flight: true)
-          return init_timed_out(mode, timeout_s, errs, hung: true)
+          errs = format_leg_errors(urls, leg_errors, in_flight: true)
+          return init_timed_out(mode, timeout_s, errs, hung: attempt_hung?(urls, leg_errors))
         end
 
         if cycle.result != :failed
@@ -1508,9 +1518,11 @@ module Quonfig
         end
 
         errs = format_leg_errors(urls, cycle.leg_errors)
+        last_hung = attempt_hung?(urls, cycle.leg_errors)
         now = monotonic_now
         if cycle.all_legs_unauthorized?(urls.length)
-          status = cycle.statuses.values.first
+          # Every leg is auth-class here (decision 6); report the primary's.
+          status = cycle.primary_status
           legs = leg_names_phrase(urls.length)
           if waiting
             LOG.error "[quonfig] init: SDK key rejected (#{status}) by #{legs}. Check the key and " \
@@ -1527,12 +1539,16 @@ module Quonfig
               reason: :unauthorized, errors: errs
             )
           end
-        elsif attempt == 1
+        elsif attempt == 1 && !one_shot
           LOG.warn "[quonfig] init: config not loaded yet, retrying until initTimeout (#{format_secs(timeout_s)}). #{errs}",
                    event: 'quonfig.init.retrying'
         end
 
-        return init_timed_out(mode, timeout_s, errs, hung: false) if !waiting && now >= deadline
+        if !waiting && now >= deadline
+          # A one-shot attempt reports how long it actually took.
+          elapsed_s = one_shot ? now - start : timeout_s
+          return init_timed_out(mode, elapsed_s, errs, hung: last_hung)
+        end
 
         report.call(now)
 
@@ -1544,7 +1560,7 @@ module Quonfig
         end
         wake_points = -> { [next_progress, (deadline if waiting && !timed_out_logged)].compact }
         init_sleep_until(wake, wake_points) { |t| report.call(t) }
-        return init_timed_out(mode, timeout_s, errs, hung: false) if !waiting && monotonic_now >= deadline
+        return init_timed_out(mode, timeout_s, errs, hung: last_hung) if !waiting && monotonic_now >= deadline
       end
     end
 
@@ -1651,6 +1667,16 @@ module Quonfig
                "#{" (version #{version})" if version}. Now serving live config.", event: 'quonfig.init.recovered'
     end
 
+    # Whether an attempt hung (decision 7): no leg failed fast. Every leg that
+    # settled ended on a timeout, and a leg with no error yet was still in
+    # flight when the init deadline cut the attempt off.
+    def attempt_hung?(urls, leg_errors)
+      urls.each_index.all? do |i|
+        err = leg_errors[i]
+        err.nil? || err == Quonfig::ConfigLoader::LEG_TIMED_OUT
+      end
+    end
+
     # primary=<host>: <error>; secondary=<host>: <error>. Hosts only, never the
     # SDK key or URL credentials.
     def format_leg_errors(urls, leg_errors, in_flight: false)
@@ -1752,6 +1778,8 @@ module Quonfig
       abort_ms = @options.config_fetch_hedge_abort_ms
       init_ms = @options.init_timeout_ms
       return if abort_ms.nil? || init_ms.nil?
+      # <= 0 runs one attempt to completion; no init deadline clips its legs.
+      return if init_ms <= 0
       return if init_ms > abort_ms
 
       LOG.warn(

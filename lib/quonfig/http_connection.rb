@@ -90,7 +90,7 @@ module Quonfig
 
       deadline_s = (@timeout_ms / 1000.0) + WALL_CLOCK_HEADROOM_S
       Timeout.timeout(deadline_s, Faraday::TimeoutError,
-                      "wall-clock per-request deadline #{deadline_s}s exceeded for #{@uri}") do
+                      "wall-clock per-request deadline #{deadline_s}s exceeded for #{Quonfig::ConfigLoader.redact_userinfo(@uri)}") do
         block.call
       end
     end

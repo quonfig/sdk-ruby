@@ -255,6 +255,13 @@ module Quonfig
     private
 
     # @!method initialize(options = {})
+    #   @option options [Integer] :init_timeout_ms (10000)
+    #     How long +Client.new+ retries the initial config fetch before
+    #     +:on_init_failure+ decides. A value <= 0 runs exactly one fetch
+    #     attempt, lets it finish (it is bounded by the per-leg fetch timeouts,
+    #     not by this option), then applies +:on_init_failure+: +:fail+ raises,
+    #     +:continue+ starts on code defaults and keeps retrying in the
+    #     background, +:wait+ keeps retrying. It never means "no deadline".
     #   @option options [Boolean] :data_dir_auto_reload (false)
     #     Datadir mode only. When +true+, the SDK watches the workspace
     #     directory and re-reads the envelope whenever files inside it

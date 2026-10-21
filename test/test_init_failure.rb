@@ -36,12 +36,18 @@ class TestInitFailure < Minitest::Test
 
   # A delivery leg that answers +status+ until +healthy_after+ seconds have
   # passed since it started, then serves CONFIG.
-  def delivery_leg(status: 503, healthy_after: nil)
+  def delivery_leg(status: 503, healthy_after: nil, delay: nil, body: nil, userinfo: nil)
     started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     server = WEBrick::HTTPServer.new(Port: 0, Logger: WEBrick::Log.new(StringIO.new), AccessLog: [])
+    @requests ||= Hash.new(0)
     server.mount_proc('/api/v2/configs') do |_req, res|
+      @requests[server.config[:Port]] += 1
+      sleep delay if delay
       age = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-      if healthy_after && age >= healthy_after
+      if body
+        res.status = status
+        res.body = body
+      elsif healthy_after && age >= healthy_after
         res.status = 200
         res['Content-Type'] = 'application/json'
         res.body = JSON.generate('configs' => [CONFIG], 'meta' => { 'version' => 'v1', 'environment' => 'dev',
@@ -52,7 +58,7 @@ class TestInitFailure < Minitest::Test
     end
     Thread.new { server.start }
     @servers << server
-    "http://127.0.0.1:#{server.config[:Port]}"
+    "http://#{"#{userinfo}@" if userinfo}127.0.0.1:#{server.config[:Port]}"
   end
 
   def client_opts(**overrides)
@@ -204,7 +210,8 @@ class TestInitFailure < Minitest::Test
     rescue Quonfig::Errors::InitializationError => e
       e
     end
-    assert_kind_of Quonfig::Errors::InitializationTimeoutError, err
+    # D2: the secondary failed fast (refused), so the attempt did not hang.
+    assert_equal :unavailable, err&.reason
     $logs.truncate(0)
     $logs.rewind
     sleep 1.0 # past the 600ms hedge abort of the hung primary leg
@@ -344,5 +351,162 @@ class TestInitFailure < Minitest::Test
     assert_match(/init: config not loaded yet.*quonfig\.init\.retrying/, log)
     assert_match(/init FAILED: no config.*quonfig\.init\.failed/, log)
     assert_logged [/init FAILED/]
+  end
+
+  # D3 (qfg-9p4i.17): init_timeout_ms <= 0 runs exactly one attempt, lets it
+  # finish, then applies on_init_failure. It never decides before the attempt.
+  def test_zero_timeout_runs_one_full_attempt_and_installs_a_slow_success
+    leg = delivery_leg(healthy_after: 0, delay: 0.3)
+    client = Quonfig::Client.new(**client_opts(api_urls: [leg], init_timeout_ms: 0))
+
+    assert_predicate client, :ready?
+    assert_equal 'LIVE', client.get('flag.init', 'DEFAULT')
+    assert_logged [/explicit api_urls disables automatic failover/]
+  ensure
+    client&.stop
+  end
+
+  def test_zero_timeout_fail_raises_unavailable_after_exactly_one_attempt
+    leg = delivery_leg(status: 503, delay: 0.3)
+    port = leg[/\d+\z/].to_i
+    err = begin
+      Quonfig::Client.new(**client_opts(api_urls: [leg], init_timeout_ms: 0))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+
+    assert_equal :unavailable, err&.reason
+    assert_match(/primary=127\.0\.0\.1:\d+: HTTP 503/, err.errors)
+    sleep 0.2
+    assert_equal 1, @requests[port], 'exactly one attempt'
+    assert_logged [/init FAILED: no config after/]
+  end
+
+  def test_zero_timeout_continue_returns_on_defaults_after_one_attempt
+    leg = delivery_leg(status: 503, delay: 0.2)
+    client = Quonfig::Client.new(**client_opts(api_urls: [leg], init_timeout_ms: 0, on_init_failure: :continue))
+
+    refute_predicate client, :ready?
+    assert_equal 'DEFAULT', client.get('flag.init', 'DEFAULT')
+    assert_logged [/onInitFailure=continue: STARTING ON CODE DEFAULTS/]
+  ensure
+    client&.stop
+  end
+
+  # D4: init log lines and the init error carry host:port and HTTP <status>,
+  # never URL userinfo or upstream response bodies.
+  def test_init_logs_and_error_never_carry_userinfo_or_upstream_bodies
+    body = '{"error":"secret-upstream-detail token=abc"}'
+    legs = [delivery_leg(status: 401, body: body, userinfo: 'alice:hunter2'),
+            delivery_leg(status: 401, body: body, userinfo: 'alice:hunter2')]
+    err = begin
+      Quonfig::Client.new(**client_opts(api_urls: legs, init_timeout_ms: 4000))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+
+    assert_equal :unauthorized, err&.reason
+    log = $logs.string
+    [err.message, err.errors, log].each do |text|
+      refute_includes text, 'hunter2'
+      refute_includes text, 'alice'
+      refute_includes text, 'secret-upstream-detail'
+    end
+    assert_logged [/SDK key rejected \(401\) by primary and secondary/]
+  end
+
+  def test_non_json_200_body_never_reaches_the_init_error_or_logs
+    leg = delivery_leg(status: 200, body: '<html>captive-portal-secret</html>', userinfo: 'alice:hunter2')
+    err = begin
+      Quonfig::Client.new(**client_opts(api_urls: [leg], init_timeout_ms: 600))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+
+    refute_nil err
+    [err.message, err.errors, $logs.string].each do |text|
+      refute_includes text, 'captive-portal-secret'
+      refute_includes text, 'hunter2'
+    end
+    assert_logged [/init FAILED/]
+  end
+
+  # The unauthorized line reports the primary's status, not whichever leg's
+  # status happened to be recorded first.
+  def test_unauthorized_reports_the_primary_status
+    legs = [delivery_leg(status: 404, delay: 0.4), delivery_leg(status: 401)]
+    err = begin
+      Quonfig::Client.new(**client_opts(api_urls: legs, init_timeout_ms: 4000, config_fetch_hedge_delay_ms: 50))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+
+    assert_equal :unauthorized, err&.reason
+    assert_match(/SDK key rejected \(404\)/, err.message)
+    assert_logged [/SDK key rejected \(404\) by primary and secondary/]
+  end
+
+  # An attempt cut off at the deadline keeps the leg errors it already had;
+  # a fast-failed leg means the attempt did not hang (D2), so :unavailable.
+  def test_cut_off_attempt_keeps_known_leg_errors
+    legs = [delivery_leg(status: 503), hung_leg] # primary fails fast, secondary hangs
+    err = begin
+      Quonfig::Client.new(**client_opts(api_urls: legs, init_timeout_ms: 400, config_fetch_hedge_abort_ms: 600))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+
+    assert_equal :unavailable, err&.reason
+    assert_match(/primary=127\.0\.0\.1:\d+: HTTP 503; secondary=127\.0\.0\.1:\d+: no response before initTimeout/,
+                 err.errors)
+    assert_logged [/init FAILED/]
+  ensure
+    sleep 0.8 # let the hung leg's hedge abort settle
+    $logs = nil
+    @hung_server&.close
+    @hung_thread&.kill
+    @hung_sockets&.each(&:close)
+  end
+
+  def test_all_legs_hung_still_raises_timeout
+    legs = [hung_leg]
+    err = begin
+      Quonfig::Client.new(**client_opts(api_urls: legs, init_timeout_ms: 300))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+
+    assert_kind_of Quonfig::Errors::InitializationTimeoutError, err
+    assert_logged [/init FAILED/]
+  ensure
+    @hung_server&.close
+    @hung_thread&.kill
+    @hung_sockets&.each(&:close)
+  end
+
+  # D2: a connect timeout is a hang, not a fast failure. Faraday's Net::HTTP
+  # adapter wraps Net::OpenTimeout in ConnectionFailed, so a blackholed
+  # delivery host must still raise :timeout, as sdk-go does for a dial timeout.
+  def test_connect_timeout_counts_as_hung
+    conn = Object.new
+    def conn.get(*)
+      raise Faraday::ConnectionFailed, Net::OpenTimeout.new('execution expired')
+    end
+    err = Quonfig::HttpConnection.stub(:new, ->(*_args, **_kw) { conn }) do
+      Quonfig::Client.new(**client_opts(api_urls: ['http://10.255.255.1:443'], init_timeout_ms: 300))
+      nil
+    rescue Quonfig::Errors::InitializationError => e
+      e
+    end
+
+    assert_kind_of Quonfig::Errors::InitializationTimeoutError, err
+    assert_match(/primary=10\.255\.255\.1:443: timed out/, err.errors)
+    assert_logged [/explicit api_urls disables automatic failover/, /init: config not loaded yet/, /init FAILED/]
   end
 end

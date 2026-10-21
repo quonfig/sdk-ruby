@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fix (patch): init-failure conformance (qfg-9p4i.17.4).**
+  - `init_timeout_ms` <= 0 now runs exactly one fetch attempt, lets it finish, then applies `on_init_failure`. Before, the attempt got a 1ms budget, so it was cut off before it could answer and the boot raised `InitializationTimeoutError` even against a healthy delivery.
+  - Config-fetch log lines (including the per-leg lines logged during init) show `scheme://host:port`, never URL userinfo (`user:pass@`), and no longer log the body of a 401/403 response. A non-JSON 200 body no longer reaches the init error's `errors`. The wall-clock fetch timeout message also drops userinfo.
+  - The unauthorized init line and error report the primary leg's status, not whichever leg answered first.
+  - When the init deadline cuts off an attempt, the error summary keeps the errors of legs that already failed (e.g. `primary=...: HTTP 503`) instead of reporting every leg as "no response before initTimeout". Such an attempt counts as hung (`reason` `:timeout`) only if no leg failed fast; otherwise `reason` is `:unavailable`, as in sdk-go.
+  - A connect timeout (`Net::OpenTimeout`, which Faraday wraps in `ConnectionFailed`) counts as a hung leg, so a blackholed delivery host raises `InitializationTimeoutError` (`reason` `:timeout`), as sdk-go does for a dial timeout.
 - **UPGRADE (minor): `on_init_failure` takes `:fail`, `:wait` or `:continue` (qfg-9p4i.10).** `:fail` is the default, as `:raise` was, so a boot that cannot load config still raises. What changes for you:
   - `Client.new` now **retries** a fast failure (refused connection, DNS, 5xx) with a jittered 0.5s, 1s, 2s ... backoff until `init_timeout_ms` (default 10s) instead of raising on the first failed attempt. A boot during a short blip now succeeds, and a boot with delivery down raises after `init_timeout_ms`, not at once.
   - When every delivery leg rejects the SDK key (401/403/404/410) the init call does not wait: `:fail` raises at once, `:continue` returns at once.
