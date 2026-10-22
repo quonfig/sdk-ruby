@@ -226,4 +226,19 @@ class TestDevContext < Minitest::Test
     assert_equal({ 'quonfig-user' => { 'email' => "jos\u00e9@caf\u00e9.com" } }, ctx)
     assert_equal Encoding::UTF_8, ctx['quonfig-user']['email'].encoding
   end
+
+  # qfg-7xlj: Dir.home raises ArgumentError when HOME is unset and the uid
+  # has no passwd entry (some containers). Client construction must succeed
+  # with no quonfig-user context, as in sdk-go.
+  def test_client_constructs_when_dir_home_raises
+    raiser = ->(*_args) { raise ArgumentError, "couldn't find login name -- expanding '~'" }
+    client = Dir.stub(:home, raiser) do
+      Quonfig::Client.new(
+        Quonfig::Options.new(enable_quonfig_user_context: true),
+        store: Quonfig::ConfigStore.new
+      )
+    end
+
+    assert_equal({}, global_context_of(client))
+  end
 end
