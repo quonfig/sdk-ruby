@@ -2,6 +2,9 @@
 
 require 'base64'
 require 'json'
+require 'net/http'
+require 'openssl'
+require 'zlib'
 require 'timeout'
 
 module Quonfig
@@ -38,6 +41,18 @@ module Quonfig
         super("response body exceeds the maximum size of #{max_bytes} bytes")
       end
     end
+
+    # Size caps (qfg-6vno.20.5): a non-2xx body is read to at most this many
+    # bytes, then reading stops and the connection is dropped. Callers never
+    # use a non-2xx body (it is never logged), so a large one (a proxy error
+    # page, a 401 with 17 MiB of junk) must not be read toward the 16 MiB cap.
+    NON_2XX_BODY_READ_LIMIT = 1024
+
+    # Raised from inside the body read to stop it early; never escapes.
+    class StopReading < StandardError; end
+
+    # Minimal response for the bounded path: the fields callers use.
+    BoundedResponse = Struct.new(:status, :headers, :body)
 
     # +timeout_ms+ (qfg-7h5d.1.9): per-request bound applied to BOTH the connect
     # (open) and read phases of every request made through this connection, AND
@@ -99,24 +114,83 @@ module Quonfig
 
     private
 
-    # Faraday's +on_data+ streams the body in the adapter's read chunks (works
-    # on Faraday 1.x and 2.x; extra callback arguments are ignored). The
-    # response then carries an empty body, so the counted bytes are put back
-    # on it for the caller.
+    # The bounded GET runs on Net::HTTP directly, because it needs the status
+    # BEFORE the body is read: a 2xx body is streamed through a counter that
+    # raises BodyTooLargeError past +max_body_bytes+; a non-2xx body is read to
+    # at most NON_2XX_BODY_READ_LIMIT bytes. Faraday 1.x's +on_data+ gives no
+    # status to the callback, so it cannot tell the two apart. URL, headers and
+    # proxy still come from the Faraday connection, so the request is the same.
+    # Transport errors are re-raised as the Faraday errors callers rescue.
     def get_bounded(path, headers)
-      max = @max_body_bytes
-      buf = +''.b
-      response = with_wall_clock_deadline do
-        connection(headers).get(path) do |req|
-          req.options.on_data = proc do |chunk, _received|
-            raise BodyTooLargeError, max if buf.bytesize + chunk.bytesize > max
+      with_wall_clock_deadline { net_http_get_bounded(path, headers) }
+    end
 
-            buf << chunk.b
+    def net_http_get_bounded(path, headers)
+      conn = connection(headers)
+      url = conn.build_exclusive_url(path)
+      req = Net::HTTP::Get.new(url.request_uri)
+      conn.headers.each { |k, v| req[k] = v }
+      result = nil
+      begin
+        bounded_http(conn, url).start do |http|
+          http.request(req) do |res|
+            result = BoundedResponse.new(res.code.to_i, response_headers(res), +''.b)
+            read_bounded_body(res, result)
           end
         end
+      rescue StopReading
+        nil
       end
-      response.env[:body] = buf.force_encoding(Encoding::UTF_8)
-      response
+      result.body.force_encoding(Encoding::UTF_8)
+      result
+    rescue BodyTooLargeError, Faraday::Error
+      raise
+    rescue Timeout::Error, Errno::ETIMEDOUT => e
+      raise Faraday::TimeoutError, e
+    rescue IOError, SystemCallError, SocketError, Net::ProtocolError, Net::HTTPBadResponse,
+           Net::HTTPHeaderSyntaxError, Zlib::Error, OpenSSL::SSL::SSLError => e
+      raise Faraday::ConnectionFailed, e
+    end
+
+    def bounded_http(conn, url)
+      proxy = conn.proxy
+      http = if proxy
+               Net::HTTP.new(url.hostname, url.port, proxy.uri.hostname, proxy.uri.port, proxy.user, proxy.password)
+             else
+               Net::HTTP.new(url.hostname, url.port, nil)
+             end
+      http.use_ssl = (url.scheme == 'https')
+      if @timeout_ms
+        http.open_timeout = @timeout_ms / 1000.0
+        http.read_timeout = @timeout_ms / 1000.0
+      end
+      http.open_timeout = @open_timeout_ms / 1000.0 if @open_timeout_ms
+      http.max_retries = 0 if http.respond_to?(:max_retries=)
+      http
+    end
+
+    def response_headers(res)
+      headers = Faraday::Utils::Headers.new
+      res.each_header { |k, v| headers[k] = v }
+      headers
+    end
+
+    # Reading stops at the limit: the chunk that would cross it is not kept.
+    def read_bounded_body(res, result)
+      buf = result.body
+      if (200..299).cover?(result.status)
+        max = @max_body_bytes
+        res.read_body do |chunk|
+          raise BodyTooLargeError, max if buf.bytesize + chunk.bytesize > max
+
+          buf << chunk.b
+        end
+      else
+        res.read_body do |chunk|
+          buf << chunk.b.byteslice(0, NON_2XX_BODY_READ_LIMIT - buf.bytesize)
+          raise StopReading if buf.bytesize >= NON_2XX_BODY_READ_LIMIT
+        end
+      end
     end
 
     # Enforce +timeout_ms+ (+ headroom) as a wall-clock deadline over the whole
