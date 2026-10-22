@@ -12,8 +12,6 @@ require 'json'
 # caller explicitly set api_urls AND the resolved list has fewer than two legs.
 # It must NOT warn on a two-URL explicit list, nor on the default/derived list.
 class TestClientApiUrlsFailoverWarn < Minitest::Test
-  PORT = 18_097
-
   FAILOVER_WARN = /explicit api_urls disables automatic failover to the secondary/
 
   SAMPLE_CONFIG = {
@@ -45,7 +43,9 @@ class TestClientApiUrlsFailoverWarn < Minitest::Test
 
   def start_server
     log = WEBrick::Log.new(StringIO.new)
-    @server = WEBrick::HTTPServer.new(Port: PORT, Logger: log, AccessLog: [])
+    # Port 0: OS-assigned, so a busy CI runner never hits EADDRINUSE (qfg-2do1).
+    @server = WEBrick::HTTPServer.new(Port: 0, Logger: log, AccessLog: [])
+    @port = @server.config[:Port]
     @server.mount_proc '/api/v2/configs' do |_req, res|
       @fetch_count += 1
       res.status = 200
@@ -66,7 +66,7 @@ class TestClientApiUrlsFailoverWarn < Minitest::Test
 
   def tcp_open?
     require 'socket'
-    TCPSocket.new('127.0.0.1', PORT).tap(&:close)
+    TCPSocket.new('127.0.0.1', @port).tap(&:close)
     true
   rescue StandardError
     false
@@ -87,7 +87,7 @@ class TestClientApiUrlsFailoverWarn < Minitest::Test
   # (a) A single explicit api_url drops the secondary -> the SDK must warn once.
   def test_single_explicit_api_url_warns_failover_disabled
     start_server
-    client = build_client(["http://127.0.0.1:#{PORT}"])
+    client = build_client(["http://127.0.0.1:#{@port}"])
 
     assert_logged [FAILOVER_WARN]
   ensure
@@ -99,7 +99,7 @@ class TestClientApiUrlsFailoverWarn < Minitest::Test
     start_server
     # Primary answers fast (local), so the hedge never contacts the secondary;
     # both point at the same server purely so init succeeds cleanly.
-    client = build_client(["http://127.0.0.1:#{PORT}", "http://127.0.0.1:#{PORT}"])
+    client = build_client(["http://127.0.0.1:#{@port}", "http://127.0.0.1:#{@port}"])
 
     refute_match FAILOVER_WARN, $logs.string,
                  'two explicit URLs keep failover and must not warn'

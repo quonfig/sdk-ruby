@@ -17,7 +17,14 @@ module Quonfig
     TOKENS_BASENAME = File.join('.quonfig', 'tokens.json')
 
     def self.load_quonfig_user_context
-      path = File.join(Dir.home, TOKENS_BASENAME)
+      home = begin
+        Dir.home
+      rescue ArgumentError
+        # HOME unset and no passwd entry (some containers): no dev context,
+        # as in sdk-go (qfg-7xlj).
+        return nil
+      end
+      path = File.join(home, TOKENS_BASENAME)
       return nil unless File.exist?(path)
 
       raw = begin
