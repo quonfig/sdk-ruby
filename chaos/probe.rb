@@ -142,6 +142,10 @@ class ChaosProbe
     when 'quonfig_sse_connect_attempts_total'
       dials = c.send(:sse_channel_expected?) ? 1 + c.worker_restart_total(layer: '1') : 0
       dials.to_f
+    when 'quonfig_sdk_callback_errors_total'
+      # Client#callback_errors_total (qfg-6vno.6.1, contract Test 5).
+      callback = labels['callback']
+      (callback ? c.callback_errors_total(callback: callback) : c.callback_errors_total).to_f
     end
   end
 

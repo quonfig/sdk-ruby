@@ -217,13 +217,9 @@ Minitest.after_run { ChaosSkipTally.report }
 # Expectations sdk-ruby cannot honestly evaluate, keyed by scenario number and
 # the exact assert text. Each is reported SKIPPED with its reason (Decision 6),
 # never passed off probe bookkeeping (qfg-6vno.6).
-CHAOS_KNOWN_SKIPS = {
-  ['10', "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') >= 1"] =>
-    'sdk-ruby recovers an onConfigUpdate raise inline (Client#notify_on_update_callback) and does not ' \
-    'count it in worker_restart_total; supervisor contract Test 5 allows either. 10 exp[3] (the ERROR ' \
-    'log) and exp[2] (worker alive) carry the coverage. Whether ruby should count it like sdk-go ' \
-    '(reason=callback_panic) is open: qfg-6vno.6.1'
-}.freeze
+# Empty since qfg-6vno.6.1: scenario 10 exp[0] now asserts
+# callback_errors_total, which Client#callback_errors_total answers.
+CHAOS_KNOWN_SKIPS = {}.freeze
 
 # Whole tests sdk-ruby cannot run, decided by shape before the run.
 def chaos_test_skip_reason(scenario_num, run)

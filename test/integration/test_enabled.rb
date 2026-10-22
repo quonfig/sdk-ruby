@@ -620,6 +620,159 @@ class TestEnabled < Minitest::Test
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
+  # returns true for PROP_MATCHES when the regex matches part of the prop (unanchored search)
+  def test_returns_true_for_prop_matches_when_the_regex_matches_part_of_the_prop_unanchored_search
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => 'xaab' } })
+    actual = scope.enabled?('feature-flag.matches')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.matches)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_DOES_NOT_MATCH when the regex matches part of the prop (unanchored search)
+  def test_returns_false_for_prop_does_not_match_when_the_regex_matches_part_of_the_prop_unanchored_search
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => 'xaab' } })
+    actual = scope.enabled?('feature-flag.does-not-match')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.does-not-match)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_MATCHES with an anchored regex when the whole prop matches
+  def test_returns_true_for_prop_matches_with_an_anchored_regex_when_the_whole_prop_matches
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => '123' } })
+    actual = scope.enabled?('feature-flag.matches.anchored')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.matches.anchored)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_MATCHES with an anchored regex when the prop is too long
+  def test_returns_false_for_prop_matches_with_an_anchored_regex_when_the_prop_is_too_long
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => '1234' } })
+    actual = scope.enabled?('feature-flag.matches.anchored')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.matches.anchored)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_MATCHES with an anchored regex when the prop has a non-matching character
+  def test_returns_false_for_prop_matches_with_an_anchored_regex_when_the_prop_has_a_non_matching_character
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => '12a' } })
+    actual = scope.enabled?('feature-flag.matches.anchored')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.matches.anchored)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_MATCHES when the prop is not a string
+  def test_returns_false_for_prop_matches_when_the_prop_is_not_a_string
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => 123 } })
+    actual = scope.enabled?('feature-flag.matches.anchored')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.matches.anchored)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_MATCHES when the prop is missing
+  def test_returns_false_for_prop_matches_when_the_prop_is_missing
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'key' => 'michael' } })
+    actual = scope.enabled?('feature-flag.matches.anchored')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.matches.anchored)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_DOES_NOT_MATCH with an anchored regex when the prop is too long
+  def test_returns_true_for_prop_does_not_match_with_an_anchored_regex_when_the_prop_is_too_long
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => '1234' } })
+    actual = scope.enabled?('feature-flag.does-not-match.anchored')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.does-not-match.anchored)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for PROP_DOES_NOT_MATCH with an anchored regex when the prop has a non-matching character
+  def test_returns_true_for_prop_does_not_match_with_an_anchored_regex_when_the_prop_has_a_non_matching_character
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => '12a' } })
+    actual = scope.enabled?('feature-flag.does-not-match.anchored')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.does-not-match.anchored)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_DOES_NOT_MATCH with an anchored regex when the whole prop matches
+  def test_returns_false_for_prop_does_not_match_with_an_anchored_regex_when_the_whole_prop_matches
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => '123' } })
+    actual = scope.enabled?('feature-flag.does-not-match.anchored')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.does-not-match.anchored)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_DOES_NOT_MATCH when the prop is not a string
+  def test_returns_false_for_prop_does_not_match_when_the_prop_is_not_a_string
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => 123 } })
+    actual = scope.enabled?('feature-flag.does-not-match.anchored')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.does-not-match.anchored)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_DOES_NOT_MATCH when the prop is missing
+  def test_returns_false_for_prop_does_not_match_when_the_prop_is_missing
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'key' => 'michael' } })
+    actual = scope.enabled?('feature-flag.does-not-match.anchored')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.does-not-match.anchored)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_MATCHES when the stored regex is invalid
+  def test_returns_false_for_prop_matches_when_the_stored_regex_is_invalid
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => '(' } })
+    actual = scope.enabled?('feature-flag.matches.invalid-pattern')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.matches.invalid-pattern)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for PROP_DOES_NOT_MATCH when the stored regex is invalid
+  def test_returns_false_for_prop_does_not_match_when_the_stored_regex_is_invalid
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => 'abc' } })
+    actual = scope.enabled?('feature-flag.does-not-match.invalid-pattern')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.does-not-match.invalid-pattern)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns true for IN_SEG when the segment's PROP_DOES_NOT_MATCH criterion holds
+  def test_returns_true_for_in_seg_when_the_segment_s_prop_does_not_match_criterion_holds
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => 'abc' } })
+    actual = scope.enabled?('feature-flag.in-segment.does-not-match')
+    assert_equal true, actual, 'scope.enabled?(feature-flag.in-segment.does-not-match)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for IN_SEG when the segment's PROP_DOES_NOT_MATCH regex matches
+  def test_returns_false_for_in_seg_when_the_segment_s_prop_does_not_match_regex_matches
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'code' => '123' } })
+    actual = scope.enabled?('feature-flag.in-segment.does-not-match')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.in-segment.does-not-match)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # returns false for IN_SEG when the segment's PROP_DOES_NOT_MATCH prop is missing
+  def test_returns_false_for_in_seg_when_the_segment_s_prop_does_not_match_prop_is_missing
+    client = IntegrationTestHelpers.build_client
+    scope = client.with_context({ 'user' => { 'key' => 'michael' } })
+    actual = scope.enabled?('feature-flag.in-segment.does-not-match')
+    assert_equal false, actual, 'scope.enabled?(feature-flag.in-segment.does-not-match)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
   # returns true for IS_PRESENT rule when the given prop is a non-empty string
   def test_returns_true_for_is_present_rule_when_the_given_prop_is_a_non_empty_string
     client = IntegrationTestHelpers.build_client
