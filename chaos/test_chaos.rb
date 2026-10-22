@@ -35,6 +35,7 @@ require_relative 'scheduler'
 require_relative 'expressions'
 require_relative 'expectations'
 require_relative 'probe'
+require_relative 'injection'
 
 # ----- paths -----
 
@@ -42,6 +43,10 @@ CHAOS_HERE       = File.expand_path(__dir__)
 CHAOS_SDK_ROOT   = File.expand_path('..', CHAOS_HERE)
 CHAOS_REPO_ROOT  = File.expand_path('..', CHAOS_SDK_ROOT)
 CHAOS_SCENARIOS  = File.join(CHAOS_REPO_ROOT, 'integration-test-data', 'chaos', 'scenarios')
+# 08-auth-failure lives here: it needs HTTP-status injection, which toxiproxy
+# cannot do, so it is collected and reported SKIPPED with that reason rather
+# than silently never run (qfg-6vno.6).
+CHAOS_HTTP_PROXY_SCENARIOS = File.join(CHAOS_REPO_ROOT, 'integration-test-data', 'chaos', 'scenarios-http-proxy')
 
 # ----- env knobs -----
 
@@ -180,82 +185,6 @@ class ChaosLoggerTap
   def respond_to_missing?(_, _ = false) = true
 end
 
-# ----- chaos injection -----
-
-def chaos_apply_inject(tp, inj)
-  name = inj['name'] || 'anon'
-  if inj.key?('sse_silent_stall_after_ms')
-    tp.add_toxic('sse', name, 'timeout', 'downstream',
-                 { 'timeout' => inj['sse_silent_stall_after_ms'] })
-    return { 'proxy' => 'sse', 'toxic' => name }
-  end
-  if inj.key?('sse_latency_ms')
-    tp.add_toxic('sse', name, 'latency', 'downstream',
-                 { 'latency' => inj['sse_latency_ms'] })
-    return { 'proxy' => 'sse', 'toxic' => name }
-  end
-  if inj.key?('sse_bandwidth_kbps')
-    tp.add_toxic('sse', name, 'bandwidth', 'downstream',
-                 { 'rate' => inj['sse_bandwidth_kbps'] })
-    return { 'proxy' => 'sse', 'toxic' => name }
-  end
-  if inj.key?('sse_down_ms')
-    tp.set_enabled('sse', false)
-    return { 'enable' => ['sse'] }
-  end
-  if inj.key?('both_down_ms')
-    tp.set_enabled('sse', false)
-    tp.set_enabled('http', false)
-    return { 'enable' => %w[sse http] }
-  end
-  if inj.key?('sse_half_open_after_bytes')
-    # Toxiproxy is TCP-only and can't truly model "server returns 200 then
-    # closes after N bytes" — the limit_data toxic this used to call only
-    # trips on the NEXT upstream byte, which for SSE is the 30s heartbeat,
-    # outside the typical within_ms=15s window. The closest TCP-only analog
-    # is to disable the proxy: existing SSE connections drop, new attempts
-    # are refused. Leave it disabled until the matching `clear` step so the
-    # SDK's reconnect attempts fail visibly (ld-eventsource fires on_error
-    # on ECONNREFUSED, where it may stay silent on clean FIN). qfg-47c2.29.
-    tp.set_enabled('sse', false)
-    return { 'enable' => ['sse'] }
-  end
-  if inj.key?('sse_http_status')
-    # toxiproxy is TCP-only; HTTP status injection is a no-op here.
-    puts "inject: sse_http_status=#{inj['sse_http_status']} not supported (toxiproxy TCP-only)"
-    return {}
-  end
-  if inj['proxy'] && inj['toxic']
-    toxic = inj['toxic']
-    tp.add_toxic(inj['proxy'], name, toxic['type'].to_s, 'downstream',
-                 toxic['attributes'] || {})
-    return { 'proxy' => inj['proxy'], 'toxic' => name }
-  end
-  nil
-end
-
-def chaos_clear_inject(tp, st)
-  return if st.nil? || st.empty?
-
-  tp.remove_toxic(st['proxy'], st['toxic']) if st['toxic'] && st['proxy']
-  (st['enable'] || []).each { |p| tp.set_enabled(p, true) }
-end
-
-def chaos_apply_process(tp, p)
-  if p['action'] == 'kill_sse_proxy'
-    count = (p['count'] || 1).to_i
-    interval_ms = (p['interval_ms'] || 1000).to_i
-    count.times do |i|
-      tp.set_enabled('sse', false)
-      sleep 0.2
-      tp.set_enabled('sse', true)
-      sleep [0.0, (interval_ms - 200) / 1000.0].max if i < count - 1
-    end
-  else
-    puts "process: unknown action #{p['action'].inspect} — no-op"
-  end
-end
-
 # ----- skipped-expression tally -----
 
 # Every expectation (or compound leaf) the rig cannot evaluate is reported as
@@ -285,16 +214,46 @@ Minitest.after_run { ChaosSkipTally.report }
 
 # ----- scenario runner -----
 
+# Expectations sdk-ruby cannot honestly evaluate, keyed by scenario number and
+# the exact assert text. Each is reported SKIPPED with its reason (Decision 6),
+# never passed off probe bookkeeping (qfg-6vno.6).
+CHAOS_KNOWN_SKIPS = {
+  ['10', "client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') >= 1"] =>
+    'sdk-ruby recovers an onConfigUpdate raise inline (Client#notify_on_update_callback) and does not ' \
+    'count it in worker_restart_total; supervisor contract Test 5 allows either. 10 exp[3] (the ERROR ' \
+    'log) and exp[2] (worker alive) carry the coverage. Whether ruby should count it like sdk-go ' \
+    '(reason=callback_panic) is open: qfg-6vno.6.1'
+}.freeze
+
+# Whole tests sdk-ruby cannot run, decided by shape before the run.
+def chaos_test_skip_reason(scenario_num, run)
+  setup = run['setup'] || {}
+  if setup['catch_init_failure'] && setup['on_init_failure'].to_s == 'fail'
+    return 'sdk-ruby on_init_failure: :fail raises from Client.new and returns no client object ' \
+           '(init-failure design, Decisions 4), so there is no caught client to watch heal'
+  end
+  reason = chaos_unsupported_step_reason(run['chaos'])
+  return "#{scenario_num}: #{reason}" if reason
+
+  nil
+end
+
+CHAOS_INIT_FAILURE_MODES = %w[fail wait continue].freeze
+
 # Build the Quonfig::Client configured to talk through the chaos ports.
-def chaos_build_client(probe, _setup)
+# setup.on_init_failure / setup.init_timeout_ms (00-*) override the default
+# init behavior; without them the client continues on defaults after 15s.
+def chaos_build_client(setup)
+  mode = setup['on_init_failure']
+  init_timeout_ms = mode ? setup['init_timeout_ms'].to_i : 15_000
   options = Quonfig::Options.new(
     sdk_key: 'test-backend-key',
     api_urls: ["http://127.0.0.1:#{CHAOS_HTTP_PORT}"],
     enable_sse: true,
     enable_polling: true,
     poll_interval: 60,
-    initialization_timeout_sec: 15,
-    on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN,
+    init_timeout_ms: init_timeout_ms,
+    on_init_failure: mode ? mode.to_sym : Quonfig::Options::ON_INITIALIZATION_FAILURE::CONTINUE,
     on_no_default: Quonfig::Options::ON_NO_DEFAULT::RETURN_NIL,
     context_upload_mode: :none,
     collect_evaluation_summaries: false
@@ -307,51 +266,18 @@ def chaos_build_client(probe, _setup)
     ["http://127.0.0.1:#{CHAOS_SSE_PORT}"]
   )
 
-  client = Quonfig::Client.new(options)
-  probe.client = client
-  client
+  Quonfig::Client.new(options)
 end
 
-# Poller thread: bridges client.connection_state into the probe and watches
-# worker_restart_total deltas for layer attribution.
-#
-# qfg-ll6r: prefer the SDK's own per-layer counters via
-# `client.worker_restart_total(layer: '1'|'2')` so a kill storm that flaps the
-# socket faster than the 50ms state poll still registers — the
-# state-edge-based bumps in `absorb_sdk_state` are kept as a fallback for
-# older builds without the layer kwarg.
-def chaos_spawn_poller(client, probe, stop_flag)
-  Thread.new do
-    Thread.current.name = 'chaos-poller' if Thread.current.respond_to?(:name=)
-    supports_layer_kwarg = client.method(:worker_restart_total).arity != 0
-    prev_l1 = supports_layer_kwarg ? client.worker_restart_total(layer: '1') : 0
-    prev_l2 = supports_layer_kwarg ? client.worker_restart_total(layer: '2') : client.worker_restart_total
-    until stop_flag.set?
-      begin
-        state = client.connection_state
-        probe.absorb_sdk_state(state)
-
-        if supports_layer_kwarg
-          cur_l1 = client.worker_restart_total(layer: '1')
-          if cur_l1 > prev_l1
-            probe.bump_restart_layer1(cur_l1 - prev_l1)
-            prev_l1 = cur_l1
-          end
-          cur_l2 = client.worker_restart_total(layer: '2')
-        else
-          cur_l2 = client.worker_restart_total
-        end
-        if cur_l2 > prev_l2
-          probe.bump_restart_layer2(cur_l2 - prev_l2)
-          prev_l2 = cur_l2
-        end
-      rescue StandardError => e
-        # never let the poller die — log and keep going
-        probe.log(:warn, "chaos poller error: #{e.class}: #{e.message}")
-      end
-      stop_flag.wait(0.05) # 50ms
-    end
+# Hand a constructed client to the probe and register the one on_update
+# callback: it counts the SDK's ready/update events (readyEventCount) and, in
+# user_callback: throw mode, then raises (scenario 10).
+def chaos_attach_client(probe, client, user_callback_mode)
+  client.on_update do
+    probe.note_ready_event
+    raise 'simulated user-callback throw for chaos scenario 10' if user_callback_mode == 'throw'
   end
+  probe.client = client
 end
 
 # Stop-event lives in chaos/scheduler.rb so the cancellation behavior can be
@@ -362,25 +288,34 @@ def chaos_now_ms
   (Process.clock_gettime(Process::CLOCK_MONOTONIC) * 1000).to_i
 end
 
-def chaos_fire_event(tp, ev, injection_states)
+# Apply one chaos step. A step that cannot be applied (unknown shape, a clear
+# naming no injection, a toxiproxy error) is recorded in +errors+ and fails
+# the scenario: the fault did not happen, so nothing after it is evidence.
+def chaos_fire_event(tp, ev, injection_states, errors)
   at = (ev['at_ms'] || 0).to_i
   if ev['inject']
     st = chaos_apply_inject(tp, ev['inject'])
     injection_states[ev['inject']['name']] = st if ev['inject']['name']
     puts "[#{at}ms] inject #{ev['inject'].inspect}"
   elsif ev['clear']
+    raise ChaosUnsupportedStep, "clear: no injection named #{ev['clear'].inspect}" unless injection_states.key?(ev['clear'])
+
     chaos_clear_inject(tp, injection_states[ev['clear']])
     injection_states.delete(ev['clear'])
     puts "[#{at}ms] clear #{ev['clear']}"
   elsif ev['process']
     chaos_apply_process(tp, ev['process'])
     puts "[#{at}ms] process #{ev['process'].inspect}"
+  else
+    raise ChaosUnsupportedStep, "unknown chaos step #{ev.inspect}"
   end
 rescue StandardError => e
-  puts "[#{at}ms] chaos event failed: #{e.class}: #{e.message}"
+  msg = "[#{at}ms] chaos event failed: #{e.class}: #{e.message}"
+  puts msg
+  errors << msg
 end
 
-def chaos_run_scenario(tp, run)
+def chaos_run_scenario(tp, run, scenario_num)
   tp.clear_toxics('sse')
   tp.clear_toxics('http')
   tp.set_enabled('sse', true)
@@ -390,15 +325,18 @@ def chaos_run_scenario(tp, run)
   setup = run['setup'] || {}
   user_callback_mode = setup['user_callback']
   wall_clock_ms = ((setup['wall_clock_seconds'] || 30).to_f * 1000).to_i
+  init_mode = setup['on_init_failure']
+  raise ChaosUnsupportedStep, "setup.on_init_failure #{init_mode.inspect} (expected #{CHAOS_INIT_FAILURE_MODES.join('|')})" if init_mode && !CHAOS_INIT_FAILURE_MODES.include?(init_mode.to_s)
 
   # Hook the internal logger so every quonfig log line lands in the probe.
   prev_user_logger = Quonfig::InternalLogger.user_logger
   Quonfig::InternalLogger.user_logger = ChaosLoggerTap.new(probe)
 
   client = nil
-  poller = nil
+  init_thread = nil
   stop_flag = ChaosStopFlag.new
   injection_states = {}
+  event_errors = []
   scheduled_threads = []
 
   begin
@@ -410,7 +348,7 @@ def chaos_run_scenario(tp, run)
     baseline_ms = chaos_now_ms
     events = run['chaos'] || []
     pre_init, scheduled = events.partition { |ev| (ev['at_ms'] || 0).to_i <= 0 }
-    pre_init.each { |ev| chaos_fire_event(tp, ev, injection_states) }
+    pre_init.each { |ev| chaos_fire_event(tp, ev, injection_states, event_errors) }
 
     # Schedule chaos events. The scheduler uses stop_flag.wait under the
     # hood so the ensure block's `stop_flag.set!` cancels any pending event
@@ -422,30 +360,42 @@ def chaos_run_scenario(tp, run)
     scheduled.each do |ev|
       delay = [(ev['at_ms'] || 0).to_i - (chaos_now_ms - baseline_ms), 0].max
       scheduled_threads << Quonfig::Chaos.schedule_event(stop_flag, delay) do
-        chaos_fire_event(tp, ev, injection_states)
+        chaos_fire_event(tp, ev, injection_states, event_errors)
       end
     end
 
-    begin
-      client = chaos_build_client(probe, setup)
-    rescue StandardError => e
-      probe.process_crashed = true
-      probe.log(:error, "init failed: #{e.class}: #{e.message}")
-    end
-
-    if client && user_callback_mode == 'throw'
-      # Wrap on_update to throw — exercises Layer 1 callback-throw scenario.
-      client.on_update do
-        raise 'simulated user-callback throw for chaos scenario 10'
+    if init_mode
+      # Init-failure scenarios (00-*): the init call runs on its own thread so
+      # the tick loop keeps evaluating while it blocks; initState() reports
+      # pending until Client.new returns or raises.
+      probe.init_state = 'pending'
+      init_thread = Thread.new do
+        Thread.current.report_on_exception = false
+        c = chaos_build_client(setup)
+        client = c
+        chaos_attach_client(probe, c, user_callback_mode)
+        probe.init_state = 'returned'
+      rescue StandardError => e
+        probe.log(:error, "chaos runner: init raised: #{e.class}: #{e.message}")
+        probe.init_state = 'raised'
+      end
+    else
+      begin
+        client = chaos_build_client(setup)
+        chaos_attach_client(probe, client, user_callback_mode)
+      rescue StandardError => e
+        probe.process_crashed = true
+        probe.log(:error, "init failed: #{e.class}: #{e.message}")
       end
     end
-
-    poller = chaos_spawn_poller(client, probe, stop_flag) if client
 
     states = (run['expectations'] || []).each_with_index.map do |e, i|
-      Quonfig::Chaos::Expectations.new_state(
-        i, e, skip_only: Quonfig::Chaos::Expressions.skip_only?(e['assert'])
+      known_skip = CHAOS_KNOWN_SKIPS[[scenario_num, e['assert']]]
+      st = Quonfig::Chaos::Expectations.new_state(
+        i, e, skip_only: known_skip || Quonfig::Chaos::Expressions.skip_only?(e['assert'])
       )
+      st[:known_skip] = known_skip
+      st
     end
 
     poll_interval = CHAOS_POLL_MS / 1000.0
@@ -456,6 +406,8 @@ def chaos_run_scenario(tp, run)
 
       states.each do |s|
         Quonfig::Chaos::Expectations.step(s, elapsed, chaos_now_ms) do
+          next [:skip, "SKIPPED #{s[:known_skip]}", [s[:known_skip]]] if s[:known_skip]
+
           result = Quonfig::Chaos::Expressions.evaluate(s[:exp]['assert'], probe)
           [result.status, result.reason, result.skipped]
         end
@@ -482,11 +434,16 @@ def chaos_run_scenario(tp, run)
       end
       details << Quonfig::Chaos::Expectations.describe(s)
     end
+    event_errors.each do |msg|
+      failed += 1
+      details << "FAIL  chaos step not applied, scenario is not evidence: #{msg}"
+    end
     snap = probe.snapshot
     details << "summary: #{passed} passed, #{failed} failed, #{skipped} skipped " \
-               "(state=#{snap[:conn_state]}, restartLayer1=#{snap[:restart_layer1]}, " \
-               "restartLayer2=#{snap[:restart_layer2]}, fallback=#{snap[:fallback_active]}, " \
-               "lastRefreshMs=#{snap[:last_refresh_ms]})"
+               "(state=#{snap[:conn_state]}, restartLayer1=#{snap[:restart_layer1].inspect}, " \
+               "restartLayer2=#{snap[:restart_layer2].inspect}, fallback=#{snap[:fallback_active]}, " \
+               "lastRefreshMs=#{snap[:last_refresh_ms]}, initState=#{probe.init_state}, " \
+               "readyEvents=#{probe.ready_event_count})"
 
     [passed, failed, details]
   ensure
@@ -496,10 +453,11 @@ def chaos_run_scenario(tp, run)
     rescue StandardError
       nil
     end
-    begin
-      poller&.join(2.0)
-    rescue StandardError
-      nil
+    # A wait-mode init still blocked at wall-clock end is torn down with the
+    # scenario; the expectations already recorded the outcome.
+    if init_thread&.alive?
+      init_thread.kill
+      init_thread.join(2.0)
     end
     begin
       client&.stop
@@ -513,9 +471,9 @@ end
 # ----- collection -----
 
 def chaos_scenario_files
-  return [] unless Dir.exist?(CHAOS_SCENARIOS)
-
-  Dir.glob(File.join(CHAOS_SCENARIOS, '*.yaml'))
+  [CHAOS_SCENARIOS, CHAOS_HTTP_PROXY_SCENARIOS].flat_map do |dir|
+    Dir.exist?(dir) ? Dir.glob(File.join(dir, '*.yaml')) : []
+  end
 end
 
 def chaos_scenario_number(path)
@@ -623,10 +581,15 @@ runs.each do |scenario_path, run|
   end
 
   ChaosTest.send(:define_method, method) do
+    reason = chaos_test_skip_reason(num, run)
+    if reason
+      ChaosSkipTally.record(run['name'], '*', reason)
+      skip "SKIPPED #{reason}"
+    end
     skip ChaosShared.setup_error if ChaosShared.setup_error
 
     tp = ChaosShared.toxiproxy
-    passed, failed, details = chaos_run_scenario(tp, run)
+    passed, failed, details = chaos_run_scenario(tp, run, num)
     details.each { |line| puts line }
     assert_equal 0, failed, "#{failed} expectation(s) failed in #{run['name']}"
     assert passed >= 0
