@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Fix (patch): `Client.new` no longer raises when `Dir.home` fails (qfg-7xlj).** With HOME unset and no passwd entry (some containers), `Dir.home` raises `ArgumentError`, which escaped client construction while dev context was enabled (the default). Dev context is now skipped instead, as in sdk-go. Test: `test/test_dev_context.rb`.
 - **Tests: the chaos harness reads every asserted value from the SDK, and both chaos suites run integration-test-data `v2026.10.21.1` (qfg-6vno.6, qfg-6vno.7).** The default-suite probe now reports `Client#connection_state` as-is (it used to invent `reconnecting`), the per-layer `worker_restart_total` counters and the SSE dial count straight from the SDK, and no longer counts a callback log line as a restart. A chaos step the rig cannot apply fails the scenario instead of printing a no-op. `scenarios-http-proxy/08` and the caught-`fail` init test are collected and reported SKIPPED with their reason, and scenario 00 (init-failure modes) runs. A new CI step (`scripts/check-itd-refs.sh`) fails when the workflows pin different integration-test-data refs. No SDK change.
 
 ## 1.10.0 - 2026-10-21
