@@ -19,6 +19,13 @@ module Quonfig
 
     CONFIGS_PATH = '/api/v2/configs'
 
+    # Size-caps rule (qfg-6vno.8, supervisor-test-contract.md "Rule — size
+    # caps"): a 200 body from /api/v2/configs over 16 MiB is a failed leg,
+    # exactly like a 5xx. 4x the SSE event cap, so a workspace that outgrows
+    # the stream still stays fresh through the fallback poller. A constant,
+    # not an option.
+    MAX_CONFIG_BODY_BYTES = 16 * 1024 * 1024
+
     # Rule R1 (qfg-goi1.10.26): the auth class. A fetch cycle with no 200/304
     # on any leg and one of these on the primary leg is rejected; the client's
     # poller then enters auth-failed (Client#start_polling).
@@ -186,6 +193,9 @@ module Quonfig
       # request, write-back after — the network wait happens with no lock held).
       @etags = {}
       @etag_mutex = Mutex.new
+      # Leg indexes in an oversized-body episode (WARN once, then DEBUG until
+      # that leg installs an envelope). Guarded by @etag_mutex.
+      @oversized_legs = Set.new
       @version = nil
       @environment_id = nil
       @logger = logger || LOG
@@ -468,7 +478,8 @@ module Quonfig
       # aborts (Faraday::TimeoutError, caught below as :failed). On the hedged
       # path the caller passes config_fetch_hedge_abort_ms; on the sequential /
       # single-URL path it passes config_fetch_timeout_ms.
-      conn = Quonfig::HttpConnection.new(source, @options.sdk_key, timeout_ms: timeout_ms)
+      conn = Quonfig::HttpConnection.new(source, @options.sdk_key, timeout_ms: timeout_ms,
+                                                                   max_body_bytes: MAX_CONFIG_BODY_BYTES)
       headers = {}
       # Per-leg ETag: snapshot this leg's slot before the request (no lock held
       # during the network wait).
@@ -488,6 +499,7 @@ module Quonfig
         # generation for the SAME sha; remembering it would 304 that repair.
         ignored_unversioned = result == :not_modified && extract_generation(envelope.meta || {}) <= 0
         set_etag_for(index, new_etag) unless ignored_unversioned
+        end_oversized_episode(index) if result == :updated
         # install_envelope returns :not_modified when the reject-older guard drops
         # an equal/older payload — surface that so the caller doesn't double-count.
         result == :not_modified ? :not_modified : :updated
@@ -505,6 +517,12 @@ module Quonfig
                       auth: AUTH_STATUSES.include?(response.status.to_i))
         :failed
       end
+    rescue Quonfig::HttpConnection::BodyTooLargeError => e
+      # Size caps (qfg-6vno.20.5): a failed leg, like a 5xx. Reading stopped at
+      # the cap; nothing is installed and this leg's ETag is not stored.
+      note.call("200 body over the #{e.max_bytes}-byte cap")
+      log_oversized_body(index, where, e.max_bytes)
+      :failed
     rescue NonEnvelopeError => e
       note.call("non-envelope 200 (#{e.message})")
       # qfg-9dxb.3: a non-envelope 200 is a leg error, NOT an install — the
@@ -543,6 +561,18 @@ module Quonfig
       cause = err.respond_to?(:wrapped_exception) ? err.wrapped_exception : nil
       cause ||= err.cause
       cause.is_a?(Timeout::Error) || cause.is_a?(Errno::ETIMEDOUT)
+    end
+
+    # One WARN per oversized episode per leg; repeats at DEBUG (size-caps R4).
+    def log_oversized_body(index, where, max_bytes)
+      first = @etag_mutex.synchronize { @oversized_legs.add?(index || 0) }
+      msg = "Config fetch from #{where} returned a body over the maximum size of #{max_bytes} bytes; " \
+            'treating it as a failed leg'
+      first ? @logger.warn(msg) : @logger.debug(msg)
+    end
+
+    def end_oversized_episode(index)
+      @etag_mutex.synchronize { @oversized_legs.delete(index || 0) }
     end
 
     def etag_for(index)

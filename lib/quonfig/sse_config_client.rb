@@ -76,6 +76,14 @@ module Quonfig
     # letting it win the race.
     READ_TIMEOUT_HEADROOM = 30
 
+    # Size-caps rule (qfg-6vno.8, supervisor-test-contract.md "Rule — size
+    # caps"; sdk-go's sseMaxLine): one SSE event, any single line and the sum
+    # of a multi-line data:, is capped at 4 MiB. The parser stops reading at
+    # the cap, so memory per stream stays near the cap plus one read chunk
+    # even for an event with no terminator. Over the cap is not a frame: the
+    # connection is a failed attempt. A constant, not an option.
+    MAX_EVENT_BYTES = 4 * 1024 * 1024
+
     # +on_error+: optional callable invoked on every SSE error edge. Parent
     # Quonfig::Client wires this to drive @sse_state -> :error so that
     # +connection_state+ reflects the disconnect (qfg-47c2.27). A connection
@@ -118,6 +126,13 @@ module Quonfig
       # that reintroduces stream-URL rotation is observable to the failover
       # chaos probe (f05) and to operators.
       @failed_over_to_secondary = false
+      # Oversized gate (size caps, sdk-go's +oversized+): set when a stream
+      # ended on an event over MAX_EVENT_BYTES. While set, a keepalive is not
+      # a frame, so a connection that only re-delivers the oversized snapshot
+      # never reports connected and the fallback poller keeps config fresh.
+      # The first envelope clears it (and ends the WARN episode). Touched only
+      # by the worker thread.
+      @oversized = false
     end
 
     # True if the live SSE stream has ever connected to a non-primary leg. Read
@@ -250,6 +265,9 @@ module Quonfig
             # parser, before the frame's envelope is installed.
             frame_seen = false
             on_frame = lambda do
+              # Gated, the parser reports only envelopes as frames; one ends
+              # the oversized episode.
+              @oversized = false
               next if frame_seen
 
               frame_seen = true
@@ -275,6 +293,11 @@ module Quonfig
               # survives a clean-EOF reconnect only until the next connection
               # ends frameless.
               handle_frameless_end(ended_url) unless frame_seen || @stopped.value
+            rescue SSEEventTooLargeError => e
+              # A failed attempt even if an earlier frame arrived on this
+              # connection (sdk-go returns frameSeen=false here).
+              frame_seen = false
+              handle_oversized_event(e) unless @stopped.value
             rescue StandardError => e
               handle_error(e) unless @stopped.value
             end
@@ -353,7 +376,7 @@ module Quonfig
         http.request(req) do |resp|
           check_response_status!(resp.code.to_i, url)
 
-          parser = EventParser.new
+          parser = EventParser.new(keepalive_is_frame: !@oversized)
           # qfg-tj18: run_loop wraps the body in +:on_blocking+ which
           # *would* still deliver during read_body (read_body is a
           # blocking IO call), but be explicit: we want the watchdog raise
@@ -447,6 +470,18 @@ module Quonfig
       rescue StandardError => e
         @logger.error "SSE on_connected callback raised: #{e.inspect}"
       end
+    end
+
+    # Size caps R4: one WARN per oversized episode (redacted source + cap in
+    # bytes), repeats at DEBUG. The episode lasts until an envelope gets
+    # through (@oversized cleared in run_loop's on_frame).
+    def handle_oversized_event(error)
+      where = Quonfig::ConfigLoader.redact_userinfo("#{current_url}/api/v2/sse/config")
+      msg = "SSE event from #{where} exceeds the maximum size of #{MAX_EVENT_BYTES} bytes; " \
+            'dropping it and backing off (fallback polling will take over)'
+      @oversized ? @logger.debug(msg) : @logger.warn(msg)
+      @oversized = true
+      invoke_on_error(error)
     end
 
     def handle_error(error)
@@ -546,6 +581,14 @@ module Quonfig
     # from any other transport error for backoff/restart purposes.
     class SSEReadDeadlineExceeded < StandardError; end
 
+    # Raised by the parser when one event passes MAX_EVENT_BYTES (size caps).
+    # Ends the connection as a failed attempt; passed to on_error.
+    class SSEEventTooLargeError < StandardError
+      def initialize(msg = "SSE event exceeds the maximum size of #{MAX_EVENT_BYTES} bytes")
+        super
+      end
+    end
+
     # Private: raised from inside +read_body+ when +close+ has been called,
     # so the worker leaves the stream without Net::HTTP draining the body
     # (qfg-yrly). Rescued in +stream_once+; never reaches callers.
@@ -636,8 +679,11 @@ module Quonfig
     # Malformed +data:+ JSON is logged and skipped; one bad event does not
     # tear down the stream.
     class EventParser
-      def initialize(logger: nil)
+      # +keepalive_is_frame+: false while the client's oversized gate is set,
+      # so only an envelope counts as a frame (size caps).
+      def initialize(logger: nil, keepalive_is_frame: true)
         @logger = logger
+        @keepalive_is_frame = keepalive_is_frame
         @reader = LineReader.new
         @data = +''
         @have_data = false
@@ -663,7 +709,7 @@ module Quonfig
             if event
               on_frame&.call
               yield event
-            elsif comment_only
+            elsif comment_only && @keepalive_is_frame
               on_frame&.call
             end
           elsif line.start_with?(':')
@@ -687,6 +733,14 @@ module Quonfig
 
         case name
         when 'data'
+          # Cap the joined multi-line data (each line is already capped by
+          # LineReader).
+          if @have_data && @data.bytesize + 1 + rest.bytesize > MAX_EVENT_BYTES
+            @data = +''
+            @have_data = false
+            raise SSEEventTooLargeError
+          end
+
           if @have_data
             @data << "\n" << rest
           else
@@ -766,9 +820,14 @@ module Quonfig
           loop do
             idx = @buffer.index(/[\r\n]/, [pos, @scanned].max)
             if idx.nil?
+              # Size caps: an unterminated line past the cap can never be a
+              # valid event; stop here instead of buffering the rest.
+              raise SSEEventTooLargeError if @buffer.bytesize - pos > MAX_EVENT_BYTES
+
               @scanned = @buffer.bytesize
               break
             end
+            raise SSEEventTooLargeError if idx - pos > MAX_EVENT_BYTES
 
             ch = @buffer.getbyte(idx)
             if idx == pos && ch == LF && @last_was_cr
