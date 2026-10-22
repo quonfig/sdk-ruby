@@ -75,7 +75,8 @@ class TestChaosProbe < Minitest::Test
   # diagnostics plus the two private liveness helpers (sse_channel_expected?,
   # sse_worker_alive?) that Client#connection_state itself is built from.
   class SdkClient
-    attr_accessor :state, :layer1, :layer2, :last_successful_refresh, :sse_expected, :sse_alive
+    attr_accessor :state, :layer1, :layer2, :last_successful_refresh, :sse_expected, :sse_alive,
+                  :callback_errors
 
     def initialize
       @state = :initializing
@@ -84,6 +85,11 @@ class TestChaosProbe < Minitest::Test
       @sse_expected = true
       @sse_alive = true
       @values = {}
+      @callback_errors = { 'on_config_update' => 0, 'on_connection_state_change' => 0 }
+    end
+
+    def callback_errors_total(callback: nil)
+      callback ? @callback_errors.fetch(callback.to_s) : @callback_errors.values.sum
     end
 
     def connection_state
@@ -160,6 +166,24 @@ class TestChaosProbe < Minitest::Test
     refute eval_expr("client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') >= 1", probe),
            'layer-1 restarts must be the SDK counter (0 here), not a count of log lines'
     assert eval_expr("client.sdkLog('error', /callback|onConfigUpdate/i) >= 1", probe)
+  end
+
+  # Chaos 10 exp[0] at ITD v2026.10.22.2 asserts
+  # sdkMetric('quonfig_sdk_callback_errors_total', callback='on_config_update')
+  # (qfg-6vno.6.1): the probe reads the SDK's own counter.
+  def test_callback_errors_metric_is_the_sdk_counter
+    client = SdkClient.new
+    client.state = :connected
+    probe = ChaosProbe.new
+    probe.client = client
+
+    refute eval_expr("client.sdkMetric('quonfig_sdk_callback_errors_total', callback='on_config_update') >= 1", probe)
+    client.callback_errors['on_config_update'] = 1
+    assert eval_expr("client.sdkMetric('quonfig_sdk_callback_errors_total', callback='on_config_update') >= 1", probe)
+    assert eval_expr("client.sdkMetric('quonfig_sdk_callback_errors_total', callback='on_connection_state_change') == 0",
+                     probe)
+    assert eval_expr("client.sdkMetric('quonfig_sdk_callback_errors_total') == 1", probe)
+    assert eval_expr("client.sdkMetric('quonfig_sdk_worker_restart_total', layer='1') == 0", probe)
   end
 
   # Layer 1/2 restarts are the SDK's own per-layer counters, including restarts

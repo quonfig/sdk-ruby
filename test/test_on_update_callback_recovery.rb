@@ -73,4 +73,48 @@ class TestOnUpdateCallbackRecovery < Minitest::Test
     assert_empty fake.messages[:error]
     assert_empty fake.messages[:warn]
   end
+
+  # Supervisor contract Test 5 (qfg-6vno.6.1, ITD v2026.10.22.2): a caught
+  # callback raise counts in quonfig_sdk_callback_errors_total{callback} and is
+  # NOT a worker restart.
+  def test_on_update_raise_counts_in_callback_errors_total_not_worker_restart_total
+    client = build_client(FakeLogger.new)
+    calls = 0
+    client.on_update do
+      calls += 1
+      raise 'first call throws' if calls == 1
+    end
+
+    assert_equal 0, client.callback_errors_total(callback: 'on_config_update')
+    restarts_before = [client.worker_restart_total(layer: '1'), client.worker_restart_total(layer: '2')]
+
+    client.send(:notify_on_update_callback)
+    client.send(:notify_on_update_callback)
+
+    assert_equal 2, calls, 'the callback must run again after its raise'
+    assert_equal 1, client.callback_errors_total(callback: 'on_config_update')
+    assert_equal 1, client.callback_errors_total(callback: :on_config_update)
+    assert_equal 0, client.callback_errors_total(callback: 'on_connection_state_change')
+    assert_equal 1, client.callback_errors_total
+    assert_equal restarts_before,
+                 [client.worker_restart_total(layer: '1'), client.worker_restart_total(layer: '2')],
+                 'a callback raise is not a worker restart'
+  end
+
+  def test_callback_errors_total_rejects_an_unknown_callback_name
+    client = build_client(FakeLogger.new)
+    assert_raises(ArgumentError) { client.callback_errors_total(callback: 'on_typo') }
+  end
+
+  def test_on_update_raise_error_log_includes_the_backtrace
+    fake = FakeLogger.new
+    client = build_client(fake)
+    client.on_update { raise 'boom with a stack' }
+
+    client.send(:notify_on_update_callback)
+
+    error_lines = fake.messages[:error].compact.join("\n")
+    assert_match(/boom with a stack/, error_lines)
+    assert_includes error_lines, File.basename(__FILE__), "the ERROR log must carry the stack: #{error_lines}"
+  end
 end

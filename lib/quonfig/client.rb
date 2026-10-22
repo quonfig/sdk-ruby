@@ -21,6 +21,12 @@ module Quonfig
   class Client
     LOG = Quonfig::InternalLogger.new(self)
 
+    # The +callback+ label values of quonfig_sdk_callback_errors_total
+    # (supervisor contract). sdk-ruby has no public connection-state callback,
+    # so +on_connection_state_change+ stays 0; it is listed so a reader of
+    # either name gets the contract's answer.
+    CALLBACK_NAMES = %w[on_config_update on_connection_state_change].freeze
+
     # Init fetch loop cadence (qfg-9p4i.10; init-failure design B.3, C).
     INIT_PROGRESS_EVERY_S = 5
     INIT_WAIT_PROGRESS_EVERY_S = 30
@@ -97,6 +103,9 @@ module Quonfig
       @sse_state = :idle
       @sse_ever_connected = false
       @fallback_engage_timer = nil
+      # quonfig_sdk_callback_errors_total{callback} (supervisor contract Test 5,
+      # qfg-6vno.6.1). Guarded by @state_mutex. See #callback_errors_total.
+      @callback_errors = CALLBACK_NAMES.to_h { |name| [name, 0] }
       # Auth-failed regime (rule R2-R4, qfg-goi1.10.26). Set by the poller's
       # fetch cycle on entry, cleared by the first accepted probe. While set:
       # no SSE, no polling, one probe per [150s, 300s]. Read by
@@ -558,6 +567,29 @@ module Quonfig
       when '1' then sse_restart_total
       when '2' then poll_restart_total
       else          sse_restart_total + poll_restart_total
+      end
+    end
+
+    # quonfig_sdk_callback_errors_total counter (supervisor contract Test 5,
+    # qfg-6vno.6.1). Counts each call of your +on_update+ block that raised a
+    # StandardError the SDK caught and logged at ERROR. Such a raise is not a
+    # worker restart: #worker_restart_total does not change, the stream keeps
+    # running, and the next update still reaches your block.
+    #
+    # Pass +callback:+ ('on_config_update' or 'on_connection_state_change',
+    # String or Symbol) for one label; the default returns the sum. sdk-ruby
+    # has no connection-state callback, so 'on_connection_state_change' is
+    # always 0. An unknown name raises ArgumentError. Starts at 0 when the
+    # client is built.
+    def callback_errors_total(callback: nil)
+      @state_mutex.synchronize do
+        next @callback_errors.values.sum if callback.nil?
+
+        name = callback.to_s
+        raise ArgumentError, "unknown callback #{callback.inspect}; expected one of #{CALLBACK_NAMES.join(', ')}" unless
+          @callback_errors.key?(name)
+
+        @callback_errors[name]
       end
     end
 
@@ -2007,7 +2039,10 @@ module Quonfig
       begin
         cb.call
       rescue StandardError => e
-        LOG.error "[quonfig] onConfigUpdate callback raised: #{e.class}: #{e.message}"
+        # Counted, not a worker restart (supervisor contract Test 5).
+        @state_mutex.synchronize { @callback_errors['on_config_update'] += 1 }
+        bt = (e.backtrace || []).first(10).join("\n  ")
+        LOG.error "[quonfig] onConfigUpdate callback raised: #{e.class}: #{e.message}\n  #{bt}"
       end
     end
 

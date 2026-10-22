@@ -708,6 +708,10 @@ reuse the parent's client object in a child process without it.
   polling). Returns `nil` before the first install. Preserved across `stop`.
 - `client.connection_state` — a `Symbol` describing the aggregate state:
   `:initializing`, `:connected`, `:disconnected`, or `:falling_back`.
+- `client.callback_errors_total(callback: 'on_config_update')` — how many
+  times your `on_update` block raised. The SDK catches the error, logs it at
+  ERROR with its stack, and keeps delivering updates; a raise is not a worker
+  restart.
 
 > Do not wire `last_successful_refresh` or `connection_state` directly into a Kubernetes liveness probe. These signals are diagnostic, not pass/fail. A liveness probe based on SDK freshness will amplify transient network blips into restart cascades.
 

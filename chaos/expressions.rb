@@ -30,7 +30,9 @@ module Quonfig
       RE_FALLBACK_EQ   = /\Aclient\.fallbackPollerActive\(\)\s*==\s*(true|false)\z/
       RE_PROC_ALIVE_EQ = /\Aclient\.processStillAlive\(\)\s*==\s*(true|false)\z/
       RE_LAST_REFRESH  = /\Aclient\.lastSuccessfulRefresh\(\)\s*(>=|>|<=|<|==)\s*\(now\(\)\s*-\s*(\d+)\)\z/
-      RE_SDK_METRIC    = /\Aclient\.sdkMetric\(\s*'([^']+)'\s*(?:,\s*layer=\s*'([^']+)'\s*)?\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/
+      # One optional label: layer='1' (worker_restart_total) or
+      # callback='on_config_update' (callback_errors_total).
+      RE_SDK_METRIC    = /\Aclient\.sdkMetric\(\s*'([^']+)'\s*(?:,\s*(layer|callback)=\s*'([^']+)'\s*)?\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/
       RE_SERVER_METRIC = /\Aserver_metric\(\s*'([^']+)'\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/
       RE_INIT_STATE    = /\Aclient\.initState\(\)\s*(==|!=)\s*'([^']+)'\z/
       RE_READY         = /\Aclient\.ready\(\)\s*==\s*(true|false)\z/
@@ -105,17 +107,19 @@ module Quonfig
         end
         if (m = RE_SDK_METRIC.match(expr))
           metric = m[1]
-          layer = m[2]
-          op = m[3]
-          want = m[4].to_f
-          labels = layer ? { 'layer' => layer } : {}
+          label = m[2]
+          label_value = m[3]
+          op = m[4]
+          want = m[5].to_f
+          labels = label ? { label => label_value } : {}
           got = probe.sdk_metric(metric, labels)
           # Unknown metric (or no client to read it from) fails loudly, never a
           # silent 0 (qfg-goi1.2.21).
           return [false, "unknown sdkMetric \"#{metric}\": the chaos probe does not implement it (or has no SDK client yet)"] if got.nil?
 
           ok = compare(op, got, want)
-          return [ok, "sdkMetric(#{metric},layer=#{layer || ''})=#{got} #{op} #{want}"]
+          shown = label ? ",#{label}=#{label_value}" : ''
+          return [ok, "sdkMetric(#{metric}#{shown})=#{got} #{op} #{want}"]
         end
         # Init-failure vocabulary (ITD chaos/README "Init-failure vocabulary").
         if (m = RE_INIT_STATE.match(expr))
