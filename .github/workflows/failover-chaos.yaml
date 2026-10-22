@@ -66,7 +66,9 @@ jobs:
           # resolvedFrom==primary, installCount==1), o05 (slow older primary
           # loses to fast newer secondary) and o03 (heal forward).
           # qfg-7h5d.1.14: the parallel-failover hedge makes these green.
-          ref: v2026.10.16.2
+          # v2026.10.21.1 (the unit pin, qfg-6vno.7) adds the f01/f04 rule
+          # that a boot the secondary rescues logs no init WARN or ERROR.
+          ref: v2026.10.21.1
 
       - name: Checkout api-delivery
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

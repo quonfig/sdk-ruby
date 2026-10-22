@@ -68,10 +68,11 @@ jobs:
           repository: quonfig/integration-test-data
           path: integration-test-data
           # Pinned so the chaos gate moves only when the scenarios are
-          # deliberately rev'd. v2026.10.16.2 carries after_ms anchors,
-          # the Table A/B/C timing edits and README "Timeline rules"
-          # (qfg-goi1.7; harness side qfg-goi1.10.35).
-          ref: v2026.10.16.2
+          # deliberately rev'd, and kept equal to the unit pin in test.yaml
+          # (scripts/check-itd-refs.sh fails the Test job otherwise,
+          # qfg-6vno.7). v2026.10.21.1 adds 00-boot-both-down-then-restore
+          # (init-failure modes) and fixes 02's invented 'reconnecting' row.
+          ref: v2026.10.21.1
 
       - name: Checkout api-delivery
         if: env.HAS_REPO_TOKEN == 'true'

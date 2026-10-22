@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Tests: the chaos harness reads every asserted value from the SDK, and both chaos suites run integration-test-data `v2026.10.21.1` (qfg-6vno.6, qfg-6vno.7).** The default-suite probe now reports `Client#connection_state` as-is (it used to invent `reconnecting`), the per-layer `worker_restart_total` counters and the SSE dial count straight from the SDK, and no longer counts a callback log line as a restart. A chaos step the rig cannot apply fails the scenario instead of printing a no-op. `scenarios-http-proxy/08` and the caught-`fail` init test are collected and reported SKIPPED with their reason, and scenario 00 (init-failure modes) runs. A new CI step (`scripts/check-itd-refs.sh`) fails when the workflows pin different integration-test-data refs. No SDK change.
+
 ## 1.10.0 - 2026-10-21
 
 - **Fix (patch): the init deadline reason follows sdk-go (qfg-9p4i.17.14, design decision 10).** A new init attempt now starts whenever time remains before `init_timeout_ms`, however little. Before, a retry was skipped with under 250ms left and the boot was decided on the previous attempt, so an attempt that fails fast followed by a delivery that blackholes until the deadline raised `reason: :unavailable` where sdk-go raises `InitializationTimeoutError` (`reason: :timeout`). An attempt still in flight at the deadline decides the reason (`:timeout` only if none of its legs answered); a deadline that lands in the backoff is decided by the last completed attempt (`:timeout` only if every leg timed out). Test: `test/test_init_failure.rb`.

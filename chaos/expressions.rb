@@ -32,6 +32,10 @@ module Quonfig
       RE_LAST_REFRESH  = /\Aclient\.lastSuccessfulRefresh\(\)\s*(>=|>|<=|<|==)\s*\(now\(\)\s*-\s*(\d+)\)\z/
       RE_SDK_METRIC    = /\Aclient\.sdkMetric\(\s*'([^']+)'\s*(?:,\s*layer=\s*'([^']+)'\s*)?\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/
       RE_SERVER_METRIC = /\Aserver_metric\(\s*'([^']+)'\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/
+      RE_INIT_STATE    = /\Aclient\.initState\(\)\s*(==|!=)\s*'([^']+)'\z/
+      RE_READY         = /\Aclient\.ready\(\)\s*==\s*(true|false)\z/
+      RE_READY_EVENTS  = /\Aclient\.readyEventCount\(\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z/
+      RE_GET_STRING    = /\Aclient\.getString\(\s*'([^']*)'\s*,\s*'([^']*)'\s*\)\s*(==|!=)\s*'([^']*)'\z/
       RE_SDK_LOG       = %r{\Aclient\.sdkLog\(\s*'([^']+)'\s*,\s*/(.+)/i\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z}
 
       def split_outside_quotes(expr, sep)
@@ -106,11 +110,32 @@ module Quonfig
           want = m[4].to_f
           labels = layer ? { 'layer' => layer } : {}
           got = probe.sdk_metric(metric, labels)
-          # Unknown metric fails loudly, never a silent 0 (qfg-goi1.2.21).
-          return [false, "unknown sdkMetric \"#{metric}\": the chaos probe does not implement it"] if got.nil?
+          # Unknown metric (or no client to read it from) fails loudly, never a
+          # silent 0 (qfg-goi1.2.21).
+          return [false, "unknown sdkMetric \"#{metric}\": the chaos probe does not implement it (or has no SDK client yet)"] if got.nil?
 
           ok = compare(op, got, want)
           return [ok, "sdkMetric(#{metric},layer=#{layer || ''})=#{got} #{op} #{want}"]
+        end
+        # Init-failure vocabulary (ITD chaos/README "Init-failure vocabulary").
+        if (m = RE_INIT_STATE.match(expr))
+          got = probe.init_state
+          ok = m[1] == '==' ? got == m[2] : got != m[2]
+          return [ok, "initState=#{got} #{m[1]} #{m[2]}"]
+        end
+        if (m = RE_READY.match(expr))
+          want = m[1] == 'true'
+          got = probe.ready?
+          return [got == want, "ready=#{got} want #{want}"]
+        end
+        if (m = RE_READY_EVENTS.match(expr))
+          got = probe.ready_event_count
+          return [compare(m[1], got, m[2].to_i), "readyEventCount=#{got} #{m[1]} #{m[2]}"]
+        end
+        if (m = RE_GET_STRING.match(expr))
+          got = probe.get_string(m[1], m[2])
+          ok = m[3] == '==' ? got == m[4] : got != m[4]
+          return [ok, "getString(#{m[1]})=#{got.inspect} #{m[3]} #{m[4].inspect}"]
         end
         if (m = RE_SERVER_METRIC.match(expr))
           # Explicit SKIP, never a silent 0 (qfg-goi1.1.3, Decision 6).

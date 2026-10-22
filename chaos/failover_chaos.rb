@@ -294,6 +294,17 @@ class FailoverProbe
   def initialize
     @lock = Mutex.new
     @client = nil
+    @logs = []
+  end
+
+  # Every SDK log line, captured through Quonfig::InternalLogger.user_logger.
+  def log(level, msg)
+    @lock.synchronize { @logs << [level.to_s.downcase, msg.to_s] }
+  end
+
+  # sdkLog(level, /re/): lines at exactly +level+ that match +regex+.
+  def log_matches(level, regex)
+    @lock.synchronize { @logs.count { |lvl, msg| lvl == level.downcase && regex.match?(msg) } }
   end
 
   def client=(c)
@@ -337,6 +348,20 @@ RE_RESOLVED     = /\Aclient\.resolvedFrom\(\)\s*(==|!=)\s*'([^']+)'\z/
 RE_HELD_GEN      = /\Aclient\.heldGeneration\(\)\s*(>=|<=|==|!=|<|>)\s*(-?\d+)\z/
 RE_INSTALL_CNT   = /\Aclient\.configInstallCount\(\)\s*(>=|<=|==|!=|<|>)\s*(-?\d+)\z/
 RE_SSE_FAILOVER  = /\Aclient\.sseFailedOverToSecondary\(\)\s*==\s*(true|false)\z/
+RE_FO_SDK_LOG    = %r{\Aclient\.sdkLog\(\s*'([^']+)'\s*,\s*/(.+)/(i?)\s*\)\s*(>=|<=|==|!=|<|>)\s*(\d+)\z}
+
+# Pipes every Quonfig::InternalLogger write into the probe (sdkLog).
+class FailoverLoggerTap
+  %i[trace debug info warn error fatal].each do |lvl|
+    define_method(lvl) { |msg| @probe.log(lvl, msg) }
+  end
+
+  def initialize(probe)
+    @probe = probe
+  end
+
+  def respond_to_missing?(_, _ = false) = true
+end
 
 def failover_compare(op, a, b)
   case op
@@ -377,6 +402,12 @@ def failover_eval_leaf(expr, probe)
     want = m[1] == 'true'
     got = probe.sse_failed_over
     return [got == want, "sseFailedOverToSecondary=#{got} want #{want}"]
+  end
+  if (m = RE_FO_SDK_LOG.match(expr))
+    regex = Regexp.new(m[2], m[3] == 'i' ? Regexp::IGNORECASE : nil)
+    got = probe.log_matches(m[1], regex)
+    want = m[5].to_i
+    return [failover_compare(m[4], got, want), "sdkLog(#{m[1]},/#{m[2]}/#{m[3]})=#{got} #{m[4]} #{want}"]
   end
   [false, "unrecognized expression: #{expr}"]
 end
@@ -428,7 +459,9 @@ def failover_apply_inject(tp, inj, threads, stop_flag)
     tp.set_enabled('sse', false)
     threads << failover_restore_after(stop_flag, ms) { tp.set_enabled('sse', true) }
   else
-    puts "failover inject: unhandled shape #{inj.inspect} — no-op"
+    # A fault the rig cannot apply fails the run, never a printed no-op
+    # (qfg-6vno.6).
+    raise ArgumentError, "failover inject: unhandled shape #{inj.inspect}"
   end
 end
 
@@ -458,7 +491,7 @@ def failover_build_client(probe, sse_enabled, polling)
     # ~2s per-URL bound: short enough that a hung/slow primary fails over inside
     # the 4s within_ms budget; the §5g fix under test.
     config_fetch_timeout_ms: 2000,
-    on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::RETURN,
+    on_init_failure: Quonfig::Options::ON_INITIALIZATION_FAILURE::CONTINUE,
     on_no_default: Quonfig::Options::ON_NO_DEFAULT::RETURN_NIL,
     context_upload_mode: :none,
     collect_evaluation_summaries: false
@@ -494,6 +527,9 @@ def failover_run_scenario(tp, run, ordering:)
   wall_clock_ms = ((setup['wall_clock_seconds'] || 30).to_f * 1000).to_i
 
   stop_flag = ChaosStopFlag.new
+  event_errors = []
+  prev_user_logger = Quonfig::InternalLogger.user_logger
+  Quonfig::InternalLogger.user_logger = FailoverLoggerTap.new(probe)
   threads = []
   client = nil
   sentinel_before = SSESecondaryStreamSentinel.count
@@ -521,7 +557,9 @@ def failover_run_scenario(tp, run, ordering:)
         failover_apply_inject(tp, ev['inject'], threads, stop_flag)
         puts "[#{at}ms] inject #{ev['inject'].inspect}"
       rescue StandardError => e
-        puts "[#{at}ms] chaos event failed: #{e.class}: #{e.message}"
+        msg = "[#{at}ms] chaos event failed: #{e.class}: #{e.message}"
+        puts msg
+        event_errors << msg
       end
     end
 
@@ -569,6 +607,10 @@ def failover_run_scenario(tp, run, ordering:)
     # reach the secondary. The sentinel is the client's second stream leg, so a
     # single accept means the SSE pin regressed.
     sentinel_delta = SSESecondaryStreamSentinel.count - sentinel_before
+    event_errors.each do |msg|
+      failed += 1
+      details << "FAIL  chaos step not applied, scenario is not evidence: #{msg}"
+    end
     if sentinel_delta.positive?
       failed += 1
       details << "FAIL  invariant: secondary stream sentinel accepted #{sentinel_delta} " \
@@ -593,6 +635,7 @@ def failover_run_scenario(tp, run, ordering:)
     rescue StandardError
       nil
     end
+    Quonfig::InternalLogger.user_logger = prev_user_logger
   end
 end
 
