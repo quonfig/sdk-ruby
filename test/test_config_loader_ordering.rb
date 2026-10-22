@@ -15,10 +15,6 @@ require 'json'
 # unconditional, so a failover to the OLDER secondary regresses the held
 # generation and a duplicate same-gen leg re-installs.
 class TestConfigLoaderOrdering < Minitest::Test
-  PRIMARY_PORT   = 18_571
-  SECONDARY_PORT = 18_572
-  SINGLE_PORT    = 18_573
-
   def setup
     super
     @servers = []
@@ -48,9 +44,11 @@ class TestConfigLoaderOrdering < Minitest::Test
   # gen_proc returns the current generation int; dead_proc returns whether the
   # server should refuse (503). Each generation gets a distinct ETag so a bumped
   # generation isn't masked as a 304 by the loader's shared If-None-Match.
-  def start_server(port, gen_proc, dead_proc: -> { false })
+  # Port 0: OS-assigned, so parallel CI jobs never collide (qfg-2do1).
+  def start_server(gen_proc, dead_proc: -> { false })
     log = WEBrick::Log.new(StringIO.new)
-    server = WEBrick::HTTPServer.new(Port: port, Logger: log, AccessLog: [])
+    server = WEBrick::HTTPServer.new(Port: 0, Logger: log, AccessLog: [])
+    port = server.config[:Port]
     server.mount_proc '/api/v2/configs' do |_req, res|
       if dead_proc.call
         res.status = 503
@@ -92,8 +90,8 @@ class TestConfigLoaderOrdering < Minitest::Test
   # older secondary when it fails over.
   def test_failover_to_older_secondary_does_not_regress
     primary_dead = false
-    primary_url   = start_server(PRIMARY_PORT, -> { 42 }, dead_proc: -> { primary_dead })
-    secondary_url = start_server(SECONDARY_PORT, -> { 41 })
+    primary_url   = start_server(-> { 42 }, dead_proc: -> { primary_dead })
+    secondary_url = start_server(-> { 41 })
 
     loader = build_loader([primary_url, secondary_url])
 
@@ -113,7 +111,7 @@ class TestConfigLoaderOrdering < Minitest::Test
   # refresh is a no-op (no second install), and a newer generation heals forward.
   def test_seed_then_same_gen_noop_then_heal_forward
     current_gen = 41
-    url = start_server(SINGLE_PORT, -> { current_gen })
+    url = start_server(-> { current_gen })
 
     loader = build_loader([url])
 
@@ -142,7 +140,7 @@ class TestConfigLoaderOrdering < Minitest::Test
   # then strand it when the healthy gen 42 re-delivers as a same-gen no-op.
   def test_unversioned_snapshot_does_not_override_held_generation
     current_gen = 42
-    url = start_server(SINGLE_PORT, -> { current_gen })
+    url = start_server(-> { current_gen })
 
     loader = build_loader([url])
 

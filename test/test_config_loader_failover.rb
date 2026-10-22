@@ -15,8 +15,6 @@ require 'json'
 # deadline, fetch_from(primary) blocks indefinitely and fetch! never returns —
 # this test's own join deadline trips and the assertion fails.
 class TestConfigLoaderFailover < Minitest::Test
-  SECONDARY_PORT = 18_561
-
   SAMPLE_CONFIG = {
     'id' => 'c1',
     'key' => 'failover.flag',
@@ -71,7 +69,9 @@ class TestConfigLoaderFailover < Minitest::Test
 
   def start_secondary
     log = WEBrick::Log.new(StringIO.new)
-    @secondary = WEBrick::HTTPServer.new(Port: SECONDARY_PORT, Logger: log, AccessLog: [])
+    # Port 0: OS-assigned, so parallel CI jobs never collide (qfg-2do1).
+    @secondary = WEBrick::HTTPServer.new(Port: 0, Logger: log, AccessLog: [])
+    port = @secondary.config[:Port]
     @secondary.mount_proc '/api/v2/configs' do |_req, res|
       res.status = 200
       res['Content-Type'] = 'application/json'
@@ -83,11 +83,11 @@ class TestConfigLoaderFailover < Minitest::Test
     end
     Thread.new { @secondary.start }
     50.times do
-      break if tcp_open?(SECONDARY_PORT)
+      break if tcp_open?(port)
 
       sleep 0.05
     end
-    "http://127.0.0.1:#{SECONDARY_PORT}"
+    "http://127.0.0.1:#{port}"
   end
 
   def tcp_open?(port)

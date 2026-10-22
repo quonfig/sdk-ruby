@@ -102,10 +102,10 @@ class TestSSEConfigClient < Minitest::Test
 
   def test_restart_total_increments_on_clean_fin_reconnect
     CleanFinEndpoint.counter = 0
-    server, = start_webrick_server(4569, CleanFinEndpoint)
+    server, = start_webrick_server(CleanFinEndpoint)
 
     config_loader = OpenStruct.new(highwater_mark: 0)
-    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4569'], sdk_key: 'test')
+    prefab_options = OpenStruct.new(sse_api_urls: [url_for(server)], sdk_key: 'test')
     last_event_id = nil
     client = nil
 
@@ -130,10 +130,10 @@ class TestSSEConfigClient < Minitest::Test
   end
 
   def test_recovering_from_disconnection
-    server, = start_webrick_server(4567, DisconnectingEndpoint)
+    server, = start_webrick_server(DisconnectingEndpoint)
 
     config_loader = OpenStruct.new(highwater_mark: 4)
-    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4567'], sdk_key: 'test')
+    prefab_options = OpenStruct.new(sse_api_urls: [url_for(server)], sdk_key: 'test')
     last_event_id = nil
     client = nil
 
@@ -159,10 +159,10 @@ class TestSSEConfigClient < Minitest::Test
     log_output = StringIO.new
     logger = Logger.new(log_output)
 
-    server, = start_webrick_server(4568, ErroringEndpoint)
+    server, = start_webrick_server(ErroringEndpoint)
 
     config_loader = OpenStruct.new(highwater_mark: 4)
-    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4568'], sdk_key: 'test')
+    prefab_options = OpenStruct.new(sse_api_urls: [url_for(server)], sdk_key: 'test')
     last_event_id = nil
     client = nil
 
@@ -191,14 +191,14 @@ class TestSSEConfigClient < Minitest::Test
   end
 
   def test_on_error_invokes_error_callback_for_http_status
-    server, = start_webrick_server(4570, AlwaysErroringEndpoint)
+    server, = start_webrick_server(AlwaysErroringEndpoint)
     errors = []
     client = nil
 
     begin
       Thread.new { server.start }
 
-      prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4570'], sdk_key: 'k')
+      prefab_options = OpenStruct.new(sse_api_urls: [url_for(server)], sdk_key: 'k')
       config_loader = OpenStruct.new(highwater_mark: 0)
       sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
       client = Quonfig::SSEConfigClient.new(
@@ -228,18 +228,18 @@ class TestSSEConfigClient < Minitest::Test
   # whole fetch cycle (rule R2). on_error fires once per attempt so the client
   # schedules that poller as for any drop. Logging (R5): one WARN per status,
   # re-armed only by a 200, DEBUG otherwise, never an ERROR.
-  def assert_auth_status_keeps_retrying(status_code, port)
+  def assert_auth_status_keeps_retrying(status_code)
     TerminalStatusEndpoint.status_code = status_code
     TerminalStatusEndpoint.hits = 0
 
-    server, = start_webrick_server(port, TerminalStatusEndpoint)
+    server, = start_webrick_server(TerminalStatusEndpoint)
     errors = Concurrent::Array.new
     client = nil
 
     begin
       Thread.new { server.start }
 
-      prefab_options = OpenStruct.new(sse_api_urls: ["http://localhost:#{port}"], sdk_key: 'k')
+      prefab_options = OpenStruct.new(sse_api_urls: [url_for(server)], sdk_key: 'k')
       config_loader = OpenStruct.new(highwater_mark: 0)
       sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05,
                                                           sse_max_reconnect_delay: 0.1)
@@ -273,19 +273,19 @@ class TestSSEConfigClient < Minitest::Test
   end
 
   def test_auth_class_401_keeps_retrying_and_warns_once
-    assert_auth_status_keeps_retrying(401, 4574)
+    assert_auth_status_keeps_retrying(401)
   end
 
   def test_auth_class_403_keeps_retrying_and_warns_once
-    assert_auth_status_keeps_retrying(403, 4575)
+    assert_auth_status_keeps_retrying(403)
   end
 
   def test_auth_class_404_keeps_retrying_and_warns_once
-    assert_auth_status_keeps_retrying(404, 4576)
+    assert_auth_status_keeps_retrying(404)
   end
 
   def test_auth_class_410_keeps_retrying_and_warns_once
-    assert_auth_status_keeps_retrying(410, 4579)
+    assert_auth_status_keeps_retrying(410)
   end
 
   # qfg-i5xv: a 503 (or any 5xx) is transient — the SDK must keep retrying,
@@ -293,14 +293,14 @@ class TestSSEConfigClient < Minitest::Test
   # callback. This guards against an over-broad fix that classifies every
   # non-200 as terminal.
   def test_500_is_not_terminal
-    server, = start_webrick_server(4577, AlwaysErroringEndpoint)
+    server, = start_webrick_server(AlwaysErroringEndpoint)
     errors = []
     client = nil
 
     begin
       Thread.new { server.start }
 
-      prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4577'], sdk_key: 'k')
+      prefab_options = OpenStruct.new(sse_api_urls: [url_for(server)], sdk_key: 'k')
       config_loader = OpenStruct.new(highwater_mark: 0)
       sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
       client = Quonfig::SSEConfigClient.new(
@@ -337,7 +337,7 @@ class TestSSEConfigClient < Minitest::Test
     HealthyThenTerminalEndpoint.healthy_count = 1
     HealthyThenTerminalEndpoint.terminal_status = 401
 
-    server, = start_webrick_server(4578, HealthyThenTerminalEndpoint)
+    server, = start_webrick_server(HealthyThenTerminalEndpoint)
     errors = Concurrent::Array.new
     seen = Concurrent::Array.new
     client = nil
@@ -345,7 +345,7 @@ class TestSSEConfigClient < Minitest::Test
     begin
       Thread.new { server.start }
 
-      prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4578'], sdk_key: 'k')
+      prefab_options = OpenStruct.new(sse_api_urls: [url_for(server)], sdk_key: 'k')
       config_loader = OpenStruct.new(highwater_mark: 0)
       sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05,
                                                           sse_max_reconnect_delay: 0.1)
@@ -384,8 +384,8 @@ class TestSSEConfigClient < Minitest::Test
   def test_sse_pins_to_primary_and_never_dials_secondary_stream
     CountingErrorEndpoint.hits = 0
     SecondaryStreamSentinelEndpoint.hits = 0
-    primary_server, = start_webrick_server(4580, CountingErrorEndpoint)
-    secondary_server, = start_webrick_server(4581, SecondaryStreamSentinelEndpoint)
+    primary_server, = start_webrick_server(CountingErrorEndpoint)
+    secondary_server, = start_webrick_server(SecondaryStreamSentinelEndpoint)
     client = nil
 
     begin
@@ -393,7 +393,7 @@ class TestSSEConfigClient < Minitest::Test
       Thread.new { secondary_server.start }
 
       prefab_options = OpenStruct.new(
-        sse_api_urls: ['http://localhost:4580', 'http://localhost:4581'],
+        sse_api_urls: [url_for(primary_server), url_for(secondary_server)],
         sdk_key: 'k'
       )
       config_loader = OpenStruct.new(highwater_mark: 0)
@@ -419,13 +419,13 @@ class TestSSEConfigClient < Minitest::Test
 
   def test_last_event_id_sent_on_reconnect
     LastEventIdEndpoint.received_ids.clear
-    server, = start_webrick_server(4571, LastEventIdEndpoint)
+    server, = start_webrick_server(LastEventIdEndpoint)
     client = nil
 
     begin
       Thread.new { server.start }
 
-      prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4571'], sdk_key: 'k')
+      prefab_options = OpenStruct.new(sse_api_urls: [url_for(server)], sdk_key: 'k')
       config_loader = OpenStruct.new(highwater_mark: 0)
       sse_options = Quonfig::SSEConfigClient::Options.new(sse_initial_reconnect_delay: 0.05)
       client = Quonfig::SSEConfigClient.new(prefab_options, config_loader, sse_options)
@@ -452,8 +452,8 @@ class TestSSEConfigClient < Minitest::Test
   # chunk. Without the watchdog, restart_total stayed 0 forever while the
   # SSE socket was logically dead.
   class SilentStallServer
-    def initialize(port)
-      @server = TCPServer.new(port)
+    def initialize
+      @server = TCPServer.new('localhost', 0)
       @thread = Thread.new do
         loop do
           sock = @server.accept
@@ -469,6 +469,10 @@ class TestSSEConfigClient < Minitest::Test
       end
     end
 
+    def url
+      "http://localhost:#{@server.addr[1]}"
+    end
+
     def close
       @server.close
       @thread.kill
@@ -476,9 +480,9 @@ class TestSSEConfigClient < Minitest::Test
   end
 
   def test_watchdog_interrupts_silent_stall
-    server = SilentStallServer.new(4573)
+    server = SilentStallServer.new
 
-    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4573'], sdk_key: 'k')
+    prefab_options = OpenStruct.new(sse_api_urls: [server.url], sdk_key: 'k')
     config_loader = OpenStruct.new(highwater_mark: 0)
     sse_options = Quonfig::SSEConfigClient::Options.new(
       sse_read_timeout: 1,
@@ -695,11 +699,11 @@ class TestSSEConfigClient < Minitest::Test
   end
 
   def test_close_interrupts_in_flight_stream
-    server, = start_webrick_server(4572, SlowEndpoint)
+    server, = start_webrick_server(SlowEndpoint)
     nil
 
     Thread.new { server.start }
-    prefab_options = OpenStruct.new(sse_api_urls: ['http://localhost:4572'], sdk_key: 'k')
+    prefab_options = OpenStruct.new(sse_api_urls: [url_for(server)], sdk_key: 'k')
     config_loader = OpenStruct.new(highwater_mark: 0)
     sse_options = Quonfig::SSEConfigClient::Options.new(sse_read_timeout: 5,
                                                         sse_initial_reconnect_delay: 0.05)
@@ -861,13 +865,19 @@ class TestSSEConfigClient < Minitest::Test
 
   # ---- WEBrick endpoints --------------------------------------------------
 
-  def start_webrick_server(port, endpoint_class)
+  # Port 0: the OS picks a free port, so parallel CI jobs never collide on a
+  # fixed one (qfg-2do1). Read it back with url_for(server).
+  def start_webrick_server(endpoint_class)
     log_string = StringIO.new
     logger = WEBrick::Log.new(log_string)
-    server = WEBrick::HTTPServer.new(Port: port, Logger: logger, AccessLog: [])
+    server = WEBrick::HTTPServer.new(Port: 0, Logger: logger, AccessLog: [])
     server.mount '/api/v2/sse', endpoint_class
 
     [server, log_string]
+  end
+
+  def url_for(server)
+    "http://localhost:#{server.config[:Port]}"
   end
 
   module SharedEndpointLogic

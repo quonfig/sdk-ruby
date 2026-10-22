@@ -10,8 +10,6 @@ require 'json'
 # regression test for the P0 documented in test-ruby/FRICTION.md where
 # network-mode was accepted but silently ignored in v0.0.3.
 class TestClientNetworkMode < Minitest::Test
-  PORT = 18_094
-
   SAMPLE_CONFIG = {
     'id' => 'c1',
     'key' => 'log-levels.test-ruby',
@@ -41,9 +39,12 @@ class TestClientNetworkMode < Minitest::Test
 
   def start_server
     log = WEBrick::Log.new(StringIO.new)
+    # Port 0: the OS picks a free port, so parallel CI jobs never collide
+    # on a fixed one (qfg-2do1).
     @server = WEBrick::HTTPServer.new(
-      Port: PORT, Logger: log, AccessLog: []
+      Port: 0, Logger: log, AccessLog: []
     )
+    @port = @server.config[:Port]
     @server.mount_proc '/api/v2/configs' do |_req, res|
       @fetch_count += 1
       res.status = 200
@@ -65,7 +66,7 @@ class TestClientNetworkMode < Minitest::Test
 
   def tcp_open?
     require 'socket'
-    TCPSocket.new('127.0.0.1', PORT).tap(&:close)
+    TCPSocket.new('127.0.0.1', @port).tap(&:close)
     true
   rescue StandardError
     false
@@ -76,7 +77,7 @@ class TestClientNetworkMode < Minitest::Test
 
     client = Quonfig::Client.new(
       sdk_key: 'test-key',
-      api_urls: ["http://127.0.0.1:#{PORT}"],
+      api_urls: ["http://127.0.0.1:#{@port}"],
       enable_sse: false,
       enable_polling: false,
       # Disable telemetry so the background reporter doesn't POST to a
@@ -161,9 +162,12 @@ class TestClientNetworkMode < Minitest::Test
 
   def start_env_scoped_server
     log = WEBrick::Log.new(StringIO.new)
+    # Port 0: the OS picks a free port, so parallel CI jobs never collide
+    # on a fixed one (qfg-2do1).
     @server = WEBrick::HTTPServer.new(
-      Port: PORT, Logger: log, AccessLog: []
+      Port: 0, Logger: log, AccessLog: []
     )
+    @port = @server.config[:Port]
     @server.mount_proc '/api/v2/configs' do |_req, res|
       @fetch_count += 1
       res.status = 200
@@ -188,7 +192,7 @@ class TestClientNetworkMode < Minitest::Test
 
     client = Quonfig::Client.new(
       sdk_key: 'test-key',
-      api_urls: ["http://127.0.0.1:#{PORT}"],
+      api_urls: ["http://127.0.0.1:#{@port}"],
       enable_sse: false,
       enable_polling: false,
       # Disable telemetry so the background reporter doesn't POST to a
@@ -225,7 +229,7 @@ class TestClientNetworkMode < Minitest::Test
 
     client = Quonfig::Client.new(
       sdk_key: 'test-key',
-      api_urls: ["http://127.0.0.1:#{PORT}"],
+      api_urls: ["http://127.0.0.1:#{@port}"],
       enable_sse: false,
       enable_polling: false,
       context_upload_mode: :none,
@@ -250,7 +254,7 @@ class TestClientNetworkMode < Minitest::Test
 
     client = Quonfig::Client.new(
       sdk_key: 'test-key',
-      api_urls: ["http://127.0.0.1:#{PORT}"],
+      api_urls: ["http://127.0.0.1:#{@port}"],
       enable_sse: false,
       enable_polling: false,
       context_upload_mode: :none,
@@ -317,7 +321,7 @@ class TestClientNetworkMode < Minitest::Test
 
     client = Quonfig::Client.new(
       sdk_key: 'test-key',
-      api_urls: ["http://127.0.0.1:#{PORT}"],
+      api_urls: ["http://127.0.0.1:#{@port}"],
       enable_sse: false,
       fallback_poll_enabled: true,
       fallback_poll_interval_ms: 60_000, # a sleep-first worker would wait 60s
