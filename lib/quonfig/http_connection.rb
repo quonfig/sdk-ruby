@@ -26,6 +26,19 @@ module Quonfig
     # structurally cannot catch.
     WALL_CLOCK_HEADROOM_S = 0.25
 
+    # Raised by #get when +max_body_bytes+ is set and the response body grows
+    # past it (size-caps rule, qfg-6vno.20.5). Reading stops at the cap: the
+    # body is streamed through a byte counter, never read whole and measured
+    # afterwards. Not a Faraday error, so callers handle it explicitly.
+    class BodyTooLargeError < StandardError
+      attr_reader :max_bytes
+
+      def initialize(max_bytes)
+        @max_bytes = max_bytes
+        super("response body exceeds the maximum size of #{max_bytes} bytes")
+      end
+    end
+
     # +timeout_ms+ (qfg-7h5d.1.9): per-request bound applied to BOTH the connect
     # (open) and read phases of every request made through this connection, AND
     # (qfg-41nh.6) enforced as a wall-clock ceiling over the whole request. nil
@@ -39,17 +52,25 @@ module Quonfig
     # connect (open) phase — TCP connect plus TLS handshake. nil uses
     # +timeout_ms+ for it, as before. The telemetry reporter passes 5s here and
     # 15s as +timeout_ms+.
-    def initialize(uri, sdk_key, timeout_ms: nil, open_timeout_ms: nil)
+    #
+    # +max_body_bytes+ (qfg-6vno.20.5): when set, #get streams the body through
+    # a counter and raises BodyTooLargeError as soon as it passes this many
+    # bytes, so memory stays bounded near the cap. nil reads the body whole,
+    # as before. The config fetch passes ConfigLoader::MAX_CONFIG_BODY_BYTES.
+    def initialize(uri, sdk_key, timeout_ms: nil, open_timeout_ms: nil, max_body_bytes: nil)
       @uri = uri
       @sdk_key = sdk_key
       @timeout_ms = timeout_ms
       @open_timeout_ms = open_timeout_ms
+      @max_body_bytes = max_body_bytes
     end
 
     attr_reader :uri
 
     def get(path, headers = {})
-      with_wall_clock_deadline { connection(headers).get(path) }
+      return with_wall_clock_deadline { connection(headers).get(path) } unless @max_body_bytes
+
+      get_bounded(path, headers)
     end
 
     # A String +body+ is sent verbatim (the telemetry reporter resends a
@@ -77,6 +98,26 @@ module Quonfig
     end
 
     private
+
+    # Faraday's +on_data+ streams the body in the adapter's read chunks (works
+    # on Faraday 1.x and 2.x; extra callback arguments are ignored). The
+    # response then carries an empty body, so the counted bytes are put back
+    # on it for the caller.
+    def get_bounded(path, headers)
+      max = @max_body_bytes
+      buf = +''.b
+      response = with_wall_clock_deadline do
+        connection(headers).get(path) do |req|
+          req.options.on_data = proc do |chunk, _received|
+            raise BodyTooLargeError, max if buf.bytesize + chunk.bytesize > max
+
+            buf << chunk.b
+          end
+        end
+      end
+      response.env[:body] = buf.force_encoding(Encoding::UTF_8)
+      response
+    end
 
     # Enforce +timeout_ms+ (+ headroom) as a wall-clock deadline over the whole
     # request. Timeout.timeout is the codebase's accepted backstop pattern (the
