@@ -7,8 +7,7 @@ require 'minitest/mock'
 
 # Supervisor contract Test 10 — size caps (qfg-6vno.20.5, rule qfg-6vno.8).
 # Contract: integration-test-data chaos/supervisor-test-contract.md at
-# v2026.10.22.2, "Rule — size caps" and Test 10 cases 1, 2, 3 and 5
-# (case 4, non-2xx bodies, was already done by init-failure decision 9).
+# v2026.10.22.2, "Rule — size caps" and Test 10 cases 1-5.
 #
 # - One SSE event (any line, and the sum of a multi-line data:) is capped at
 #   4 MiB (4,194,304 bytes). Over the cap is not a frame: the connection is a
@@ -16,6 +15,7 @@ require 'minitest/mock'
 #   envelope gets through.
 # - A 200 body from /api/v2/configs is capped at 16 MiB (16,777,216 bytes).
 #   Over the cap is a failed leg: nothing installed, no ETag stored.
+# - A non-2xx body is read to at most 1 KiB and never logged.
 # - One WARN per oversized episode (with the cap in bytes); repeats DEBUG.
 class TestSizeCaps < Minitest::Test
   EVENT_CAP = 4 * 1024 * 1024
@@ -384,12 +384,93 @@ class TestSizeCaps < Minitest::Test
     assert_operator @capture.log_count(:debug, /16777216/), :>=, 1, 'repeats must log at DEBUG'
   end
 
+  # Case 3, bounded reading: the 200 body read stops at the cap. The server
+  # sends the cap plus 256 KiB of a larger body and then stalls; a client
+  # that reads the whole body and measures it afterwards would hang until its
+  # deadline instead of failing at once.
+  def test_10_3_body_read_stops_at_the_cap
+    @server = Server.new(
+      config_script: lambda do |_hit, _headers, sock|
+        sock.write "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" \
+                   "Content-Length: #{BODY_CAP * 2}\r\nConnection: close\r\n\r\n"
+        chunk = 'x' * (256 * 1024)
+        (((BODY_CAP + chunk.bytesize) / chunk.bytesize) + 1).times { sock.write chunk }
+        @server.hold(sock)
+      end
+    )
+    conn = Quonfig::HttpConnection.new(@server.url, 'KEY', timeout_ms: 8_000, max_body_bytes: BODY_CAP)
+    started = now
+    assert_raises(Quonfig::HttpConnection::BodyTooLargeError) { conn.get('/api/v2/configs') }
+    elapsed = now - started
+    assert_operator elapsed, :<, 5.0, "the read must stop at the cap, took #{elapsed.round(2)}s"
+  end
+
   def test_10_3_oversized_config_body_with_content_length_is_a_failed_leg
     run_oversized_body_case(content_length: true)
   end
 
   def test_10_3_oversized_config_body_without_content_length_is_a_failed_leg
     run_oversized_body_case(content_length: false)
+  end
+
+  # ---- Test 10 case 4: a non-2xx body is read to at most 1 KiB -----------
+
+  NON_2XX_READ_CAP = 1024
+  MARKER = 'SIZE-CAPS-NON-2XX-MARKER'
+
+  # The body must stop being read near 1 KiB, not at the 16 MiB cap. The
+  # server sends 64 KiB of a 2 MiB 502 body and then stalls: a client that
+  # reads the whole body hangs until its deadline; one that stops at 1 KiB
+  # returns at once with the status.
+  def test_10_4_non_2xx_body_read_stops_at_1_kib
+    @server = Server.new(
+      config_script: lambda do |_hit, _headers, sock|
+        sock.write "HTTP/1.1 502 Bad Gateway\r\nContent-Type: text/plain\r\n" \
+                   "Content-Length: #{2 * 1024 * 1024}\r\nConnection: close\r\n\r\n"
+        sock.write MARKER * ((64 * 1024) / MARKER.bytesize)
+        @server.hold(sock)
+      end
+    )
+    conn = Quonfig::HttpConnection.new(@server.url, 'KEY', timeout_ms: 4_000,
+                                                           max_body_bytes: BODY_CAP)
+    started = now
+    response = conn.get('/api/v2/configs')
+    elapsed = now - started
+    assert_equal 502, response.status
+    assert_operator response.body.to_s.bytesize, :<=, NON_2XX_READ_CAP
+    assert_operator elapsed, :<, 2.0, "the non-2xx body read must stop at 1 KiB, took #{elapsed.round(2)}s"
+  end
+
+  # Contract case 4: 502 with a 2 MiB body containing a marker. No log line
+  # or error message may contain the marker.
+  def test_10_4_non_2xx_body_marker_never_logged_or_in_an_error
+    body = (MARKER * ((2 * 1024 * 1024) / MARKER.bytesize))
+    @server = Server.new(
+      config_script: lambda do |_hit, _headers, sock|
+        TestSizeCaps.write_json(sock, body, etag: nil, status: '502 Bad Gateway')
+      end
+    )
+    cycle = loader_for(@server).fetch_cycle!
+    assert_equal :failed, cycle.result
+    assert_equal 502, cycle.statuses[0]
+    refute(@capture.lines.any? { |l| l.include?(MARKER) }, 'no log line may carry the non-2xx body')
+    refute(cycle.leg_errors.values.any? { |e| e.to_s.include?(MARKER) }, 'no error may carry the non-2xx body')
+  end
+
+  # An auth-class status with a body over 16 MiB is still that status (rule
+  # R1 sees it), not an oversized 200.
+  def test_10_4_auth_class_status_with_a_huge_body_keeps_its_status
+    body = 'x' * (BODY_CAP + (1024 * 1024))
+    @server = Server.new(
+      config_script: lambda do |_hit, _headers, sock|
+        TestSizeCaps.write_json(sock, body, etag: nil, status: '401 Unauthorized')
+      end
+    )
+    cycle = loader_for(@server).fetch_cycle!
+    assert_equal :failed, cycle.result
+    assert_equal 401, cycle.statuses[0], 'the 401 must be recorded for auth-class detection'
+    assert cycle.auth_rejected?
+    assert_equal 0, @capture.log_count(:warn, /16777216/), 'a 401 is not an oversized 200'
   end
 
   def test_10_5_a_12_mib_config_body_installs
