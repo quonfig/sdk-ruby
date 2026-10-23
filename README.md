@@ -298,6 +298,24 @@ timeout runs out (false). Under `:wait`, point your readiness probe at
 `ready?`. `:raise` and `:return` are the deprecated spellings of `:fail` and
 `:continue`; they still work and log a one-time WARN.
 
+### Forking servers (Puma, Sidekiq)
+
+A forked worker (Puma cluster or phased restart, Unicorn, Sidekiq, Resque)
+never serves the parent's config: it rebuilds its own snapshot on first use and
+applies the same `on_init_failure` mode as a fresh boot (see
+[Rails integration](#rails-integration)). If delivery is unreachable when a
+worker is recycled:
+
+- `:fail` (default): the worker's first lookup raises
+  `Quonfig::Errors::InitializationError`, and later lookups keep raising until
+  delivery heals.
+- `:wait`: the worker's first request blocks until delivery is back.
+- `:continue`: the worker serves code defaults until it heals. Apps that
+  recycle workers often (frequent phased restarts, a fork per job) should use
+  this and keep their defaults safe.
+
+Details: [Startup failure: forked workers](https://docs.quonfig.com/docs/explanations/architecture/startup-failure#forked-workers-and-worker-recycling).
+
 ## Constructor options
 
 ```ruby
