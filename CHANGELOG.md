@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Docs: README note on forking servers during a delivery outage (qfg-6vno.24).** Under Startup failure: a forked worker rebuilds its own snapshot under the same `on_init_failure` mode, `:fail` raises until delivery heals, `:wait` blocks the first request, and frequent recyclers should use `:continue`. Links to the startup-failure docs page. No code change.
+
 ## 1.11.0 - 2026-10-23
 
 - **Changed (minor): SSE events and config bodies have size caps (qfg-6vno.20.5, cross-SDK rule qfg-6vno.8).** One SSE event (any single line, and the joined lines of a multi-line `data:`) is capped at 4 MiB (4,194,304 bytes), and a 200 body from `/api/v2/configs` at 16 MiB (16,777,216 bytes). Before, both were read with no limit (1.8.0 noted "there is still no size cap"), so a broken proxy or a stream with no newline could grow memory without bound.
