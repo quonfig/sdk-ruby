@@ -1266,4 +1266,102 @@ class TestEnabled < Minitest::Test
     assert_equal false, actual, 'scope.enabled?(feature-flag.greater-than)'
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
+
+  # enabled on stored bool true returns true
+  def test_enabled_on_stored_bool_true_returns_true
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('getter.contract.bool')
+    assert_equal true, actual, 'client.enabled?(getter.contract.bool)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # enabled on env-var-provided bool "true" returns true
+  def test_enabled_on_env_var_provided_bool_true_returns_true
+    IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_GETTER_BOOL' => 'true' }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.enabled?('getter.contract.provided.bool')
+      assert_equal true, actual, 'client.enabled?(getter.contract.provided.bool)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # enabled on stored string returns false
+  def test_enabled_on_stored_string_returns_false
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('getter.contract.string')
+    assert_equal false, actual, 'client.enabled?(getter.contract.string)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # enabled on stored int returns false
+  def test_enabled_on_stored_int_returns_false
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('getter.contract.int')
+    assert_equal false, actual, 'client.enabled?(getter.contract.int)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # enabled on stored double returns false
+  def test_enabled_on_stored_double_returns_false
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('getter.contract.double')
+    assert_equal false, actual, 'client.enabled?(getter.contract.double)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # enabled on stored string_list returns false
+  def test_enabled_on_stored_string_list_returns_false
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('getter.contract.string_list')
+    assert_equal false, actual, 'client.enabled?(getter.contract.string_list)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # enabled on stored json returns false
+  def test_enabled_on_stored_json_returns_false
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('getter.contract.json')
+    assert_equal false, actual, 'client.enabled?(getter.contract.json)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # enabled on stored duration returns false
+  def test_enabled_on_stored_duration_returns_false
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('getter.contract.duration')
+    assert_equal false, actual, 'client.enabled?(getter.contract.duration)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # enabled on stored string "true" returns false
+  def test_enabled_on_stored_string_true_returns_false
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('getter.contract.string.true')
+    assert_equal false, actual, 'client.enabled?(getter.contract.string.true)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # enabled on stored malformed int "twelve" returns false
+  def test_enabled_on_stored_malformed_int_twelve_returns_false
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('getter.contract.int.malformed')
+    assert_equal false, actual, 'client.enabled?(getter.contract.int.malformed)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # enabled on a missing bool env var returns false
+  def test_enabled_on_a_missing_bool_env_var_returns_false
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('getter.contract.provided.bool.missing')
+    assert_equal false, actual, 'client.enabled?(getter.contract.provided.bool.missing)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # enabled on a decryption failure returns false
+  def test_enabled_on_a_decryption_failure_returns_false
+    client = IntegrationTestHelpers.build_client
+    actual = client.enabled?('a.broken.secret.config')
+    assert_equal false, actual, 'client.enabled?(a.broken.secret.config)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
 end

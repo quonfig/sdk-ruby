@@ -21,6 +21,42 @@ module Quonfig
   class Client
     LOG = Quonfig::InternalLogger.new(self)
 
+    # Errors that make a read of a present key fail (qfg-zvyy). Each one is
+    # handled by #failed_read: the caller's default, nil, or the error.
+    READ_FAILURES = [
+      Quonfig::Errors::TypeMismatchError,
+      Quonfig::Errors::EnvVarParseError,
+      Quonfig::Errors::MissingEnvVarError,
+      Quonfig::Errors::DecryptionError
+    ].freeze
+
+    # Largest integer a double holds exactly: +/-(2^53-1), the bound the
+    # cross-SDK contract (and cli verify) uses for a double -> int read.
+    MAX_SAFE_INTEGER = (2**53) - 1
+
+    # Declared value type each typed getter reads. The only conversions are
+    # between numbers, and only when exact (see #typed_number).
+    ACCEPTED_TYPES = {
+      String => %w[string log_level],
+      Integer => %w[int double],
+      Float => %w[double int],
+      bool: %w[bool],
+      string_list: %w[string_list],
+      json: %w[json],
+      duration: %w[duration]
+    }.freeze
+
+    TYPE_NAMES = {
+      String => 'String',
+      Integer => 'Integer',
+      Float => 'Float',
+      bool: 'Boolean',
+      string_list: 'Array<String>',
+      json: 'JSON',
+      duration: 'ISO-8601 Duration'
+    }.freeze
+    private_constant :READ_FAILURES, :MAX_SAFE_INTEGER, :ACCEPTED_TYPES, :TYPE_NAMES
+
     # The +callback+ label values of quonfig_sdk_callback_errors_total
     # (supervisor contract). sdk-ruby has no public connection-state callback,
     # so +on_connection_state_change+ stays 0; it is listed so a reader of
@@ -81,9 +117,12 @@ module Quonfig
       @evaluator = Quonfig::Evaluator.new(@store, env_id: @options.environment)
       @resolver = Quonfig::Resolver.new(@store, @evaluator)
       @semantic_logger_filters = {}
-      # Keys already warned about for a malformed duration value (qfg-2agi.10).
-      @malformed_duration_warned = Set.new
-      @malformed_duration_mutex = Mutex.new
+      # Keys already warned about for a failed read: a wrong-type value, a
+      # malformed value, an unset ENV_VAR or a decryption failure, plus
+      # enabled? returning false for a missing key (qfg-2agi.10, qfg-zvyy).
+      # One WARN per key per client.
+      @read_failure_warned = Set.new
+      @read_failure_mutex = Mutex.new
       @sse_client = nil
       @poll_supervisor = nil
       @stopped = false
@@ -151,23 +190,27 @@ module Quonfig
 
     # ---- Lookup --------------------------------------------------------
 
+    # The config's value, untyped.
+    #
+    # A missing key returns +default+, or applies +on_no_default+ (nil under
+    # :return_nil, MissingDefaultError under :raise). A read that fails (an
+    # unset ENV_VAR, a decryption failure, a malformed stored or ENV_VAR
+    # value) follows the typed-getter contract (qfg-zvyy): +default+ when one
+    # is given, otherwise nil under :return_nil or the error itself under
+    # :raise, and one WARN per key either way.
     def get(key, default = NO_DEFAULT_PROVIDED, jit_context = NO_DEFAULT_PROVIDED)
       ensure_initialized_after_fork
       ctx = build_context(jit_context)
       record_context_for_telemetry(ctx)
-      result =
-        begin
-          @resolver.get(key, ctx)
-        rescue Quonfig::Errors::MissingDefaultError
-          # The Resolver raises (matching Quonfig.get_or_raise semantics).
-          # The Client's get applies the caller-provided default *or* the
-          # configured on_no_default policy via handle_missing.
-          nil
-        end
-      return handle_missing(key, default) if result.nil?
+      begin
+        result = resolve_for_read(key, ctx)
+        return handle_missing(key, default) if result.nil?
 
-      record_evaluation_for_telemetry(result)
-      result.unwrapped_value
+        record_evaluation_for_telemetry(result)
+        unwrap_for_read(result)
+      rescue *READ_FAILURES => e
+        failed_read(key, default, e)
+      end
     end
 
     def get_string(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
@@ -190,31 +233,13 @@ module Quonfig
       typed_get(key, :string_list, default: default, context: context)
     end
 
-    # Integer milliseconds for a duration config (qfg-2agi.10).
-    #
-    # - A config whose valueType is not duration raises TypeMismatchError,
-    #   like get_int on a string config.
-    # - Values follow the shared grammar (Quonfig::Duration); ms are rounded
-    #   half up on both the stored and the ENV_VAR path.
-    # - A malformed value (stored or ENV_VAR) returns +default+ and logs one
-    #   warning per key. With no default it returns nil under
-    #   on_no_default: :return_nil and raises EnvVarParseError under :raise.
+    # Integer milliseconds for a duration config (qfg-2agi.10). Values follow
+    # the shared grammar (Quonfig::Duration); ms are rounded half up on both
+    # the stored and the ENV_VAR path. A config whose valueType is not
+    # duration, or a malformed duration, is a failed read under the
+    # typed-getter contract (see #typed_get).
     def get_duration(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
-      ensure_initialized_after_fork
-      ctx = build_context(context)
-      record_context_for_telemetry(ctx)
-      result =
-        begin
-          @resolver.get(key, ctx)
-        rescue Quonfig::Errors::MissingDefaultError
-          nil
-        rescue Quonfig::Errors::EnvVarParseError => e
-          return malformed_duration(key, default, e)
-        end
-      return handle_missing(key, default) if result.nil?
-
-      record_evaluation_for_telemetry(result)
-      duration_millis(key, result, default)
+      typed_get(key, :duration, default: default, context: context)
     end
 
     def get_json(key, default: NO_DEFAULT_PROVIDED, context: NO_DEFAULT_PROVIDED)
@@ -248,10 +273,7 @@ module Quonfig
       end
 
       record_evaluation_for_telemetry(result)
-      value = result.unwrapped_value
-      raise malformed_stored_duration_error(result) if malformed_stored_duration?(result, value)
-
-      value
+      unwrap_for_read(result)
     end
 
     # ---- Details getters ----------------------------------------------
@@ -293,9 +315,27 @@ module Quonfig
       evaluate_details(key, :duration, context)
     end
 
+    # True only when the flag resolves to the bool +true+. Never raises
+    # (qfg-zvyy): a missing key, a flag with no matching rule, a value that is
+    # not a bool (a stored string "true" included) or any resolution error
+    # returns false and logs one WARN per key.
     def enabled?(feature_name, jit_context = NO_DEFAULT_PROVIDED)
-      value = get(feature_name, false, jit_context)
-      [true, 'true'].include?(value)
+      ensure_initialized_after_fork
+      begin
+        ctx = build_context(jit_context)
+        record_context_for_telemetry(ctx)
+        result = resolve_for_read(feature_name, ctx)
+        if result.nil?
+          warn_read_failure(feature_name, 'missing key or no matching rule; enabled? returns false')
+          return false
+        end
+
+        record_evaluation_for_telemetry(result)
+        typed_value(feature_name, result, :bool) == true
+      rescue StandardError => e
+        warn_read_failure(feature_name, "#{e.message}; enabled? returns false")
+        false
+      end
     end
 
     def defined?(key)
@@ -2160,6 +2200,17 @@ module Quonfig
             variant: build_variant(Quonfig::EvaluationDetails::REASON_ERROR, nil, nil),
             flag_metadata: build_flag_metadata(nil, nil, nil, nil, nil)
           )
+        rescue Quonfig::Errors::EnvVarParseError => e
+          # An ENV_VAR value that does not parse as the config's type is
+          # TYPE_MISMATCH, like a malformed stored value (as in sdk-go).
+          return Quonfig::EvaluationDetails.new(
+            value: nil,
+            reason: Quonfig::EvaluationDetails::REASON_ERROR,
+            error_code: Quonfig::EvaluationDetails::ERROR_TYPE_MISMATCH,
+            error_message: e.message,
+            variant: build_variant(Quonfig::EvaluationDetails::REASON_ERROR, nil, nil),
+            flag_metadata: build_flag_metadata(nil, nil, nil, nil, nil)
+          )
         end
 
       if result.nil?
@@ -2175,15 +2226,12 @@ module Quonfig
 
       config_id = result.config&.dig('id') || result.config&.dig(:id)
       config_type = result.config&.dig('type') || result.config&.dig(:type)
-      raw_value = result.unwrapped_value
 
       begin
-        if expected_type == :duration
-          raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', raw_value) unless duration_result?(result)
-          raise malformed_stored_duration_error(result) if malformed_stored_duration?(result, raw_value)
-        end
-        coerced = coerce_and_check(key, raw_value, expected_type) unless raw_value.nil?
-      rescue Quonfig::Errors::TypeMismatchError => e
+        coerced = typed_value(key, result, expected_type)
+      rescue Quonfig::Errors::TypeMismatchError, Quonfig::Errors::EnvVarParseError => e
+        # A wrong-type value and a malformed one (the getter cannot produce
+        # a value of its type) are both TYPE_MISMATCH, as in sdk-go.
         return Quonfig::EvaluationDetails.new(
           value: nil,
           reason: Quonfig::EvaluationDetails::REASON_ERROR,
@@ -2248,32 +2296,122 @@ module Quonfig
       md
     end
 
+    # A typed read under the typed-getter contract (qfg-zvyy, shared with
+    # every Quonfig SDK and pinned by integration-test-data getter.contract.*).
+    #
+    # A missing key returns +default+ or applies +on_no_default+. A read that
+    # fails (a value of another type, a malformed stored or ENV_VAR value, an
+    # unset ENV_VAR, a decryption failure) returns +default+ when one is
+    # given; with no default it returns nil under on_no_default: :return_nil
+    # and raises the error (TypeMismatchError, EnvVarParseError,
+    # MissingEnvVarError, DecryptionError) under :raise. Either way it logs
+    # one WARN per key per client.
     def typed_get(key, expected_type, default:, context:)
-      jit = context == NO_DEFAULT_PROVIDED ? NO_DEFAULT_PROVIDED : context
-      value = get(key, default, jit)
+      ensure_initialized_after_fork
+      ctx = build_context(context)
+      record_context_for_telemetry(ctx)
+      begin
+        result = resolve_for_read(key, ctx)
+        return handle_missing(key, default) if result.nil?
 
-      # Missing path: resolver returned the caller's default (or nil under
-      # on_no_default=:return_nil) — skip type coercion.
-      return value if default != NO_DEFAULT_PROVIDED && value.equal?(default)
+        record_evaluation_for_telemetry(result)
+        typed_value(key, result, expected_type)
+      rescue *READ_FAILURES => e
+        failed_read(key, default, e)
+      end
+    end
+
+    # The resolved Evaluation for +key+, or nil when the key is missing or no
+    # rule matched. Resolution errors (MissingEnvVarError, EnvVarParseError,
+    # DecryptionError) propagate.
+    def resolve_for_read(key, ctx)
+      @resolver.get(key, ctx)
+    rescue Quonfig::Errors::MissingDefaultError
+      nil
+    end
+
+    # +result+'s value with no type check. A stored value that does not parse
+    # as its declared type (an int "twelve", a duration "30s") raises
+    # EnvVarParseError, as a malformed ENV_VAR value does.
+    def unwrap_for_read(result)
+      value =
+        begin
+          result.unwrapped_value
+        rescue ArgumentError, TypeError, FloatDomainError
+          raise malformed_stored_value_error(result)
+        end
+      raise malformed_stored_value_error(result) if malformed_stored_duration?(result, value)
+
+      value
+    end
+
+    # +result+'s value as +expected_type+, or raise TypeMismatchError (a value
+    # of another type) / EnvVarParseError (a malformed value). Strings are
+    # never coerced: a stored "false" is not a bool and "3" is not an int.
+    def typed_value(key, result, expected_type)
+      stored = stored_value_type(result)
+      accepted = ACCEPTED_TYPES.fetch(expected_type)
+      raise Quonfig::Errors::TypeMismatchError.new(key, TYPE_NAMES.fetch(expected_type), nil, actual_type: stored) unless stored.nil? || accepted.include?(stored)
+
+      value = unwrap_for_read(result)
       return nil if value.nil?
 
-      coerce_and_check(key, value, expected_type)
+      if [Integer, Float].include?(expected_type)
+        typed_number(key, result, value, expected_type)
+      elsif expected_type == :bool
+        typed_bool(key, result)
+      else
+        check_class(key, value, expected_type)
+      end
     end
 
-    def duration_millis(key, result, default)
-      raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', result.unwrapped_value) unless duration_result?(result)
-
-      value = result.unwrapped_value
-      millis = value.is_a?(Integer) ? value : Quonfig::Duration.parse_millis(value)
-      return millis unless millis.nil?
-
-      malformed_duration(key, default, malformed_stored_duration_error(result))
+    # The Value's declared type ('int', 'string', ...); a resolved ENV_VAR or
+    # decrypted value carries the type it was coerced to. Nil when unknown.
+    def stored_value_type(result)
+      type = result.type
+      if type.nil? || type == 'provided'
+        config = result.config || {}
+        type = config['valueType'] || config[:valueType] || config['value_type'] || config[:value_type]
+      end
+      type&.to_s
     end
 
-    def duration_result?(result)
-      config = result.config || {}
-      value_type = config['valueType'] || config[:valueType] || config['value_type'] || config[:value_type]
-      value_type == 'duration' || result.type == 'duration'
+    # Double getter: any int or double (30 -> 30.0). Int getter: an int, or a
+    # double that is whole and within +/-(2^53-1) (3.0 -> 3). Never truncates:
+    # 3.9, 1e300 and NaN are type mismatches.
+    def typed_number(key, result, value, expected_type)
+      # A stored int whose raw value is a Float would unwrap truncated.
+      raw = result.raw_value
+      number = raw.is_a?(Numeric) ? raw : value
+      mismatch = -> { Quonfig::Errors::TypeMismatchError.new(key, TYPE_NAMES.fetch(expected_type), number) }
+      raise mismatch.call unless number.is_a?(Integer) || number.is_a?(Float)
+
+      return number.to_f if expected_type == Float
+      return number if number.is_a?(Integer)
+      raise mismatch.call unless number.finite? && number == number.floor && number.abs <= MAX_SAFE_INTEGER
+
+      number.to_i
+    end
+
+    # A bool Value unwraps with !!raw, so check the raw value: only a real
+    # true/false is a bool.
+    def typed_bool(key, result)
+      raw = result.raw_value
+      raise Quonfig::Errors::TypeMismatchError.new(key, 'Boolean', raw) unless [true, false].include?(raw)
+
+      raw
+    end
+
+    def check_class(key, value, expected_type)
+      ok =
+        if expected_type == String then value.is_a?(String)
+        elsif expected_type == :string_list then value.is_a?(Array) && value.all?(String)
+        elsif expected_type == :duration then value.is_a?(Integer)
+        else true # :json: any JSON value
+        end
+      raise Quonfig::Errors::TypeMismatchError.new(key, TYPE_NAMES.fetch(expected_type), value) unless ok
+
+      value
     end
 
     # A stored duration string outside the shared grammar unwraps to nil.
@@ -2281,49 +2419,27 @@ module Quonfig
       unwrapped.nil? && result.type == 'duration' && !result.raw_value.nil?
     end
 
-    def malformed_stored_duration_error(result)
+    def malformed_stored_value_error(result)
       Quonfig::Errors::EnvVarParseError.new(result.raw_value, result.config || {}, nil, stored: true)
     end
 
-    def malformed_duration(key, default, error)
-      if @malformed_duration_mutex.synchronize { @malformed_duration_warned.add?(key.to_s) }
-        LOG.warn "[quonfig] #{key} is not a valid ISO-8601 duration; " \
-                 "#{default == NO_DEFAULT_PROVIDED ? 'no default given' : 'returning the default'}"
-      end
-      return default unless default == NO_DEFAULT_PROVIDED
-      raise error if @options.on_no_default == Quonfig::Options::ON_NO_DEFAULT::RAISE
+    # The failed-read rule (qfg-zvyy): +default+ when one is given, else nil
+    # under on_no_default: :return_nil, each with one WARN per key; else
+    # +error+ under :raise (the raise is the signal, so it is not logged).
+    def failed_read(key, default, error)
+      no_default = default == NO_DEFAULT_PROVIDED
+      raise error if no_default && @options.on_no_default == Quonfig::Options::ON_NO_DEFAULT::RAISE
 
-      nil
+      warn_read_failure(key, "#{error.message}; #{no_default ? 'returning nil' : 'returning the default'}")
+      no_default ? nil : default
     end
 
-    def coerce_and_check(key, value, expected_type)
-      case expected_type
-      when :bool
-        raise Quonfig::Errors::TypeMismatchError.new(key, 'Boolean', value) unless [true, false].include?(value)
+    # Logs once per config key per client. The reason names the key and the
+    # types involved, never the value (it can be a decrypted secret).
+    def warn_read_failure(key, reason)
+      return unless @read_failure_mutex.synchronize { @read_failure_warned.add?(key.to_s) }
 
-        value
-      when :string_list
-        arr = value.is_a?(Array) ? value : nil
-        raise Quonfig::Errors::TypeMismatchError.new(key, 'Array<String>', value) unless arr&.all?(String)
-
-        arr
-      when :duration
-        return value if value.is_a?(Integer)
-
-        millis = Quonfig::Duration.parse_millis(value)
-        raise Quonfig::Errors::TypeMismatchError.new(key, 'ISO-8601 Duration', value) if millis.nil?
-
-        millis
-      when :json
-        # JSON values are returned as-is (Hash, Array, or scalar from the wire).
-        value
-      when Class
-        raise Quonfig::Errors::TypeMismatchError.new(key, expected_type.to_s, value) unless value.is_a?(expected_type)
-
-        value
-      else
-        value
-      end
+      LOG.warn "[quonfig] read of #{key.to_s.inspect} returned no value: #{reason}"
     end
   end
 

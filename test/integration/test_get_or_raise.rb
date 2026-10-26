@@ -47,16 +47,16 @@ class TestGetOrRaise < Minitest::Test
 
   # get_or_raise can raise an error if value not found
   def test_get_or_raise_can_raise_an_error_if_value_not_found
-    client = IntegrationTestHelpers.build_client
-    assert_raises(Quonfig::Errors::MissingDefaultError) { client.get_or_raise('my-missing-key') }
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::MissingDefaultError) { client.get_string('my-missing-key') }
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
   # get_or_raise returns a default value instead of raising
   def test_get_or_raise_returns_a_default_value_instead_of_raising
-    client = IntegrationTestHelpers.build_client
-    actual = client.get_or_raise('my-missing-key', default: 'DEFAULT')
-    assert_equal 'DEFAULT', actual, 'client.get_or_raise(my-missing-key, default: DEFAULT)'
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    actual = client.get_string('my-missing-key', default: 'DEFAULT')
+    assert_equal 'DEFAULT', actual, 'client.get_string(my-missing-key, default: DEFAULT)'
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
@@ -110,8 +110,8 @@ class TestGetOrRaise < Minitest::Test
     client, err, _elapsed_ms, servers = init_failure_client(:continue, ['http://127.0.0.1:1', 'http://127.0.0.1:2'], [], nil, 500)
     assert_nil err, 'on_init_failure continue: Client.new must return'
     refute_nil client
-    actual = client.get_or_raise('any-key', default: 'DEFAULT')
-    assert_equal 'DEFAULT', actual, 'client.get_or_raise(any-key, default: DEFAULT)'
+    actual = client.get_string('any-key', default: 'DEFAULT')
+    assert_equal 'DEFAULT', actual, 'client.get_string(any-key, default: DEFAULT)'
     $logs = nil
   ensure
     client&.stop
@@ -123,7 +123,7 @@ class TestGetOrRaise < Minitest::Test
     client, err, _elapsed_ms, servers = init_failure_client(:continue, ['http://127.0.0.1:1', 'http://127.0.0.1:2'], [], nil, 500)
     assert_nil err, 'on_init_failure continue: Client.new must return'
     refute_nil client
-    assert_raises(Quonfig::Errors::MissingDefaultError) { client.get_or_raise('any-key') }
+    assert_raises(Quonfig::Errors::MissingDefaultError) { client.get_string('any-key') }
     $logs = nil
   ensure
     client&.stop
@@ -150,7 +150,7 @@ class TestGetOrRaise < Minitest::Test
     client, err, _elapsed_ms, servers = init_failure_client(:return, ['http://127.0.0.1:1', 'http://127.0.0.1:2'], [], nil, 500)
     assert_nil err, 'on_init_failure continue: Client.new must return'
     refute_nil client
-    assert_raises(Quonfig::Errors::MissingDefaultError) { client.get_or_raise('any-key') }
+    assert_raises(Quonfig::Errors::MissingDefaultError) { client.get_string('any-key') }
     $logs = nil
   ensure
     client&.stop
@@ -237,8 +237,8 @@ class TestGetOrRaise < Minitest::Test
     client, err, _elapsed_ms, servers = init_failure_client(:continue, ['http://127.0.0.1:1', 'http://127.0.0.1:2'], [], nil, 0)
     assert_nil err, 'on_init_failure continue: Client.new must return'
     refute_nil client
-    actual = client.get_or_raise('any-key', default: 'DEFAULT')
-    assert_equal 'DEFAULT', actual, 'client.get_or_raise(any-key, default: DEFAULT)'
+    actual = client.get_string('any-key', default: 'DEFAULT')
+    assert_equal 'DEFAULT', actual, 'client.get_string(any-key, default: DEFAULT)'
     $logs = nil
   ensure
     client&.stop
@@ -311,23 +311,23 @@ class TestGetOrRaise < Minitest::Test
 
   # raises an error if a config is provided by a missing environment variable
   def test_raises_an_error_if_a_config_is_provided_by_a_missing_environment_variable
-    client = IntegrationTestHelpers.build_client
-    assert_raises(Quonfig::Errors::MissingEnvVarError) { client.get_or_raise('provided.by.missing.env.var') }
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::MissingEnvVarError) { client.get_string('provided.by.missing.env.var') }
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
   # raises an error if an env-var-provided config cannot be coerced to configured type
   def test_raises_an_error_if_an_env_var_provided_config_cannot_be_coerced_to_configured_type
-    client = IntegrationTestHelpers.build_client
-    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('provided.not.a.number') }
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_int('provided.not.a.number') }
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
   # coercion error for an int env var names the variable and never its value
   def test_coercion_error_for_an_int_env_var_names_the_variable_and_never_its_value
     IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_SECRET_ENV' => 'postgres://admin:hunter2@db' }) do
-      client = IntegrationTestHelpers.build_client
-      error = assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('provided.secret.not.an.int') }
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      error = assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_int('provided.secret.not.an.int') }
       assert_includes error.message, 'environment variable "QUONFIG_ITD_SECRET_ENV" cannot be converted to int for config "provided.secret.not.an.int"'
       refute_includes error.message, 'hunter2'
       refute_includes error.message, 'postgres://'
@@ -338,8 +338,8 @@ class TestGetOrRaise < Minitest::Test
   # coercion error for a double env var names the variable and never its value
   def test_coercion_error_for_a_double_env_var_names_the_variable_and_never_its_value
     IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_SECRET_ENV' => 'postgres://admin:hunter2@db' }) do
-      client = IntegrationTestHelpers.build_client
-      error = assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('provided.secret.not.a.double') }
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      error = assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_float('provided.secret.not.a.double') }
       assert_includes error.message, 'environment variable "QUONFIG_ITD_SECRET_ENV" cannot be converted to double for config "provided.secret.not.a.double"'
       refute_includes error.message, 'hunter2'
       refute_includes error.message, 'postgres://'
@@ -349,16 +349,16 @@ class TestGetOrRaise < Minitest::Test
 
   # raises an error for decryption failure
   def test_raises_an_error_for_decryption_failure
-    client = IntegrationTestHelpers.build_client
-    assert_raises(Quonfig::Errors::DecryptionError) { client.get_or_raise('a.broken.secret.config') }
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::DecryptionError) { client.get_string('a.broken.secret.config') }
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
   # raises an error if an env-var-provided duration 30s cannot be coerced
   def test_raises_an_error_if_an_env_var_provided_duration_30s_cannot_be_coerced
     IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_DURATION_30S' => '30s' }) do
-      client = IntegrationTestHelpers.build_client
-      assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('provided.duration.malformed.30s') }
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_duration('provided.duration.malformed.30s') }
       IntegrationTestHelpers.acknowledge_expected_warnings
     end
   end
@@ -366,8 +366,8 @@ class TestGetOrRaise < Minitest::Test
   # raises an error if an env-var-provided duration PT0.5H cannot be coerced
   def test_raises_an_error_if_an_env_var_provided_duration_pt0_5h_cannot_be_coerced
     IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_DURATION_PT0_5H' => 'PT0.5H' }) do
-      client = IntegrationTestHelpers.build_client
-      assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('provided.duration.malformed.PT0.5H') }
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_duration('provided.duration.malformed.PT0.5H') }
       IntegrationTestHelpers.acknowledge_expected_warnings
     end
   end
@@ -375,8 +375,8 @@ class TestGetOrRaise < Minitest::Test
   # raises an error if an env-var-provided duration P1DT cannot be coerced
   def test_raises_an_error_if_an_env_var_provided_duration_p1dt_cannot_be_coerced
     IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_DURATION_P1DT' => 'P1DT' }) do
-      client = IntegrationTestHelpers.build_client
-      assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('provided.duration.malformed.P1DT') }
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_duration('provided.duration.malformed.P1DT') }
       IntegrationTestHelpers.acknowledge_expected_warnings
     end
   end
@@ -384,44 +384,435 @@ class TestGetOrRaise < Minitest::Test
   # raises an error if an env-var-provided duration garbage cannot be coerced
   def test_raises_an_error_if_an_env_var_provided_duration_garbage_cannot_be_coerced
     IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_DURATION_GARBAGE' => 'garbage' }) do
-      client = IntegrationTestHelpers.build_client
-      assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('provided.duration.malformed.garbage') }
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_duration('provided.duration.malformed.garbage') }
       IntegrationTestHelpers.acknowledge_expected_warnings
     end
   end
 
   # raises an error if a stored duration 30s cannot be coerced
   def test_raises_an_error_if_a_stored_duration_30s_cannot_be_coerced
-    client = IntegrationTestHelpers.build_client
-    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('test.duration.malformed.30s') }
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_duration('test.duration.malformed.30s') }
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
   # raises an error if a stored duration PT0.5H cannot be coerced
   def test_raises_an_error_if_a_stored_duration_pt0_5h_cannot_be_coerced
-    client = IntegrationTestHelpers.build_client
-    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('test.duration.malformed.PT0.5H') }
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_duration('test.duration.malformed.PT0.5H') }
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
   # raises an error if a stored duration P1DT cannot be coerced
   def test_raises_an_error_if_a_stored_duration_p1dt_cannot_be_coerced
-    client = IntegrationTestHelpers.build_client
-    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('test.duration.malformed.P1DT') }
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_duration('test.duration.malformed.P1DT') }
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
   # raises an error if a stored duration garbage cannot be coerced
   def test_raises_an_error_if_a_stored_duration_garbage_cannot_be_coerced
-    client = IntegrationTestHelpers.build_client
-    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('test.duration.malformed.garbage') }
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_duration('test.duration.malformed.garbage') }
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
   # raises an error if a stored duration empty cannot be coerced
   def test_raises_an_error_if_a_stored_duration_empty_cannot_be_coerced
-    client = IntegrationTestHelpers.build_client
-    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_or_raise('test.duration.malformed.empty') }
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_duration('test.duration.malformed.empty') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING get_or_raise on stored int raises type_mismatch
+  def test_string_get_or_raise_on_stored_int_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string('getter.contract.int') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING get_or_raise on stored double raises type_mismatch
+  def test_string_get_or_raise_on_stored_double_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string('getter.contract.double') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING get_or_raise on stored bool raises type_mismatch
+  def test_string_get_or_raise_on_stored_bool_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string('getter.contract.bool') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING get_or_raise on stored string_list raises type_mismatch
+  def test_string_get_or_raise_on_stored_string_list_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string('getter.contract.string_list') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING get_or_raise on stored json raises type_mismatch
+  def test_string_get_or_raise_on_stored_json_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string('getter.contract.json') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING get_or_raise on stored duration raises type_mismatch
+  def test_string_get_or_raise_on_stored_duration_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string('getter.contract.duration') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored string raises type_mismatch
+  def test_int_get_or_raise_on_stored_string_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int('getter.contract.string') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored double 3.9 raises type_mismatch
+  def test_int_get_or_raise_on_stored_double_3_9_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int('getter.contract.double') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored bool raises type_mismatch
+  def test_int_get_or_raise_on_stored_bool_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int('getter.contract.bool') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored string_list raises type_mismatch
+  def test_int_get_or_raise_on_stored_string_list_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int('getter.contract.string_list') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored json raises type_mismatch
+  def test_int_get_or_raise_on_stored_json_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int('getter.contract.json') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored duration raises type_mismatch
+  def test_int_get_or_raise_on_stored_duration_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int('getter.contract.duration') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DOUBLE get_or_raise on stored string raises type_mismatch
+  def test_double_get_or_raise_on_stored_string_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_float('getter.contract.string') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DOUBLE get_or_raise on stored bool raises type_mismatch
+  def test_double_get_or_raise_on_stored_bool_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_float('getter.contract.bool') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DOUBLE get_or_raise on stored string_list raises type_mismatch
+  def test_double_get_or_raise_on_stored_string_list_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_float('getter.contract.string_list') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DOUBLE get_or_raise on stored json raises type_mismatch
+  def test_double_get_or_raise_on_stored_json_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_float('getter.contract.json') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DOUBLE get_or_raise on stored duration raises type_mismatch
+  def test_double_get_or_raise_on_stored_duration_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_float('getter.contract.duration') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # BOOLEAN get_or_raise on stored string raises type_mismatch
+  def test_boolean_get_or_raise_on_stored_string_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_bool('getter.contract.string') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # BOOLEAN get_or_raise on stored int raises type_mismatch
+  def test_boolean_get_or_raise_on_stored_int_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_bool('getter.contract.int') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # BOOLEAN get_or_raise on stored double raises type_mismatch
+  def test_boolean_get_or_raise_on_stored_double_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_bool('getter.contract.double') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # BOOLEAN get_or_raise on stored string_list raises type_mismatch
+  def test_boolean_get_or_raise_on_stored_string_list_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_bool('getter.contract.string_list') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # BOOLEAN get_or_raise on stored json raises type_mismatch
+  def test_boolean_get_or_raise_on_stored_json_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_bool('getter.contract.json') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # BOOLEAN get_or_raise on stored duration raises type_mismatch
+  def test_boolean_get_or_raise_on_stored_duration_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_bool('getter.contract.duration') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING_LIST get_or_raise on stored string raises type_mismatch
+  def test_string_list_get_or_raise_on_stored_string_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string_list('getter.contract.string') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING_LIST get_or_raise on stored int raises type_mismatch
+  def test_string_list_get_or_raise_on_stored_int_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string_list('getter.contract.int') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING_LIST get_or_raise on stored double raises type_mismatch
+  def test_string_list_get_or_raise_on_stored_double_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string_list('getter.contract.double') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING_LIST get_or_raise on stored bool raises type_mismatch
+  def test_string_list_get_or_raise_on_stored_bool_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string_list('getter.contract.bool') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING_LIST get_or_raise on stored json raises type_mismatch
+  def test_string_list_get_or_raise_on_stored_json_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string_list('getter.contract.json') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # STRING_LIST get_or_raise on stored duration raises type_mismatch
+  def test_string_list_get_or_raise_on_stored_duration_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_string_list('getter.contract.duration') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # JSON get_or_raise on stored string raises type_mismatch
+  def test_json_get_or_raise_on_stored_string_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_json('getter.contract.string') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # JSON get_or_raise on stored int raises type_mismatch
+  def test_json_get_or_raise_on_stored_int_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_json('getter.contract.int') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # JSON get_or_raise on stored double raises type_mismatch
+  def test_json_get_or_raise_on_stored_double_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_json('getter.contract.double') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # JSON get_or_raise on stored bool raises type_mismatch
+  def test_json_get_or_raise_on_stored_bool_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_json('getter.contract.bool') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # JSON get_or_raise on stored string_list raises type_mismatch
+  def test_json_get_or_raise_on_stored_string_list_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_json('getter.contract.string_list') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # JSON get_or_raise on stored duration raises type_mismatch
+  def test_json_get_or_raise_on_stored_duration_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_json('getter.contract.duration') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DURATION get_or_raise on stored string raises type_mismatch
+  def test_duration_get_or_raise_on_stored_string_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_duration('getter.contract.string') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DURATION get_or_raise on stored int raises type_mismatch
+  def test_duration_get_or_raise_on_stored_int_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_duration('getter.contract.int') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DURATION get_or_raise on stored double raises type_mismatch
+  def test_duration_get_or_raise_on_stored_double_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_duration('getter.contract.double') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DURATION get_or_raise on stored bool raises type_mismatch
+  def test_duration_get_or_raise_on_stored_bool_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_duration('getter.contract.bool') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DURATION get_or_raise on stored string_list raises type_mismatch
+  def test_duration_get_or_raise_on_stored_string_list_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_duration('getter.contract.string_list') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DURATION get_or_raise on stored json raises type_mismatch
+  def test_duration_get_or_raise_on_stored_json_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_duration('getter.contract.json') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # BOOLEAN get_or_raise on stored string "false" raises type_mismatch
+  def test_boolean_get_or_raise_on_stored_string_false_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_bool('getter.contract.string.false') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # BOOLEAN get_or_raise on stored string "true" raises type_mismatch
+  def test_boolean_get_or_raise_on_stored_string_true_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_bool('getter.contract.string.true') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored string "3" raises type_mismatch
+  def test_int_get_or_raise_on_stored_string_3_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int('getter.contract.string.number') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DOUBLE get_or_raise on stored string "3" raises type_mismatch
+  def test_double_get_or_raise_on_stored_string_3_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_float('getter.contract.string.number') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DURATION get_or_raise on stored string "PT1S" raises type_mismatch
+  def test_duration_get_or_raise_on_stored_string_pt1s_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_duration('getter.contract.string.duration') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DOUBLE get_or_raise on stored int 30 returns 30.0
+  def test_double_get_or_raise_on_stored_int_30_returns_30_0
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    actual = client.get_float('getter.contract.int')
+    assert_equal 30, actual, 'client.get_float(getter.contract.int)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored whole double 3.0 returns 3
+  def test_int_get_or_raise_on_stored_whole_double_3_0_returns_3
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    actual = client.get_int('getter.contract.double.whole')
+    assert_equal 3, actual, 'client.get_int(getter.contract.double.whole)'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored double 1e300 raises type_mismatch
+  def test_int_get_or_raise_on_stored_double_1e300_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int('getter.contract.double.huge') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored double 2^53 (outside the safe int range) raises type_mismatch
+  def test_int_get_or_raise_on_stored_double_2_53_outside_the_safe_int_range_raises_type_mismatch
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int('getter.contract.double.unsafe') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on stored malformed int "twelve" raises unable_to_coerce_env_var
+  def test_int_get_or_raise_on_stored_malformed_int_twelve_raises_unable_to_coerce_env_var
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_int('getter.contract.int.malformed') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # DOUBLE get_or_raise on stored malformed double "abc" raises unable_to_coerce_env_var
+  def test_double_get_or_raise_on_stored_malformed_double_abc_raises_unable_to_coerce_env_var
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_float('getter.contract.double.malformed') }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # INT get_or_raise on env-var-provided malformed int "twelve" raises unable_to_coerce_env_var
+  def test_int_get_or_raise_on_env_var_provided_malformed_int_twelve_raises_unable_to_coerce_env_var
+    IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_GETTER_INT' => 'twelve' }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_int('getter.contract.provided.int.malformed') }
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # DOUBLE get_or_raise on env-var-provided malformed double "abc" raises unable_to_coerce_env_var
+  def test_double_get_or_raise_on_env_var_provided_malformed_double_abc_raises_unable_to_coerce_env_var
+    IntegrationTestHelpers.with_env({ 'QUONFIG_ITD_GETTER_DOUBLE' => 'abc' }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      assert_raises(Quonfig::Errors::EnvVarParseError) { client.get_float('getter.contract.provided.double.malformed') }
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # BOOLEAN get_or_raise on a missing bool env var raises missing_env_var
+  def test_boolean_get_or_raise_on_a_missing_bool_env_var_raises_missing_env_var
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::MissingEnvVarError) { client.get_bool('getter.contract.provided.bool.missing') }
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 end

@@ -38,8 +38,10 @@ module IntegrationTestHelpers
   EXPECTED_WARNINGS = [
     # Weighted rollout whose hash property is missing (qfg-9dxb.8 / qfg-46e1).
     /which is missing from context; hashing an empty value instead/,
-    # Malformed duration -> default/nil, warn once per key (qfg-2agi.10).
-    /is not a valid ISO-8601 duration/,
+    # A failed read (wrong type, malformed value, unset ENV_VAR, decryption
+    # failure) and enabled? on a missing key: default/nil/false, warn once
+    # per key (typed-getter contract, qfg-zvyy).
+    /\[quonfig\] read of ".*" returned no value: /,
     # A single explicit api_url disables failover (qfg-41nh.26).
     /explicit api_urls disables automatic failover/
   ].freeze
