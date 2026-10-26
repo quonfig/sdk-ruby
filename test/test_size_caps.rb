@@ -231,11 +231,11 @@ class TestSizeCaps < Minitest::Test
 
   # ---- client level: Test 10 case 1 --------------------------------------
 
-  def boot_client(fallback_poll_interval_ms:, &sse_script)
+  def boot_client(fallback_poll_interval_ms:, config_gen: ->(hit) { hit == 1 ? 1 : 2 }, &sse_script)
     @server = Server.new(
       sse_script: sse_script,
       config_script: lambda do |hit, _headers, sock|
-        TestSizeCaps.write_json(sock, TestSizeCaps.envelope(hit == 1 ? 1 : 2), etag: "e#{hit}")
+        TestSizeCaps.write_json(sock, TestSizeCaps.envelope(config_gen.call(hit)), etag: "e#{hit}")
       end
     )
     spy = @edges
@@ -322,6 +322,39 @@ class TestSizeCaps < Minitest::Test
     waits = sse_waits
     assert_operator waits[1], :>=, 4.0, "keepalive must not reset backoff while gated: #{waits}"
     assert_equal 1, @capture.log_count(:warn, /4194304/)
+  end
+
+  # qfg-6vno.20.8: only an INSTALLED envelope ends the oversized episode. An
+  # envelope the reject-older guard drops (here, an equal generation to the
+  # one the initial fetch installed) is not an install: the gate stays set,
+  # the connection does not report connected, the backoff keeps growing and
+  # the next oversized event is a DEBUG repeat, not a second WARN.
+  def test_oversized_gate_is_not_cleared_by_a_dropped_envelope
+    big = self.class.envelope(2, pad_to: EVENT_CAP + 1)
+    held = self.class.envelope(1) # equal to every config fetch (gen 1)
+    boot_client(fallback_poll_interval_ms: 60_000, config_gen: ->(_hit) { 1 }) do |attempt, sock, srv|
+      sock.write SSE_HEADERS
+      case attempt
+      when 1 then sock.write "id: g1\ndata: #{held}\n\n: keepalive\n\n: keepalive\n\n"
+      else
+        sock.write "id: g2\ndata: #{big}\n\n"
+        sock.flush
+        srv.hold(sock) if attempt >= 2
+      end
+    end
+
+    wait_until(12, 'a second oversized event after the dropped envelope') do
+      @capture.log_count(:debug, /4194304/) >= 1 || @capture.log_count(:warn, /4194304/) >= 2
+    end
+    sleep 0.2
+
+    assert_equal 'v1', @client.get(CONFIG_KEY, 'default')
+    refute_includes edge_states, :connected, "a dropped envelope must not report connected: #{edge_states}"
+    refute_equal :connected, @client.connection_state
+    waits = sse_waits
+    assert_operator waits[1], :>=, 4.0, "a dropped envelope must not reset backoff while gated: #{waits}"
+    assert_equal 1, @capture.log_count(:warn, /4194304/),
+                 "a dropped envelope must not end the WARN episode: #{@capture.lines(:warn)}"
   end
 
   # ---- client level: Test 10 case 2 --------------------------------------
@@ -471,6 +504,27 @@ class TestSizeCaps < Minitest::Test
     assert_equal 401, cycle.statuses[0], 'the 401 must be recorded for auth-class detection'
     assert cycle.auth_rejected?
     assert_equal 0, @capture.log_count(:warn, /16777216/), 'a 401 is not an oversized 200'
+  end
+
+  # The HTTP episode ends at the next installed envelope from that leg, so a
+  # later oversized body starts a new episode with its own WARN.
+  def test_http_oversized_episode_ends_at_the_next_install
+    big = self.class.envelope(9, pad_to: BODY_CAP + 1)
+    @server = Server.new(
+      config_script: lambda do |hit, _headers, sock|
+        case hit
+        when 1, 3 then TestSizeCaps.write_json(sock, big, etag: 'big')
+        else TestSizeCaps.write_json(sock, TestSizeCaps.envelope(hit), etag: "e#{hit}")
+        end
+      end
+    )
+    loader = loader_for(@server)
+
+    assert_equal :failed, loader.fetch!
+    assert_equal :updated, loader.fetch!
+    assert_equal :failed, loader.fetch!
+    assert_equal 2, @capture.log_count(:warn, /16777216/),
+                 "an install must end the episode: #{@capture.lines(:warn)}"
   end
 
   def test_10_5_a_12_mib_config_body_installs

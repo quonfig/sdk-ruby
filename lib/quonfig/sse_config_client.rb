@@ -130,8 +130,10 @@ module Quonfig
       # ended on an event over MAX_EVENT_BYTES. While set, a keepalive is not
       # a frame, so a connection that only re-delivers the oversized snapshot
       # never reports connected and the fallback poller keeps config fresh.
-      # The first envelope clears it (and ends the WARN episode). Touched only
-      # by the worker thread.
+      # The first INSTALLED envelope clears it (and ends the WARN episode):
+      # the on_envelope block returns :updated for an install, and an
+      # envelope the reject-older guard drops neither clears the gate nor
+      # counts as a frame (qfg-6vno.20.8). Touched only by the worker thread.
       @oversized = false
     end
 
@@ -263,15 +265,21 @@ module Quonfig
             # First-frame rule (qfg-goi1.10.43): this connection counts as
             # connected only at its first valid frame. Raised once, from the
             # parser, before the frame's envelope is installed.
+            #
+            # While the oversized gate is set the parser reports only
+            # envelopes as frames, and even those are deferred until the
+            # on_envelope block says the envelope installed (:updated): an
+            # envelope the reject-older guard drops is not an install, so it
+            # neither ends the episode nor makes the connection connected.
             frame_seen = false
-            on_frame = lambda do
-              # Gated, the parser reports only envelopes as frames; one ends
-              # the oversized episode.
-              @oversized = false
+            mark_frame = lambda do
               next if frame_seen
 
               frame_seen = true
               invoke_on_connected
+            end
+            on_frame = lambda do
+              mark_frame.call unless @oversized
             end
             begin
               ended_url = stream_once(on_frame) do |event|
@@ -284,7 +292,11 @@ module Quonfig
                 # qfg-m3lk: callback exceptions are isolated. A buggy
                 # listener must not look like a transport error and trigger
                 # a reconnect.
-                invoke_on_envelope_safely(on_envelope, event)
+                result = invoke_on_envelope_safely(on_envelope, event)
+                if @oversized && result == :updated
+                  @oversized = false
+                  mark_frame.call
+                end
               end
               # A clean EOF before any frame (200 headers then close) is a
               # failed attempt, exactly like a connect error: report it so
@@ -474,7 +486,7 @@ module Quonfig
 
     # Size caps R4: one WARN per oversized episode (redacted source + cap in
     # bytes), repeats at DEBUG. The episode lasts until an envelope gets
-    # through (@oversized cleared in run_loop's on_frame).
+    # through (@oversized cleared in run_loop at the first installed envelope).
     def handle_oversized_event(error)
       where = Quonfig::ConfigLoader.redact_userinfo("#{current_url}/api/v2/sse/config")
       msg = "SSE event from #{where} exceeds the maximum size of #{MAX_EVENT_BYTES} bytes; " \
@@ -497,7 +509,8 @@ module Quonfig
     # qfg-m3lk: rescue StandardError (NOT Exception) so SystemExit /
     # Interrupt / SignalException still escape — Ctrl-C inside a customer
     # callback must still kill the process. StandardError is the right
-    # boundary for "the caller's listener has a bug".
+    # boundary for "the caller's listener has a bug". Returns the block's
+    # value (:updated for an installed envelope), or nil when it raised.
     def invoke_on_envelope_safely(on_envelope, event)
       on_envelope.call(event.envelope, event, :sse)
     rescue StandardError => e

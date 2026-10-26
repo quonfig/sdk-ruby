@@ -300,7 +300,8 @@ module Quonfig
     # when a new event arrives. SSE is a single-leg live stream, so it carries no
     # config_api_urls index and does not change #resolved_from — but it IS
     # guarded by the same reject-older rule (a late SSE snapshot must not regress
-    # an established client).
+    # an established client). Returns :updated when the envelope installed and
+    # :not_modified when the guard dropped it.
     def apply_envelope(envelope)
       install_envelope(envelope, source: :sse, source_index: nil)
     end
@@ -706,6 +707,7 @@ module Quonfig
         # SSE / datadir installs pass source_index nil and are ignored by the
         # aggregator, so they are never counted.
         @failover_aggregator&.record_resolved_from(source_index)
+        :updated
       end
     end
 
