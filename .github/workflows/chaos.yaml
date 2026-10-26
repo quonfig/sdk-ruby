@@ -72,7 +72,7 @@ jobs:
           # (scripts/check-itd-refs.sh fails the Test job otherwise,
           # qfg-6vno.7). v2026.10.21.1 adds 00-boot-both-down-then-restore
           # (init-failure modes) and fixes 02's invented 'reconnecting' row.
-          ref: v2026.10.23
+          ref: v2026.10.26
 
       - name: Checkout api-delivery
         if: env.HAS_REPO_TOKEN == 'true'
