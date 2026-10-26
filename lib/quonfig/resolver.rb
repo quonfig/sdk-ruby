@@ -257,15 +257,27 @@ module Quonfig
         )
       end
 
+      # A missing, unmatched or empty key is a decryption failure too, so the
+      # typed getters apply the caller's default (qfg-zvyy). DecryptionError is
+      # a Quonfig::Error, so rescuing Quonfig::Error still catches it.
       key_cfg = @store.get(decrypt_with)
-      raise Quonfig::Error, %(Decryption key config "#{decrypt_with}" not found) if key_cfg.nil?
+      if key_cfg.nil?
+        raise Quonfig::Errors::DecryptionError.new(config_key(config),
+                                                   %(decryption key config "#{decrypt_with}" not found))
+      end
 
       key_match = @evaluator.evaluate_config(key_cfg, context, resolver: self)
-      raise Quonfig::Error, %(Decryption key config "#{decrypt_with}" did not match) if key_match.nil?
+      if key_match.nil?
+        raise Quonfig::Errors::DecryptionError.new(config_key(config),
+                                                   %(decryption key config "#{decrypt_with}" did not match))
+      end
 
       resolved_key = resolve_value_on_path(key_match.value, key_cfg, context, key_path)
       secret_key = vget(resolved_key, :value, 'value').to_s
-      raise Quonfig::Error, %(Decryption key from "#{decrypt_with}" is empty) if secret_key.empty?
+      if secret_key.empty?
+        raise Quonfig::Errors::DecryptionError.new(config_key(config),
+                                                   %(decryption key from "#{decrypt_with}" is empty))
+      end
 
       ciphertext = vget(value, :value, 'value').to_s
       begin

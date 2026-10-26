@@ -70,6 +70,7 @@ past your `default:`; your default applies.
   `get_float_details` follow the int <-> double rule.
 - **`get_or_raise` raises `EnvVarParseError` on a malformed stored int or
   double** (1.x raised a bare `ArgumentError`).
+- **A `decryptWith` key config that is missing, matches no rule or is empty now raises `DecryptionError`** (1.x raised a plain `Quonfig::Error`), so it counts as a decryption failure and the typed getters apply your default. `DecryptionError` is a `Quonfig::Error`, so `rescue Quonfig::Error` still catches it.
 - **`TypeMismatchError` names the config's value type** (`... expected Integer,
   got a string value`) when the type is known.
 

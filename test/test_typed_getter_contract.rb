@@ -136,6 +136,18 @@ class TestTypedGetterContract < Minitest::Test
     assert_logged([/Decryption failed/])
   end
 
+  # A decryptWith key config that is missing is a decryption failure too.
+  def test_missing_decryption_key_config_returns_default
+    secret_cfg = make_config(value: 'ciphertext', type: 'string')
+    secret_cfg['default']['rules'][0]['value'].merge!('confidential' => true, 'decryptWith' => 'no.such.key')
+    client = client_for(secret_cfg)
+    assert_equal 'fallback', client.get_string(KEY, default: 'fallback')
+    refute client.enabled?(KEY)
+    err = assert_raises(Quonfig::Errors::DecryptionError) { client.get_string(KEY) }
+    assert_includes err.message, 'no.such.key'
+    assert_logged([/Decryption failed for config 'contract.key': decryption key config "no.such.key" not found/])
+  end
+
   def test_malformed_stored_int
     client = client_with_value(value: 'twelve', type: 'int')
     assert_equal 4, client.get_int(KEY, default: 4)
