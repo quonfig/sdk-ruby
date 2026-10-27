@@ -233,10 +233,10 @@ class TestSSEFirstFrame < Minitest::Test
     end
   end
 
-  # 9a: headers only, every attempt. ruby's init fetch already reports
-  # :connected (from last_successful_refresh) before any SSE edge; the rule
-  # under test is that no SSE `connected` edge fires and the frameless end
-  # takes the :error path, so the poller engages and delivers v2.
+  # 9a: headers only, every attempt. No SSE `connected` edge fires, the
+  # frameless end takes the :error path, and the poller engages and delivers
+  # v2. The public getter never reports :connected: the init fetch's install
+  # alone does not make an SSE client connected (qfg-fi1s).
   def test_9a_headers_only_is_a_failed_attempt_and_the_poller_delivers
     boot(fallback_poll_interval_ms: 50) { |_attempt, sock, _srv| sock.write SSE_HEADERS }
 
@@ -245,10 +245,7 @@ class TestSSEFirstFrame < Minitest::Test
     assert_equal :falling_back, @client.connection_state
     assert_equal 0, connected_transitions, "no SSE connected edge expected, got #{edge_states}"
     assert_includes edge_states, :error
-    seen = states_seen
-    first_off = seen.index { |s| s != :connected }
-    refute_nil first_off, "connection_state never left :connected: #{seen}"
-    refute_includes seen[first_off..], :connected, "connection_state went back to :connected: #{seen}"
+    refute_includes states_seen, :connected, "connection_state reported :connected with no frame: #{states_seen}"
 
     sleep 2.5
     waits = sse_waits
@@ -282,6 +279,11 @@ class TestSSEFirstFrame < Minitest::Test
     assert_equal :connected, @client.connection_state
     assert_equal 1, @server.sse_attempts
     refute poller_active?
+    # Headers-but-no-frame is :initializing on the public getter (qfg-fi1s).
+    connected_at = @edge_mutex.synchronize { @samples.find { |s, _| s == :connected }&.last }
+    refute_nil connected_at, "connection_state never reported :connected: #{states_seen}"
+    assert_operator connected_at, :>=, send_at - 0.05, 'connection_state reported :connected before the keepalive'
+    assert_includes states_seen.take_while { |s| s != :connected }, :initializing
   end
 
   # 9c: one keepalive then close, every attempt. ruby holds connected across
