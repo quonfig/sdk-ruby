@@ -300,7 +300,8 @@ module Quonfig
     # when a new event arrives. SSE is a single-leg live stream, so it carries no
     # config_api_urls index and does not change #resolved_from — but it IS
     # guarded by the same reject-older rule (a late SSE snapshot must not regress
-    # an established client).
+    # an established client). Returns :updated when the envelope installed and
+    # :not_modified when the guard dropped it.
     def apply_envelope(envelope)
       install_envelope(envelope, source: :sse, source_index: nil)
     end
@@ -494,11 +495,12 @@ module Quonfig
         envelope = parse_envelope(response.body)
         result = install_envelope(envelope, source: source, source_index: index)
         # Write this leg's ETag back AFTER the response (per-leg, race-free).
-        # Exception (qfg-9dxb.9): an ignored gen<=0 payload keeps the previous
-        # ETag. Its ETag is the git sha, and the server may later repair the
-        # generation for the SAME sha; remembering it would 304 that repair.
-        ignored_unversioned = result == :not_modified && extract_generation(envelope.meta || {}) <= 0
-        set_etag_for(index, new_etag) unless ignored_unversioned
+        # Exception (qfg-9dxb.9, qfg-j7ui; supervisor contract Test 11): an
+        # ignored gen<=0 payload, or one dropped as STRICTLY older, keeps the
+        # previous ETag. Its ETag is the git sha, and the server may later
+        # repair the generation for the SAME sha; remembering it would 304 that
+        # repair until the next commit. A same-generation 200 stores its ETag.
+        set_etag_for(index, new_etag) unless result == :not_modified && refused_by_generation?(envelope)
         end_oversized_episode(index) if result == :updated
         # install_envelope returns :not_modified when the reject-older guard drops
         # an equal/older payload — surface that so the caller doesn't double-count.
@@ -706,7 +708,20 @@ module Quonfig
         # SSE / datadir installs pass source_index nil and are ignored by the
         # aggregator, so they are never counted.
         @failover_aggregator&.record_resolved_from(source_index)
+        :updated
       end
+    end
+
+    # Whether the reject-older guard refused this envelope as unversioned
+    # (gen <= 0) or strictly older than the held generation, rather than as a
+    # same-generation re-delivery. The held generation only rises, so a
+    # payload older at decision time is still older here.
+    def refused_by_generation?(envelope)
+      incoming_gen = extract_generation(envelope.meta || {})
+      return true if incoming_gen <= 0
+
+      held = @held_generation
+      !held.nil? && incoming_gen < held
     end
 
     # The install decision for a network payload (see #install_envelope).

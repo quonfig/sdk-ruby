@@ -186,6 +186,42 @@ class TestConfigLoaderOrdering < Minitest::Test
     end
   end
 
+  # qfg-j7ui (supervisor contract Test 11): a 200 the guard drops as STRICTLY
+  # older must not leave its ETag behind either. A shallow-clone server can
+  # serve sha B at a low generation and later repair it to a higher one for
+  # the SAME sha; a remembered ETag would 304 that repair until the next commit.
+  def test_rejected_older_payload_does_not_pin_its_etag
+    [1, 2].each do |leg_count|
+      state = { key: 'a.flag', gen: 10, etag: 'shaA' }
+      url = start_etag_server(state)
+      urls = leg_count == 1 ? [url] : [url, 'http://127.0.0.1:1']
+      loader = build_loader(urls)
+
+      assert_equal :updated, loader.fetch!
+      assert_equal 10, loader.held_generation
+
+      state.merge!(key: 'b.flag', gen: 3, etag: 'shaB')
+      assert_equal :not_modified, loader.fetch!
+      assert_equal ['a.flag'], loader.calc_config.keys, 'gen-3 payload is older than held gen 10'
+
+      state[:gen] = 11 # repaired generation, same sha / ETag
+      loader.fetch!
+      assert_equal 11, loader.held_generation, "legs=#{leg_count}: repaired gen must install"
+      assert_equal ['b.flag'], loader.calc_config.keys
+    end
+  end
+
+  # Control: a same-generation 200 keeps its ETag (it is the held config).
+  def test_same_generation_payload_keeps_its_etag
+    state = { key: 'a.flag', gen: 10, etag: 'shaA' }
+    loader = build_loader([start_etag_server(state)])
+    assert_equal :updated, loader.fetch!
+
+    state[:etag] = 'shaA2' # cold-slot re-delivery of gen 10 under a new ETag
+    assert_equal :not_modified, loader.fetch!
+    assert_equal 'shaA2', loader.etag
+  end
+
   def start_etag_server(state)
     server = WEBrick::HTTPServer.new(Port: 0, Logger: WEBrick::Log.new(StringIO.new), AccessLog: [])
     server.mount_proc '/api/v2/configs' do |req, res|

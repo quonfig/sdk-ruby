@@ -3,7 +3,7 @@
 ## 2.0.0 - 2026-10-26
 
 The typed-getter contract (qfg-zvyy), shared by every Quonfig SDK and pinned by
-the integration-test-data matrix (`getter.contract.*`, tag `v2026.10.23`). A
+the integration-test-data matrix (`getter.contract.*`, tag `v2026.10.26`). A
 typed read that cannot return a value of the getter's type no longer raises
 past your `default:`; your default applies.
 
@@ -76,7 +76,7 @@ past your `default:`; your default applies.
 
 ### Tests
 
-- All workflows run integration-test-data `v2026.10.23`, which adds the
+- All workflows run integration-test-data `v2026.10.26`, which adds the
   typed-getter matrix to `get.yaml`, `get_or_raise.yaml` and `enabled.yaml`.
   The typed `get_or_raise` cases call the typed getter on a client with
   `on_no_default: :raise` (Ruby's untyped `get_or_raise` cannot tell a
@@ -86,6 +86,10 @@ past your `default:`; your default applies.
   once-per-key WARN, `enabled?` never raising, int <-> double edges (NaN,
   infinity, 2^53), the Details error codes, and the untyped `get` /
   `get_or_raise`.
+
+### Fixed
+
+- **A config payload refused as older no longer pins its ETag (qfg-j7ui).** When a `/api/v2/configs` 200 is dropped by the reject-older guard because its generation is lower than the one held, the SDK no longer remembers its ETag. Before, if the server later repaired that same commit to a higher generation, every poll got a 304 and the client stayed on the old config until the next commit. The same already held for a generation-0 payload (qfg-9dxb.9). A same-generation re-delivery still keeps its ETag. Pinned by supervisor contract Test 11 (integration-test-data `v2026.10.27.1`).
 
 ### Docs
 

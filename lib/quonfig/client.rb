@@ -1897,19 +1897,25 @@ module Quonfig
         # last_successful_refresh (only an install or fetch does that).
         on_connected: sse_connected_callback
       )
+      # The block returns the install result (:updated / :not_modified); the
+      # SSE client clears its oversized gate only on :updated (qfg-6vno.20.8).
+      # The connected edge comes from on_connected at the first frame (or,
+      # while the oversized gate is set, at the first installed envelope), so
+      # an envelope the reject-older guard drops never reports connected here.
       @sse_client.start do |envelope, _event, _source|
         next if @stopped
 
         begin
-          @config_loader.apply_envelope(envelope)
+          result = @config_loader.apply_envelope(envelope)
           sync_evaluator_env_id!
-          handle_sse_state_change(:connected)
+          handle_sse_state_change(:connected) if result == :updated
           record_refresh!
         rescue StandardError => e
           LOG.warn "[quonfig] Error applying SSE envelope: #{e.message}"
           next
         end
         notify_on_update_callback
+        result
       end
       true
     rescue StandardError => e
