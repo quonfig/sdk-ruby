@@ -167,10 +167,13 @@ class TestSemanticLoggerFilter < Minitest::Test
     store = Quonfig::ConfigStore.new
     store.set(CONFIG_KEY, config)
     client = Quonfig::Client.new(Quonfig::Options.new, store: store)
-    assert_raises(Quonfig::Errors::MissingEnvVarError) { client.get(CONFIG_KEY, nil) }
+    # With no default the error raises (on_no_default: :raise); the filter
+    # passes a nil default, which is returned with one WARN (qfg-zvyy).
+    assert_raises(Quonfig::Errors::MissingEnvVarError) { client.get(CONFIG_KEY) }
 
     filter = Quonfig::SemanticLoggerFilter.new(client, config_key: CONFIG_KEY)
     assert_equal true, filter.call(make_log('MyApp::Foo', :debug))
     assert_equal true, filter.call(make_log('MyApp::Foo', :error))
+    assert_logged([/read of "#{CONFIG_KEY}" returned no value: Environment variable/])
   end
 end

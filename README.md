@@ -409,12 +409,40 @@ Each typed getter takes a config key plus two optional keyword arguments:
 for this call). On a `BoundClient` (see `with_context` above) the getters take
 only `default:`; the context is the bound one.
 
+Upgrading from 1.x? See [UPGRADE to 2.0](CHANGELOG.md#upgrade-to-20).
+
 - **Missing key:** returns `default:` when you pass one. Without a default the
   `on_no_default` option decides: `:raise` (the default) raises
   `Quonfig::Errors::MissingDefaultError`, `:return_nil` returns `nil`.
-- **Wrong type:** a value that does not match the getter's type (for example
-  `get_int` on a string config) raises `Quonfig::Errors::TypeMismatchError`,
-  with or without a `default:`.
+- **Failed read:** a read that cannot produce a value of the getter's type
+  returns `default:` when you pass one and logs one WARN per key (it names the
+  key, never the value). Without a default it follows `on_no_default`:
+  `:return_nil` returns `nil` (and logs the WARN), `:raise` raises the error:
+
+| Situation | Error raised with no default under `:raise` |
+|---|---|
+| Value of another type (e.g. `get_bool` on a string config) | `Quonfig::Errors::TypeMismatchError` |
+| Malformed stored or ENV_VAR value (an int `"twelve"`, a duration `"30s"`) | `Quonfig::Errors::EnvVarParseError` |
+| ENV_VAR not set | `Quonfig::Errors::MissingEnvVarError` |
+| Secret cannot be decrypted | `Quonfig::Errors::DecryptionError` |
+
+Strings are never coerced: a stored `"false"` is a string, so `get_bool`
+treats it as a type mismatch instead of returning `false`. The only conversions
+are between numbers, and only when exact: `get_float` reads an int config
+(`30` -> `30.0`), and `get_int` reads a double config holding a whole number
+within +/-(2^53-1) (`3.0` -> `3`; `3.9` is a type mismatch, never truncated).
+The untyped `get(key, default)` follows the same rule for the failures it can
+see (malformed values, ENV_VAR and decryption errors).
+
+`enabled?` never raises. It returns `true` only for a flag that resolves to the
+bool `true`, and `false` (with one WARN per key) for a missing key, a flag with
+no matching rule, a value that is not a bool (a stored string `"true"`
+included) or any resolution error.
+
+A wrong decryption key or an unset ENV_VAR therefore degrades to your defaults
+with one WARN per key. If a broken config must stop your service, call the
+getter without a `default:` on a client with `on_no_default: :raise` (the
+default), or use `get_or_raise`.
 
 | Method                                              | Returns                                   |
 |-----------------------------------------------------|-------------------------------------------|
@@ -425,11 +453,10 @@ only `default:`; the context is the bound one.
 | `get_string_list(key, default:, context:)`          | `Array<String>`                           |
 | `get_duration(key, default:, context:)`             | `Integer` (milliseconds)                  |
 | `get_json(key, default:, context:)`                 | `Hash`, `Array`, or a scalar              |
-| `enabled?(feature_name, context = nil)`             | `true` or `false` (`false` when missing)  |
+| `enabled?(feature_name, context = nil)`             | `true` or `false`; never raises           |
 
 `get_duration` returns integer milliseconds (`PT1.5S` is `1500`). A duration
-value that is not valid ISO-8601 returns `default:` and logs one warning per
-key; with no default it follows `on_no_default`.
+value that is not valid ISO-8601 is a malformed value (see above).
 
 Example:
 
@@ -444,13 +471,18 @@ client.get_json('homepage.layout', default: {})
 client.enabled?('beta-feature', user: { key: 'user-123' })
 ```
 
-`get_or_raise(key, default:, context:)` returns the value like `get`, but a
-missing key without a `default:` always raises
-`Quonfig::Errors::MissingDefaultError` (whatever `on_no_default` is set to), and
-an unset or malformed ENV_VAR value, a malformed stored duration, or a
-decryption failure raises its error. `get_duration_details(key, context:)`
-returns `Quonfig::EvaluationDetails` with the duration in integer milliseconds,
-like the other `*_details` getters.
+`get_or_raise(key, default:, context:)` returns the value like `get` (untyped),
+but a missing key without a `default:` always raises
+`Quonfig::Errors::MissingDefaultError` (whatever `on_no_default` is set to),
+and an unset or malformed ENV_VAR value, a malformed stored value, or a
+decryption failure raises its error even when you pass a `default:` (the
+default only covers a missing key). For a typed read that raises, call the
+typed getter with no `default:` under `on_no_default: :raise`.
+
+The `*_details` getters (`get_int_details(key, context:)` and so on) never
+raise. They return `Quonfig::EvaluationDetails`; a wrong-type or malformed
+value is `reason: "ERROR"` with `error_code: "TYPE_MISMATCH"`.
+`get_duration_details` carries the duration in integer milliseconds.
 
 ## Dynamic log levels (SemanticLogger)
 

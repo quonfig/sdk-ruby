@@ -4,9 +4,100 @@
 
 - **Fixed: `connection_state` no longer answers `:connected` before the SSE stream's first frame (qfg-fi1s).** On a network client with SSE on, the init fetch installs an envelope before the stream has delivered anything, and `connection_state` read that install as `:connected`. It now reports `:initializing` until the stream's first frame arrives (the connected edge), as the supervisor contract says ("after 200 headers, no frame" is initializing) and as sdk-go, sdk-java, sdk-net and sdk-python already do. Datadir clients and clients with `enable_sse: false` still read `:connected` once config is installed. Tests: `test/test_health_primitives.rb`, `test/test_sse_first_frame.rb` (Test 9a/9b now assert on the public getter).
 
-- **Fixed: a config payload refused as older no longer pins its ETag (qfg-j7ui).** When a `/api/v2/configs` 200 is dropped by the reject-older guard because its generation is lower than the one held, the SDK no longer remembers its ETag. Before, if the server later repaired that same commit to a higher generation, every poll got a 304 and the client stayed on the old config until the next commit. The same already held for a generation-0 payload (qfg-9dxb.9). A same-generation re-delivery still keeps its ETag. Pinned by supervisor contract Test 11 (integration-test-data `v2026.10.27.1`).
+## 2.0.0 - 2026-10-26
 
-- **Docs: README note on forking servers during a delivery outage (qfg-6vno.24).** Under Startup failure: a forked worker rebuilds its own snapshot under the same `on_init_failure` mode, `:fail` raises until delivery heals, `:wait` blocks the first request, and frequent recyclers should use `:continue`. Links to the startup-failure docs page. No code change.
+The typed-getter contract (qfg-zvyy), shared by every Quonfig SDK and pinned by
+the integration-test-data matrix (`getter.contract.*`, tag `v2026.10.26`). A
+typed read that cannot return a value of the getter's type no longer raises
+past your `default:`; your default applies.
+
+### UPGRADE to 2.0
+
+1. **A failed read returns your `default:`.** In 1.x the typed getters raised
+   even when you passed a `default:`: `get_int('k', default: 0)` on a string
+   config raised `TypeMismatchError`, and any getter on an unset ENV_VAR or a
+   secret that cannot be decrypted raised `MissingEnvVarError` /
+   `DecryptionError`. In 2.0 the getter returns the default. This covers a
+   value of another type, a malformed stored or ENV_VAR value, an unset ENV_VAR
+   and a decryption failure. The untyped `get(key, default)` does the same for
+   the failures it can see. Code that rescued these errors around a getter
+   with a `default:` now gets the default instead.
+
+2. **No default: `on_no_default` decides.** `:raise` (the default) still raises
+   the error (`TypeMismatchError`, `EnvVarParseError`, `MissingEnvVarError`,
+   `DecryptionError`), as in 1.x. Under `on_no_default: :return_nil` the getter
+   now returns `nil` instead of raising.
+
+3. **No string coercion.** A stored string is never a bool or a number:
+   `get_bool` on a string `"false"` is a type mismatch, and `enabled?` on a
+   string `"true"` is `false` (1.x returned `true`). Store values with the
+   config type you read them with.
+
+4. **Numbers convert only when exact.** `get_float` on an int config now
+   returns the value (`30` -> `30.0`); 1.x raised `TypeMismatchError`.
+   `get_int` on a double config returns the value when it is whole and within
+   +/-(2^53-1) (`3.0` -> `3`); `3.9`, `1e300` and `2^53` are type mismatches,
+   never truncated.
+
+5. **Stricter types.** `get_json` reads json configs only, `get_string_list`
+   string_list configs only, and `get_string` string and log_level configs
+   only. In 1.x `get_json` returned any value and `get_string_list` accepted
+   any array of strings.
+
+6. **`enabled?` never raises.** It returns `false` for a missing key, a flag
+   with no matching rule, a value that is not the bool `true`, and any
+   resolution error (1.x raised `MissingEnvVarError` / `DecryptionError` and
+   errors from a malformed value).
+
+7. **One WARN per key.** A failed read that returns your default or `nil`, and
+   `enabled?` returning `false` for one of the reasons above, log one WARN per
+   key per client: `[quonfig] read of "<key>" returned no value: <reason>`. It
+   names the key and the types, never the value. A wrong decryption key in
+   production now degrades to your defaults with these WARNs. **If that must be
+   fatal**, read without a `default:` on a client with `on_no_default: :raise`
+   (the default), or use `get_or_raise`, which raises `MissingEnvVarError`,
+   `EnvVarParseError` and `DecryptionError` even when you pass a `default:`.
+
+### Changed
+
+- **Major: typed getters (`get_string`, `get_int`, `get_float`, `get_bool`,
+  `get_string_list`, `get_duration`, `get_json`, and the same on
+  `BoundClient`) follow the contract above.** The 1.x identity bypass is gone:
+  a value that happened to be `equal?` to the default skipped the type check,
+  so `get_string('a_bool', default: true)` returned `true` with no error.
+- **Major: `enabled?` is true only for the bool `true`.**
+- **Major: `get(key, default)` returns the default on an unset ENV_VAR, a
+  decryption failure or a malformed value.** A malformed stored duration read
+  with no default now follows `on_no_default` (1.x returned `nil`).
+- **`*_details`: a malformed value, stored or ENV_VAR, is `TYPE_MISMATCH`** (it
+  was `GENERAL` for an ENV_VAR value), as in sdk-go. `get_int_details` /
+  `get_float_details` follow the int <-> double rule.
+- **`get_or_raise` raises `EnvVarParseError` on a malformed stored int or
+  double** (1.x raised a bare `ArgumentError`).
+- **A `decryptWith` key config that is missing, matches no rule or is empty now raises `DecryptionError`** (1.x raised a plain `Quonfig::Error`), so it counts as a decryption failure and the typed getters apply your default. `DecryptionError` is a `Quonfig::Error`, so `rescue Quonfig::Error` still catches it.
+- **`TypeMismatchError` names the config's value type** (`... expected Integer,
+  got a string value`) when the type is known.
+
+### Tests
+
+- All workflows run integration-test-data `v2026.10.26`, which adds the
+  typed-getter matrix to `get.yaml`, `get_or_raise.yaml` and `enabled.yaml`.
+  The typed `get_or_raise` cases call the typed getter on a client with
+  `on_no_default: :raise` (Ruby's untyped `get_or_raise` cannot tell a
+  wrong-type value from a found one); that generator change is
+  quonfig/integration-test-data `ruby.ts`, see the PR for this release.
+- `test/test_typed_getter_contract.rb` covers what the corpus cannot: the
+  once-per-key WARN, `enabled?` never raising, int <-> double edges (NaN,
+  infinity, 2^53), the Details error codes, and the untyped `get` /
+  `get_or_raise`.
+
+### Fixed
+
+- **A config payload refused as older no longer pins its ETag (qfg-j7ui).** When a `/api/v2/configs` 200 is dropped by the reject-older guard because its generation is lower than the one held, the SDK no longer remembers its ETag. Before, if the server later repaired that same commit to a higher generation, every poll got a 304 and the client stayed on the old config until the next commit. The same already held for a generation-0 payload (qfg-9dxb.9). A same-generation re-delivery still keeps its ETag. Pinned by supervisor contract Test 11 (integration-test-data `v2026.10.27.1`).
+
+### Docs
+
+- **README note on forking servers during a delivery outage (qfg-6vno.24).** Under Startup failure: a forked worker rebuilds its own snapshot under the same `on_init_failure` mode, `:fail` raises until delivery heals, `:wait` blocks the first request, and frequent recyclers should use `:continue`. Links to the startup-failure docs page. No code change.
 
 ## 1.11.0 - 2026-10-23
 

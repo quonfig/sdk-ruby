@@ -213,5 +213,9 @@ class TestStdlibFormatter < Minitest::Test
     logger.info 'hello'
 
     assert_includes io.string, 'hello'
+    # The failed read logs once per key through the SDK's own logger
+    # (qfg-zvyy), never into the host logger being formatted.
+    assert_logged([/read of "#{LOG_LEVEL_KEY}" returned no value: Environment variable/])
+    refute_includes io.string, 'returned no value'
   end
 end
