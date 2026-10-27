@@ -158,6 +158,33 @@ class TestHealthPrimitives < Minitest::Test
     assert_equal :connected, client.connection_state
   end
 
+  # qfg-fi1s: the contract (supervisor-test-contract.md, "a connection is
+  # `connected` at its first valid frame" and Test 6) says "after 200
+  # headers, no frame" is :initializing. A network SSE client whose init
+  # fetch installed an envelope must not answer :connected off that install
+  # before the stream has delivered a frame.
+  def test_connection_state_initializing_after_init_fetch_until_first_sse_frame
+    client = make_client
+    stub_config_loader!(client)
+    stub_live_sse!(client)
+    assert client.send(:sse_channel_expected?), 'precondition: network SSE client'
+
+    client.send(:record_refresh!) # the init fetch installed an envelope
+    assert_equal :initializing, client.connection_state,
+                 'an init-fetch install with no SSE frame yet must read :initializing'
+
+    client.send(:handle_sse_state_change, :connected) # first frame
+    assert_equal :connected, client.connection_state
+  end
+
+  # SSE off: installs alone drive the state, as before.
+  def test_connection_state_connected_after_install_when_sse_disabled
+    client = make_client(enable_sse: false)
+    stub_config_loader!(client)
+    client.send(:record_refresh!)
+    assert_equal :connected, client.connection_state
+  end
+
   def test_connection_state_returns_disconnected_after_stop
     client = make_client
     client.send(:handle_sse_state_change, :connected)

@@ -607,8 +607,8 @@ Caveats:
   threads race the first request.
 - **`connection_state` never triggers the re-initialization** — a diagnostic
   must not open a socket. A child that has not used the client yet answers
-  `:initializing`, which is exactly what it is; it flips to `:connected` on
-  first use.
+  `:initializing`, which is exactly what it is; it flips to `:connected`
+  after its first use, once the stream delivers its first frame.
 - The child's telemetry aggregators start empty. The parent flushes the data
   it collected before the fork; the child reports only its own.
 - **Per-job forking pays per job.** A Resque-style worker that forks a child
@@ -757,7 +757,9 @@ reuse the parent's client object in a child process without it.
   envelope install (any source: datadir, initial HTTP fetch, SSE, or fallback
   polling). Returns `nil` before the first install. Preserved across `stop`.
 - `client.connection_state` — a `Symbol` describing the aggregate state:
-  `:initializing`, `:connected`, `:disconnected`, or `:falling_back`.
+  `:initializing`, `:connected`, `:disconnected`, or `:falling_back`. With
+  SSE on, the client reads `:initializing` until the stream delivers its
+  first frame, even after the initial fetch has installed config.
 - `client.callback_errors_total(callback: 'on_config_update')` — how many
   times your `on_update` block raised. The SDK catches the error, logs it at
   ERROR with its stack, and keeps delivering updates; a raise is not a worker

@@ -650,7 +650,8 @@ module Quonfig
     # Aggregate connection state. Returns one of:
     #
     # - +:initializing+ — no envelope has been installed and SSE is not yet
-    #   connected.
+    #   connected, or (SSE clients) the stream has not delivered its first
+    #   frame yet, even if the init fetch already installed an envelope.
     # - +:connected+ — SSE is live, or the SDK is delivering configs from a
     #   loaded envelope (datadir mode or post-initial-fetch with no SSE).
     # - +:disconnected+ — +stop+ was called, or SSE errored and no fallback
@@ -681,9 +682,14 @@ module Quonfig
         next :disconnected if sse_channel_expected? && !sse_worker_alive?
         next :connected if @sse_state == :connected
         next :disconnected if @sse_state == :error
+        # First-frame rule (qfg-fi1s): a client that is supposed to hold an
+        # SSE stream is not :connected until that stream delivers its first
+        # frame. The init fetch's install alone does not make it connected;
+        # "after 200 headers, no frame" is :initializing (contract Test 6).
+        next :initializing if sse_channel_expected? && !@sse_ever_connected
 
         # No SSE state change yet: state is driven by whether any envelope
-        # has been installed (datadir / initial fetch).
+        # has been installed (datadir / SSE disabled / initial fetch).
         @last_successful_refresh.nil? ? :initializing : :connected
       end
     end

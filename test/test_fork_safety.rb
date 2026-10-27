@@ -579,7 +579,7 @@ class TestForkSafety < Minitest::Test
           'keys_before_first_use' => keys_before,
           'state_before_first_use' => state_before,
           'first_value' => first_value,
-          'state_after_first_use' => client.connection_state.to_s,
+          'state_after_first_use' => state_after_first_frame(client),
           'ready_after_first_use' => client.ready?,
           'sse_id' => sse&.object_id,
           'worker_id' => sse&.instance_variable_get(:@worker)&.object_id,
@@ -1197,7 +1197,7 @@ class TestForkSafety < Minitest::Test
         16.times { start << true }
         threads.each { |t| t.join(15) }
         collected = 16.times.map { values.empty? ? 'MISSING' : values.pop }
-        { 'values' => collected.tally, 'state' => client.connection_state.to_s }
+        { 'values' => collected.tally, 'state' => state_after_first_frame(client) }
       end
 
       refute report['error'], "child errored: #{report['error']}"
@@ -1264,7 +1264,7 @@ class TestForkSafety < Minitest::Test
           'first' => first,
           'second' => second,
           'ready' => client.ready?,
-          'state' => client.connection_state.to_s,
+          'state' => state_after_first_frame(client),
           'sse_alive' => sse&.alive? || false
         }
       end
@@ -1992,7 +1992,7 @@ class TestForkSafety < Minitest::Test
           'after_first_use_same' => after_first_use.equal?(client),
           'value' => value,
           'live_sse_clients' => live_sse_client_count,
-          'state' => client.connection_state.to_s
+          'state' => state_after_first_frame(client)
         }
       end
 
@@ -2037,6 +2037,16 @@ class TestForkSafety < Minitest::Test
   # reference to it. An ORPHAN shows up here and nowhere else.
   def live_sse_client_count
     ObjectSpace.each_object(Quonfig::SSEConfigClient).count(&:alive?)
+  end
+
+  # A network SSE client is :connected only once its stream delivers its
+  # first frame (qfg-fi1s), which lands on the SSE worker shortly AFTER the
+  # blocking init fetch returns from the first `get`. Wait for it (the
+  # StreamEndpoint/OneShotEndpoint fakes both send a frame on connect), then
+  # report whatever the state is.
+  def state_after_first_frame(client)
+    wait_until(5) { client.connection_state == :connected }
+    client.connection_state.to_s
   end
 
   def wait_until(timeout = 5)

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Fixed: `connection_state` no longer answers `:connected` before the SSE stream's first frame (qfg-fi1s).** On a network client with SSE on, the init fetch installs an envelope before the stream has delivered anything, and `connection_state` read that install as `:connected`. It now reports `:initializing` until the stream's first frame arrives (the connected edge), as the supervisor contract says ("after 200 headers, no frame" is initializing) and as sdk-go, sdk-java, sdk-net and sdk-python already do. Datadir clients and clients with `enable_sse: false` still read `:connected` once config is installed. Tests: `test/test_health_primitives.rb`, `test/test_sse_first_frame.rb` (Test 9a/9b now assert on the public getter).
+
 ## 2.0.0 - 2026-10-26
 
 The typed-getter contract (qfg-zvyy), shared by every Quonfig SDK and pinned by
