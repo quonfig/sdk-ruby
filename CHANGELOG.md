@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Fixed: a config payload refused as older no longer pins its ETag (qfg-j7ui).** When a `/api/v2/configs` 200 is dropped by the reject-older guard because its generation is lower than the one held, the SDK no longer remembers its ETag. Before, if the server later repaired that same commit to a higher generation, every poll got a 304 and the client stayed on the old config until the next commit. The same already held for a generation-0 payload (qfg-9dxb.9). A same-generation re-delivery still keeps its ETag. Pinned by supervisor contract Test 11 (integration-test-data `v2026.10.27.1`).
+
 - **Docs: README note on forking servers during a delivery outage (qfg-6vno.24).** Under Startup failure: a forked worker rebuilds its own snapshot under the same `on_init_failure` mode, `:fail` raises until delivery heals, `:wait` blocks the first request, and frequent recyclers should use `:continue`. Links to the startup-failure docs page. No code change.
 
 ## 1.11.0 - 2026-10-23
