@@ -205,9 +205,13 @@ class TestTypedGetters < Minitest::Test
     end
   end
 
+  # A malformed stored duration is a failed read for the untyped get too
+  # (qfg-zvyy): the default, nil under :return_nil, the error under :raise.
   def test_get_duration_never_returns_the_raw_string_from_get
     client = client_with_value(value: 'garbage', type: 'duration')
-    assert_nil client.get(KEY)
+    assert_raises(Quonfig::Errors::EnvVarParseError) { client.get(KEY) }
+    assert_equal 5, client.get(KEY, 5)
+    assert_logged([/read of "my.key" returned no value: stored value cannot be converted to duration/])
   end
 
   # ---- get_json ---------------------------------------------------------
@@ -282,11 +286,14 @@ class TestTypedGetters < Minitest::Test
     client = secret_client
     assert_equal 'hello.world', client.get_string(KEY)
 
-    err = assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int(KEY, default: 0) }
+    assert_equal 0, client.get_int(KEY, default: 0)
+    refute_includes $logs.string, 'hello.world'
+    assert_logged([/read of "my.key" returned no value: .*expected Integer/])
+    err = assert_raises(Quonfig::Errors::TypeMismatchError) { client.get_int(KEY) }
     refute_includes err.message, 'hello.world'
     assert_includes err.message, KEY
     assert_includes err.message, 'Integer'
-    assert_includes err.message, 'String'
+    assert_includes err.message, 'a string value'
 
     details = client.get_int_details(KEY)
     refute_nil details.error_message

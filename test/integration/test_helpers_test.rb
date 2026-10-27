@@ -70,7 +70,7 @@ class TestIntegrationHelpers < Minitest::Test
 
   def test_acknowledge_expected_warnings_keeps_unexpected_lines
     $logs = StringIO.new
-    $logs.write("WARN foo is not a valid ISO-8601 duration; returning the default\nWARN something else\n")
+    $logs.write(%(WARN [quonfig] read of "foo" returned no value: bad; returning the default\nWARN something else\n))
     IntegrationTestHelpers.acknowledge_expected_warnings
 
     assert_equal "WARN something else\n", $logs.string

@@ -124,9 +124,11 @@ class TestClient < Minitest::Test
     refute client_with(store).enabled?(CONFIG_KEY)
   end
 
+  # qfg-zvyy: enabled? never raises; a missing key is false plus one WARN.
   def test_enabled_returns_false_for_missing_key
     store = Quonfig::ConfigStore.new
     refute client_with(store).enabled?('nope')
+    assert_logged([/read of "nope" returned no value: missing key or no matching rule/])
   end
 
   # ---- defined? + keys --------------------------------------------------
