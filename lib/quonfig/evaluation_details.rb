@@ -15,7 +15,10 @@ module Quonfig
   #
   # +error_code+ (only when reason == "ERROR") is one of:
   #   "FLAG_NOT_FOUND" — the key was unknown to the store
-  #   "TYPE_MISMATCH"  — the resolved value didn't satisfy the requested type
+  #   "TYPE_MISMATCH"  — the resolved value is of another type than the getter's
+  #   "PARSE_ERROR"    — the value cannot be parsed as its declared type: a
+  #                      malformed ENV_VAR value, or a malformed stored int,
+  #                      double or duration (qfg-wg1n)
   #   "PROVIDER_NOT_READY" — the client has no config yet (init continued
   #                          on code defaults, or a caught init failure)
   #   "GENERAL"        — any other failure
@@ -32,6 +35,7 @@ module Quonfig
 
     ERROR_FLAG_NOT_FOUND = 'FLAG_NOT_FOUND'
     ERROR_TYPE_MISMATCH  = 'TYPE_MISMATCH'
+    ERROR_PARSE_ERROR    = 'PARSE_ERROR'
     ERROR_GENERAL        = 'GENERAL'
     ERROR_PROVIDER_NOT_READY = 'PROVIDER_NOT_READY'
 

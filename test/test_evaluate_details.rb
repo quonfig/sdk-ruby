@@ -67,8 +67,8 @@ class TestEvaluateDetails < Minitest::Test
     assert_equal '30s', details.value
     assert_equal Details::REASON_STATIC, details.reason
     assert_nil details.error_code
-    # The typed getter is unchanged: still an error.
-    assert_equal Details::ERROR_TYPE_MISMATCH, client.get_duration_details(KEY).error_code
+    # The typed getter still reports it as an error (PARSE_ERROR, qfg-wg1n).
+    assert_equal Details::ERROR_PARSE_ERROR, client.get_duration_details(KEY).error_code
   end
 
   # ---- other value types -----------------------------------------------

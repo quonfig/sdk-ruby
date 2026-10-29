@@ -480,8 +480,11 @@ default only covers a missing key). For a typed read that raises, call the
 typed getter with no `default:` under `on_no_default: :raise`.
 
 The `*_details` getters (`get_int_details(key, context:)` and so on) never
-raise. They return `Quonfig::EvaluationDetails`; a wrong-type or malformed
-value is `reason: "ERROR"` with `error_code: "TYPE_MISMATCH"`.
+raise. They return `Quonfig::EvaluationDetails`; a value of another type is
+`reason: "ERROR"` with `error_code: "TYPE_MISMATCH"`, and a value that cannot
+be parsed as its declared type (a malformed ENV_VAR value, or a malformed
+stored int, double or duration) is `reason: "ERROR"` with
+`error_code: "PARSE_ERROR"`.
 `get_duration_details` carries the duration in integer milliseconds.
 
 To read a value without a type, use `evaluate_details(key, context:)`. It
