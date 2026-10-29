@@ -19,6 +19,10 @@ module Quonfig
   #   "PROVIDER_NOT_READY" — the client has no config yet (init continued
   #                          on code defaults, or a caught init failure)
   #   "GENERAL"        — any other failure
+  #
+  # +value_type+ is set only by Client#evaluate_details: the stored value
+  # type ("string", "int", "double", "bool", "string_list", "duration",
+  # "json", ...), or nil when nothing resolved. The typed getters leave it nil.
   class EvaluationDetails
     REASON_STATIC          = 'STATIC'
     REASON_TARGETING_MATCH = 'TARGETING_MATCH'
@@ -31,16 +35,17 @@ module Quonfig
     ERROR_GENERAL        = 'GENERAL'
     ERROR_PROVIDER_NOT_READY = 'PROVIDER_NOT_READY'
 
-    attr_reader :value, :reason, :error_code, :error_message, :variant, :flag_metadata
+    attr_reader :value, :reason, :error_code, :error_message, :variant, :flag_metadata, :value_type
 
     def initialize(value:, reason:, error_code: nil, error_message: nil,
-                   variant: nil, flag_metadata: nil)
+                   variant: nil, flag_metadata: nil, value_type: nil)
       @value         = value
       @reason        = reason
       @error_code    = error_code
       @error_message = error_message
       @variant       = variant
       @flag_metadata = flag_metadata
+      @value_type    = value_type
     end
 
     def ==(other)
@@ -50,12 +55,13 @@ module Quonfig
         other.error_code == @error_code &&
         other.error_message == @error_message &&
         other.variant == @variant &&
-        other.flag_metadata == @flag_metadata
+        other.flag_metadata == @flag_metadata &&
+        other.value_type == @value_type
     end
     alias eql? ==
 
     def hash
-      [@value, @reason, @error_code, @error_message, @variant, @flag_metadata].hash
+      [@value, @reason, @error_code, @error_message, @variant, @flag_metadata, @value_type].hash
     end
 
     def inspect
@@ -64,6 +70,7 @@ module Quonfig
       parts << "error_message=#{@error_message.inspect}" if @error_message
       parts << "variant=#{@variant.inspect}" if @variant
       parts << "flag_metadata=#{@flag_metadata.inspect}" if @flag_metadata
+      parts << "value_type=#{@value_type.inspect}" if @value_type
       "#<Quonfig::EvaluationDetails #{parts.join(' ')}>"
     end
   end

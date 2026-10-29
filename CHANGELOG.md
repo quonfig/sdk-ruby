@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## 2.1.0 - 2026-10-29
 
+- **Added: `evaluate_details(key, context:)`, an untyped details read (qfg-177f).** It returns a `Quonfig::EvaluationDetails` whose `value` is the config's resolved value as stored, after ENV_VAR provision and decryption, with no type check or conversion: a duration comes back as its ISO 8601 text exactly as stored (`"PT90S"`, not milliseconds), a `string_list` as an Array, JSON as stored. The new `value_type` attribute names the stored type (`"duration"`, `"int"`, ...; `nil` when nothing resolved). Reason, variant, `flag_metadata`, error codes and telemetry are the same as the typed `*_details` getters, and it never raises. A malformed stored value (a duration `"30s"`) is returned as-is with a success reason; an unset or unparseable ENV_VAR is still `reason: "ERROR"`, as in the typed getters. Available on the client and on a `with_context` bound client. It matches sdk-go's `Client.EvaluateDetails` and is meant for OpenFeature providers and other callers that do their own typing. Existing getters are unchanged. Tests: `test/test_evaluate_details.rb`.
 - **Fixed: `connection_state` no longer answers `:connected` before the SSE stream's first frame (qfg-fi1s).** On a network client with SSE on, the init fetch installs an envelope before the stream has delivered anything, and `connection_state` read that install as `:connected`. It now reports `:initializing` until the stream's first frame arrives (the connected edge), as the supervisor contract says ("after 200 headers, no frame" is initializing) and as sdk-go, sdk-java, sdk-net and sdk-python already do. Datadir clients and clients with `enable_sse: false` still read `:connected` once config is installed. Tests: `test/test_health_primitives.rb`, `test/test_sse_first_frame.rb` (Test 9a/9b now assert on the public getter).
 
 ## 2.0.0 - 2026-10-26

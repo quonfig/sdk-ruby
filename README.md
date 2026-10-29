@@ -484,6 +484,21 @@ raise. They return `Quonfig::EvaluationDetails`; a wrong-type or malformed
 value is `reason: "ERROR"` with `error_code: "TYPE_MISMATCH"`.
 `get_duration_details` carries the duration in integer milliseconds.
 
+To read a value without a type, use `evaluate_details(key, context:)`. It
+returns the value as stored, with `value_type` naming its type, and the same
+`reason`, `variant` and `flag_metadata` as the typed details getters. A
+duration comes back as its ISO 8601 text:
+
+```ruby
+details = client.evaluate_details('http.timeout', context: { user: { key: 'u1' } })
+details.value       # => "PT90S"
+details.value_type  # => "duration"
+details.reason      # => "STATIC"
+```
+
+It does no type check and never raises; a missing key is `reason: "ERROR"`
+with `error_code: "FLAG_NOT_FOUND"`.
+
 ## Dynamic log levels (SemanticLogger)
 
 Quonfig can drive per-class log levels at runtime. Set config keys like
