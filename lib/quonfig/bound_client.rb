@@ -74,6 +74,11 @@ module Quonfig
       @client.get_duration_details(key, context: @context)
     end
 
+    # See Quonfig::Client#evaluate_details.
+    def evaluate_details(key)
+      @client.evaluate_details(key, context: @context)
+    end
+
     def enabled?(feature_name)
       @client.enabled?(feature_name, @context)
     end

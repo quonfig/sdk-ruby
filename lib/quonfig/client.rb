@@ -285,34 +285,48 @@ module Quonfig
     # raise — exceptions are caught and rendered as ERROR details.
 
     def get_bool_details(key, context: NO_DEFAULT_PROVIDED)
-      evaluate_details(key, :bool, context)
+      build_details(key, :bool, context)
     end
 
     def get_string_details(key, context: NO_DEFAULT_PROVIDED)
-      evaluate_details(key, String, context)
+      build_details(key, String, context)
     end
 
     def get_int_details(key, context: NO_DEFAULT_PROVIDED)
-      evaluate_details(key, Integer, context)
+      build_details(key, Integer, context)
     end
 
     def get_float_details(key, context: NO_DEFAULT_PROVIDED)
-      evaluate_details(key, Float, context)
+      build_details(key, Float, context)
     end
 
     def get_string_list_details(key, context: NO_DEFAULT_PROVIDED)
-      evaluate_details(key, :string_list, context)
+      build_details(key, :string_list, context)
     end
 
     def get_json_details(key, context: NO_DEFAULT_PROVIDED)
-      evaluate_details(key, :json, context)
+      build_details(key, :json, context)
     end
 
     # Integer milliseconds in +value+ (qfg-2agi.27). A config whose valueType
     # is not duration is ERROR / TYPE_MISMATCH; a malformed value (stored or
     # ENV_VAR) is ERROR with a nil value.
     def get_duration_details(key, context: NO_DEFAULT_PROVIDED)
-      evaluate_details(key, :duration, context)
+      build_details(key, :duration, context)
+    end
+
+    # Untyped details read (matches sdk-go Client.EvaluateDetails). +value+
+    # is the resolved value in its stored form, after ENV_VAR provision and
+    # decryption, with no type check, coercion or parse validation: a
+    # duration is its ISO 8601 text exactly as stored ("PT90S"), a
+    # string_list an Array, a json value as stored. +value_type+ is the
+    # stored value type ('string', 'int', 'double', 'bool', 'string_list',
+    # 'duration', 'json', ...; nil when nothing resolved). Reason, variant,
+    # error_code and telemetry are the same as the typed *_details getters,
+    # and like them it never raises. Meant for OpenFeature providers and
+    # other callers that do their own typing.
+    def evaluate_details(key, context: NO_DEFAULT_PROVIDED)
+      build_details(key, nil, context)
     end
 
     # True only when the flag resolves to the bool +true+. Never raises
@@ -964,7 +978,7 @@ module Quonfig
     end
 
     # Lazy post-fork re-initialization. Called from every read entry point
-    # (+get+, +evaluate_details+, +defined?+, +keys+) — the flag read is a
+    # (+get+, +evaluate_details+ / the +*_details+ getters, +defined?+, +keys+) — the flag read is a
     # plain boolean, so the steady-state cost is one comparison per lookup.
     #
     # The first caller in the child does what +Client.new+ does: its own
@@ -2191,9 +2205,11 @@ module Quonfig
     end
 
     # Build a Quonfig::EvaluationDetails for +key+, evaluated against the
-    # caller's context, after coercing/checking +expected_type+. Never
-    # raises; all exceptions become ERROR details.
-    def evaluate_details(key, expected_type, context)
+    # caller's context, after coercing/checking +expected_type+. A nil
+    # +expected_type+ is the untyped #evaluate_details read: the stored value
+    # with no type check, plus +value_type+. Never raises; all
+    # exceptions become ERROR details.
+    def build_details(key, expected_type, context)
       ensure_initialized_after_fork
       jit = context == NO_DEFAULT_PROVIDED ? nil : context
       ctx = build_context(jit)
@@ -2240,7 +2256,7 @@ module Quonfig
       config_type = result.config&.dig('type') || result.config&.dig(:type)
 
       begin
-        coerced = typed_value(key, result, expected_type)
+        coerced = expected_type.nil? ? stored_value(result) : typed_value(key, result, expected_type)
       rescue Quonfig::Errors::TypeMismatchError, Quonfig::Errors::EnvVarParseError => e
         # A wrong-type value and a malformed one (the getter cannot produce
         # a value of its type) are both TYPE_MISMATCH, as in sdk-go.
@@ -2263,7 +2279,8 @@ module Quonfig
         value: coerced,
         reason: reason,
         variant: build_variant(reason, result.rule_index, result.weighted_value_index),
-        flag_metadata: flag_metadata
+        flag_metadata: flag_metadata,
+        value_type: expected_type.nil? ? stored_value_type(result) : nil
       )
     rescue StandardError => e
       Quonfig::EvaluationDetails.new(
@@ -2274,6 +2291,22 @@ module Quonfig
         variant: build_variant(Quonfig::EvaluationDetails::REASON_ERROR, nil, nil),
         flag_metadata: build_flag_metadata(nil, nil, nil, nil, nil)
       )
+    end
+
+    # +result+'s resolved value in stored form (after ENV_VAR provision and
+    # decryption) with no coercion or parse validation: a duration is its
+    # ISO 8601 text as stored. Hashes and Arrays are copied so a caller
+    # mutating the result cannot rewrite the cached config.
+    def stored_value(result)
+      copy_containers(result.raw_value)
+    end
+
+    def copy_containers(value)
+      case value
+      when Hash then value.to_h { |k, v| [k, copy_containers(v)] }
+      when Array then value.map { |v| copy_containers(v) }
+      else value
+      end
     end
 
     # Build the variant string per the cross-SDK spec
