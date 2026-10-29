@@ -282,7 +282,10 @@ module Quonfig
     # carrying the OpenFeature-aligned resolution +reason+ ("STATIC",
     # "TARGETING_MATCH", "SPLIT", "DEFAULT", or "ERROR") plus an
     # +error_code+/+error_message+ on the error path. These methods never
-    # raise — exceptions are caught and rendered as ERROR details.
+    # raise — exceptions are caught and rendered as ERROR details. A value of
+    # another type is error_code TYPE_MISMATCH; a value that cannot be parsed
+    # as its declared type (a malformed ENV_VAR value, a malformed stored
+    # int, double or duration) is PARSE_ERROR.
 
     def get_bool_details(key, context: NO_DEFAULT_PROVIDED)
       build_details(key, :bool, context)
@@ -310,7 +313,7 @@ module Quonfig
 
     # Integer milliseconds in +value+ (qfg-2agi.27). A config whose valueType
     # is not duration is ERROR / TYPE_MISMATCH; a malformed value (stored or
-    # ENV_VAR) is ERROR with a nil value.
+    # ENV_VAR) is ERROR / PARSE_ERROR with a nil value.
     def get_duration_details(key, context: NO_DEFAULT_PROVIDED)
       build_details(key, :duration, context)
     end
@@ -2230,11 +2233,11 @@ module Quonfig
           )
         rescue Quonfig::Errors::EnvVarParseError => e
           # An ENV_VAR value that does not parse as the config's type is
-          # TYPE_MISMATCH, like a malformed stored value (as in sdk-go).
+          # PARSE_ERROR, like a malformed stored value (qfg-wg1n).
           return Quonfig::EvaluationDetails.new(
             value: nil,
             reason: Quonfig::EvaluationDetails::REASON_ERROR,
-            error_code: Quonfig::EvaluationDetails::ERROR_TYPE_MISMATCH,
+            error_code: Quonfig::EvaluationDetails::ERROR_PARSE_ERROR,
             error_message: e.message,
             variant: build_variant(Quonfig::EvaluationDetails::REASON_ERROR, nil, nil),
             flag_metadata: build_flag_metadata(nil, nil, nil, nil, nil)
@@ -2258,12 +2261,12 @@ module Quonfig
       begin
         coerced = expected_type.nil? ? stored_value(result) : typed_value(key, result, expected_type)
       rescue Quonfig::Errors::TypeMismatchError, Quonfig::Errors::EnvVarParseError => e
-        # A wrong-type value and a malformed one (the getter cannot produce
-        # a value of its type) are both TYPE_MISMATCH, as in sdk-go.
+        # A value of another type is TYPE_MISMATCH; a malformed one (a stored
+        # int "twelve", a duration "30s") is PARSE_ERROR (qfg-wg1n).
         return Quonfig::EvaluationDetails.new(
           value: nil,
           reason: Quonfig::EvaluationDetails::REASON_ERROR,
-          error_code: Quonfig::EvaluationDetails::ERROR_TYPE_MISMATCH,
+          error_code: details_error_code(e),
           error_message: e.message,
           variant: build_variant(Quonfig::EvaluationDetails::REASON_ERROR, nil, nil),
           flag_metadata: build_flag_metadata(config_id, config_type, nil, nil, nil)
@@ -2291,6 +2294,14 @@ module Quonfig
         variant: build_variant(Quonfig::EvaluationDetails::REASON_ERROR, nil, nil),
         flag_metadata: build_flag_metadata(nil, nil, nil, nil, nil)
       )
+    end
+
+    def details_error_code(error)
+      if error.is_a?(Quonfig::Errors::EnvVarParseError)
+        Quonfig::EvaluationDetails::ERROR_PARSE_ERROR
+      else
+        Quonfig::EvaluationDetails::ERROR_TYPE_MISMATCH
+      end
     end
 
     # +result+'s resolved value in stored form (after ENV_VAR provision and

@@ -258,8 +258,7 @@ class TestTypedGetterContract < Minitest::Test
       [:get_bool_details, 'false', 'string'],
       [:get_string_details, 3, 'int'],
       [:get_json_details, 'x', 'string'],
-      [:get_string_list_details, { 'a' => 1 }, 'json'],
-      [:get_int_details, 'twelve', 'int']
+      [:get_string_list_details, { 'a' => 1 }, 'json']
     ].each do |getter, value, type|
       details = client_with_value(value: value, type: type).public_send(getter, KEY)
       assert_nil details.value, getter
@@ -273,11 +272,20 @@ class TestTypedGetterContract < Minitest::Test
     assert_in_delta 30.0, client_with_value(value: 30, type: 'int').get_float_details(KEY).value
   end
 
-  def test_details_malformed_env_var_is_type_mismatch
+  # A malformed value is PARSE_ERROR, not TYPE_MISMATCH (qfg-wg1n); the
+  # full matrix is in test_parse_error_details.rb.
+  def test_details_malformed_stored_value_is_parse_error
+    details = client_with_value(value: 'twelve', type: 'int').get_int_details(KEY)
+    assert_nil details.value
+    assert_equal Details::REASON_ERROR, details.reason
+    assert_equal Details::ERROR_PARSE_ERROR, details.error_code
+  end
+
+  def test_details_malformed_env_var_is_parse_error
     with_env(ENV_KEY, 'twelve') do
       details = provided_client(type: 'int').get_int_details(KEY)
       assert_equal Details::REASON_ERROR, details.reason
-      assert_equal Details::ERROR_TYPE_MISMATCH, details.error_code
+      assert_equal Details::ERROR_PARSE_ERROR, details.error_code
     end
   end
 end

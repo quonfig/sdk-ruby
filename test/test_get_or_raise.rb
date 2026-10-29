@@ -140,7 +140,7 @@ class TestClientGetOrRaise < Minitest::Test
     details = quietly { client_with_value(value: 'PT0.5H', type: 'duration').get_duration_details(KEY) }
     assert_nil details.value
     assert_equal Details::REASON_ERROR, details.reason
-    refute_nil details.error_code
+    assert_equal Details::ERROR_PARSE_ERROR, details.error_code
   end
 
   def test_get_duration_details_error_on_malformed_env_var
@@ -148,6 +148,7 @@ class TestClientGetOrRaise < Minitest::Test
       details = quietly { provided_client(type: 'duration').get_duration_details(KEY) }
       assert_nil details.value
       assert_equal Details::REASON_ERROR, details.reason
+      assert_equal Details::ERROR_PARSE_ERROR, details.error_code
     end
   end
 
