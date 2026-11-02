@@ -118,3 +118,12 @@ Lint/UnusedBlockArgument:
 Naming/MethodName:
   Exclude:
     - 'test/**/*'
+
+# Keep explicit argument and block forwarding (`*args, &block`). With the
+# Ruby 3.2 floor these cops would rewrite signatures across lib/ to
+# anonymous forwarding (`*, &`), which reads worse and buys nothing.
+Style/ArgumentsForwarding:
+  UseAnonymousForwarding: false
+
+Naming/BlockForwarding:
+  EnforcedStyle: explicit

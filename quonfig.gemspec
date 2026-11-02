@@ -11,7 +11,7 @@ Gem::Specification.new do |s|
   s.description = 'Quonfig — feature flags and live config, stored as files in git.'
   s.homepage    = 'https://github.com/quonfig/sdk-ruby'
   s.license     = 'MIT'
-  s.required_ruby_version = '>= 3.0'
+  s.required_ruby_version = '>= 3.2'
 
   s.metadata = {
     'source_code_uri' => 'https://github.com/quonfig/sdk-ruby',
