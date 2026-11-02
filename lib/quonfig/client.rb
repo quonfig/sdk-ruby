@@ -2,7 +2,6 @@
 
 require 'json'
 require 'timeout'
-require 'set'
 
 module Quonfig
   # Public Quonfig SDK client.

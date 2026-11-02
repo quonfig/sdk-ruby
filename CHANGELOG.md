@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Changed: the gem now requires Ruby 3.2 or newer (`required_ruby_version >= 3.2`; it was `>= 3.0`).** Ruby 3.0 and 3.1 are end of life (3.1 since March 2025), and CI tests on 3.2, 3.3 and 3.4. Raising the floor also lets Dependabot resolve this repo's lockfile, since it resolves under the lowest Ruby the gemspec allows, and the locked activesupport 8 needs 3.2.
+
 ## 2.2.0 - 2026-10-29
 
 - **Changed (edge case): the `*_details` getters and `evaluate_details` report a value that cannot be parsed as `error_code: "PARSE_ERROR"` (qfg-wg1n).** A malformed ENV_VAR value (an int config whose env var is `"twelve"`, a duration env var `"PT5S garbage"`) and, on the typed getters, a malformed stored int, double or duration (`"twelve"`, `"abc"`, `"PT0.5H"`) were reported as `TYPE_MISMATCH`; they are now `PARSE_ERROR`, the code OpenFeature uses for this case, with the same `reason: "ERROR"`, nil value, variant and `flag_metadata` as before. A value of another type (`get_int_details` on a string config) is still `TYPE_MISMATCH`. The new constant is `Quonfig::EvaluationDetails::ERROR_PARSE_ERROR`. Only the error code on these failure paths changes: the plain getters, `get_or_raise` and the raised errors (`EnvVarParseError`, `TypeMismatchError`) are unchanged, and `evaluate_details` still returns a malformed stored value as stored with a success reason. Code that compared `error_code` to `TYPE_MISMATCH` to detect a malformed value should also accept `PARSE_ERROR`. quonfig-openfeature 2.3.0 already passes `PARSE_ERROR` straight through. Tests: `test/test_parse_error_details.rb`.

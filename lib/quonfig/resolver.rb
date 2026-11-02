@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'digest'
-require 'set'
 
 module Quonfig
   # Public-API resolver: looks up a config by key in a ConfigStore and runs
