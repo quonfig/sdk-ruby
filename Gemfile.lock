@@ -69,6 +69,7 @@ GEM
       prism (~> 1.5)
     minitest-focus (1.4.1)
       minitest (> 5.0)
+    minitest-mock (5.27.0)
     minitest-reporters (1.6.1)
       ansi
       builder
@@ -142,6 +143,7 @@ DEPENDENCIES
   listen (~> 3.8)
   minitest (< 7)
   minitest-focus
+  minitest-mock
   minitest-reporters
   parallel (< 2.0)
   rake
