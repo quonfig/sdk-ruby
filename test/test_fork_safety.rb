@@ -792,7 +792,7 @@ class TestForkSafety < Minitest::Test
           'shapes_id' => child_reporter&.instance_variable_get(:@context_shape_aggregator)&.object_id,
           'failover_pending' => !child_failover&.drain_event.nil?,
           'summaries_pending' => !child_reporter&.instance_variable_get(:@evaluation_summaries_aggregator)
-                                  &.drain_event.nil?,
+                                                &.drain_event.nil?,
           'loader_uses_child_failover' => loader_failover&.object_id == child_failover&.object_id
         }
       end

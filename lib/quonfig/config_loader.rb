@@ -89,7 +89,7 @@ module Quonfig
       # auth-class status. A 200 the guard dropped, or a 304, never qualifies.
       def auth_rejected?
         return false unless @result == :failed
-        return false if @statuses.values.any? { |s| [200, 304].include?(s) }
+        return false if @statuses.values.intersect?([200, 304])
 
         AUTH_STATUSES.include?(primary_status)
       end

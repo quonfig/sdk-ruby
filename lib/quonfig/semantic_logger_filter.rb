@@ -75,8 +75,8 @@ module Quonfig
 
     def normalize_level(level)
       case level
-      when Symbol  then level.downcase
-      when String  then level.downcase.to_sym
+      when Symbol then level.downcase
+      when String then level.downcase.to_sym
       when Integer
         # LogLevel ints from old proto: 1=trace … 9=fatal. Best-effort map.
         case level
