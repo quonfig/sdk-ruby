@@ -105,7 +105,7 @@ GEM
     ruby-progressbar (1.13.0)
     ruby2_keywords (0.0.5)
     securerandom (0.4.1)
-    semantic_logger (4.15.0)
+    semantic_logger (5.1.0)
       concurrent-ruby (~> 1.0)
     simplecov (1.2.0)
     stringio (3.1.0)
