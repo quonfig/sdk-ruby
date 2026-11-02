@@ -26,7 +26,7 @@ end
 group :test do
   # minitest 6 drops minitest/mock, which the suite uses; a fresh resolve
   # without the lockfile would otherwise pick it up (qfg-goi1.2.11).
-  gem 'minitest', '< 6'
+  gem 'minitest', '< 7'
   gem 'minitest-focus'
   gem 'minitest-reporters'
   gem 'semantic_logger', '!= 4.16.0', require: 'semantic_logger/sync'
