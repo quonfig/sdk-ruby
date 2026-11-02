@@ -2,9 +2,9 @@
 
 source 'https://rubygems.org'
 
-gem 'concurrent-ruby', '~> 1.0', '>= 1.0.5'
+gem 'concurrent-ruby', '~> 1.3'
 gem 'faraday', '~> 1.10.5'
-gem 'listen', '~> 3.8'
+gem 'listen', '~> 3.10'
 
 gem 'activesupport', '>= 4'
 
