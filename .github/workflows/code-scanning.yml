@@ -1,0 +1,49 @@
+# Code scanning (SOC 2 evidence): full Semgrep scan of main, uploaded to the
+# Security tab. REPORT-ONLY: runs after merge, never on a PR, and is not a
+# required check, so findings on main never block other work. Public repos
+# only (both jobs skip on private repos). Copy to
+# .github/workflows/code-scanning.yml; the scan logic lives in quonfig/ci.
+name: code-scanning
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  scan:
+    uses: quonfig/ci/.github/workflows/code-scanning.yml@main
+    with:
+      upload: false
+
+  # The upload runs in this repo's own workflow (not inside the shared one) so
+  # the repo's workflow files show the SARIF upload. Skipped when the scan was
+  # skipped (private repos) or failed.
+  upload:
+    needs: scan
+    if: needs.scan.outputs.sarif-artifact != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - name: Download SARIF
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.scan.outputs.sarif-artifact }}
+          path: sarif
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: sarif/semgrep.sarif
+          category: semgrep
