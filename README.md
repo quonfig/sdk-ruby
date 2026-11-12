@@ -52,8 +52,11 @@ client.get_bool('beta-feature', context: { user: { key: 'user-123', plan: 'pro' 
 
 ### 2. `with_context` block
 
-Everything evaluated inside the block sees the supplied context. The block's
-return value is returned from `with_context`.
+With a block, `with_context` yields a `BoundClient` that carries the supplied
+context. The context applies only to calls made on that yielded client
+(`bound` below). It is not ambient: `client.get_*` or `Quonfig.get` calls inside
+the block do not see it. The block's return value is returned from
+`with_context`.
 
 ```ruby
 result = client.with_context(user: { key: 'user-123', plan: 'pro' }) do |bound|
