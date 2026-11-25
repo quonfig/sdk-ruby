@@ -319,6 +319,48 @@ class TestQf1 < Minitest::Test
     assert_raises(ArgumentError) { Qf1.open_gcm("\x00".b * 5, nonce, 'aad'.b, "\x01".b * 20) }
   end
 
+  # Line-anchor traps: names with an LF are invalid_keyset_name and NO env
+  # var is read, even by a lookup that answers every name.
+  def test_keyset_names_with_lf_are_rejected_with_no_env_read
+    entry = vectors['keysets'].find { |k| k['name'] == 'QUONFIG_KEYSET_TEST' }['envValue']
+    %W[QUONFIG_KEYSET_TEST\n HOME\nQUONFIG_KEYSET QUONFIG_KEYSET\nHOME \nQUONFIG_KEYSET].each do |name|
+      reads = []
+      env = Object.new
+      env.define_singleton_method(:[]) do |n|
+        reads << n
+        entry
+      end
+      err = assert_raises(Qf1::Error, name.inspect) { Qf1.decrypt("qf1:#{name}:b3f48931:#{'A' * 64}", env) }
+      assert_equal 'invalid_keyset_name', err.code, name.inspect
+      assert_empty reads, name.inspect
+    end
+    vectors['negative'].select { |n| n['expectedError'] == 'invalid_keyset_name' }.each do |n|
+      reads = []
+      env = Object.new
+      env.define_singleton_method(:[]) do |x|
+        reads << x
+        entry
+      end
+      assert_raises(Qf1::Error) { Qf1.decrypt(n['ciphertext'], env) }
+      assert_empty reads, n['name']
+    end
+  end
+
+  # Only space, tab, CR and LF are trimmed: every other whitespace-like
+  # character around an entry makes the keyset keyset_invalid.
+  def test_other_whitespace_around_an_env_entry_is_keyset_invalid
+    entry = vectors['keysets'].find { |k| k['name'] == 'QUONFIG_KEYSET_TEST' }['envValue']
+    chars = { 'VT' => "\v", 'FF' => "\f", 'NBSP' => "\u00a0", 'U+2028' => "\u2028", 'U+2029' => "\u2029",
+              'BOM' => "\ufeff", 'NEL' => "\u0085", 'U+3000' => "\u3000", 'ZWSP' => "\u200b", 'NUL' => "\u0000" }
+    chars.each do |label, ch|
+      ["#{ch}#{entry}", "#{entry}#{ch}", " #{ch} #{entry}"].each do |value|
+        err = assert_raises(Qf1::Error, label) { Qf1.parse_keyset_env('QUONFIG_KEYSET_TEST', value) }
+        assert_equal 'keyset_invalid', err.code, label
+      end
+    end
+    assert_equal ['b3f48931'], Qf1.parse_keyset_env('QUONFIG_KEYSET_TEST', " \t\r\n#{entry}\r\n\t ,").keys
+  end
+
   def test_held_key_inspect_never_shows_the_private_key
     ks = vectors['keysets'].find { |k| k['name'] == 'QUONFIG_KEYSET_TEST' }
     held = Qf1.parse_keyset_env(ks['name'], ks['envValue'])

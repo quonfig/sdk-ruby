@@ -85,7 +85,7 @@ module Quonfig
     def decrypt(value, env = ENV)
       parsed = parse(value)
       ensure_supported!
-      held = keyset(parsed.keyset, env[parsed.keyset], needed: parsed.fingerprint)
+      held = refused_by_openssl { keyset(parsed.keyset, env[parsed.keyset], needed: parsed.fingerprint) }
       key = held[parsed.fingerprint]
       if key.nil?
         fps = held.keys.sort
@@ -95,7 +95,7 @@ module Quonfig
                         keyset: parsed.keyset, fingerprint: parsed.fingerprint, held: fps)
       end
 
-      shared = x25519(key.pkey || key.private_key, parsed.ephemeral_public_key)
+      shared = refused_by_openssl { x25519(key.pkey || key.private_key, parsed.ephemeral_public_key) }
       if shared == ZERO32
         raise Error.new('invalid_ephemeral_key',
                         "the ephemeral key of a value on #{shown_keyset(parsed.keyset)} fingerprint #{parsed.fingerprint} " \
@@ -287,6 +287,18 @@ module Quonfig
       OpenSSL::PKey.read(PKCS8_X25519_PREFIX + scalar.b)
     end
 
+    # OpenSSL refusing an X25519 operation outright (for example a
+    # FIPS-restricted build that passed the probe's checks differently) is a
+    # runtime restriction, not a bad key entry: fail the value, say so.
+    # Only PKeyError is mapped; its text is not echoed.
+    def refused_by_openssl
+      yield
+    rescue OpenSSL::PKey::PKeyError
+      raise Error.new('unsupported_platform',
+                      'OpenSSL refused an X25519 operation in this runtime (for example a FIPS-restricted ' \
+                      'build); the key entries were not checked'), cause: nil
+    end
+
     def derivation_refusal?(error)
       error.is_a?(OpenSSL::PKey::PKeyError) && error.message.include?('failed during derivation')
     end
@@ -360,8 +372,9 @@ module Quonfig
 
       raise Error.new('unsupported_platform',
                       'reading secrets needs X25519 in OpenSSL::PKey: Ruby >= 3.1 with the openssl gem >= 3.0 ' \
-                      "on OpenSSL 1.1.1 or later (this runtime: Ruby #{RUBY_VERSION}, openssl gem " \
-                      "#{OpenSSL::VERSION}, #{OpenSSL::OPENSSL_LIBRARY_VERSION})")
+                      'on OpenSSL 1.1.1 or later, with X25519 allowed (a FIPS-restricted OpenSSL refuses it); ' \
+                      "this runtime (Ruby #{RUBY_VERSION}, openssl gem #{OpenSSL::VERSION}, " \
+                      "#{OpenSSL::OPENSSL_LIBRARY_VERSION}) cannot. The key entries were not checked")
     end
 
     def missing_detail(name, needed)

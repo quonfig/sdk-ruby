@@ -231,6 +231,23 @@ class TestSecrets < Minitest::Test
     end
   end
 
+  # R1 beats the secret path in datadir mode too: a secrets/ document whose
+  # value carries decryptWith fails with the decryptWith error even though
+  # its qf1 value would decrypt.
+  def test_decrypt_with_in_a_datadir_secret_fails_before_decrypting
+    make_workspace
+    p = positive('short-ascii')
+    write_doc('secrets', workspace_doc(KEY, 'secret', { 'type' => 'string', 'value' => p['ciphertext'],
+                                                        'confidential' => true, 'decryptWith' => 'legacy.key' }))
+    with_keysets(vectors['positiveEnv']) do
+      client = datadir_client
+      err = assert_raises(Quonfig::Errors::DecryptionError) { client.get_or_raise(KEY) }
+      assert_includes err.message, 'decryptWith'
+      assert_nil err.qf1_code
+      client.stop
+    end
+  end
+
   def test_decrypt_with_fails_even_without_confidential
     cfg = plain_config('legacy.secret', 'ct')
     cfg['default']['rules'][0]['value']['decryptWith'] = 'legacy.key'
@@ -368,6 +385,111 @@ class TestSecrets < Minitest::Test
       end
       texts.each { |t| refute_includes t.b, sentinel.b }
       refute_includes $logs.string.b, sentinel[0, 8].b
+    end
+    $logs = StringIO.new
+  end
+
+  # Authentication-failure path: none of the derived intermediates (shared
+  # secret, PRK, OKM, AES key, nonce) appear anywhere, in hex or base64.
+  def test_tampered_tag_never_leaks_derived_intermediates
+    n = vectors['negative'].find { |x| x['name'] == 'tampered-tag-byte' }
+    parsed = Qf1.parse(n['ciphertext'])
+    held = Qf1.parse_keyset_env(parsed.keyset, n['env'][parsed.keyset])[parsed.fingerprint]
+    shared = Qf1.x25519(held.private_key, parsed.ephemeral_public_key)
+    d = Qf1.derive(shared, parsed.ephemeral_public_key, held.public_key)
+    secrets = [shared, d[:prk], d[:okm], d[:key], d[:nonce], held.private_key]
+    forms = secrets.flat_map do |bytes|
+      [bytes.unpack1('H*'), bytes.unpack1('H*').upcase, [bytes].pack('m0'), Qf1.encode_base64url(bytes),
+       [bytes].pack('m0').delete('=')]
+    end
+    $logs = StringIO.new
+    with_keysets(n['env']) do
+      client = client_for(secret_config(n['ciphertext']))
+      err = assert_raises(Quonfig::Errors::DecryptionError) { client.get_or_raise(KEY) }
+      assert_equal 'decrypt_failed', err.qf1_code
+      assert_equal 'd', client.get_string(KEY, default: 'd')
+      texts = [err.message, err.inspect, err.full_message(highlight: false), Array(err.backtrace).join("\n"),
+               $logs.string]
+      cause = err.cause
+      while cause
+        texts << cause.message << cause.inspect << cause.full_message(highlight: false) << Array(cause.backtrace).join("\n")
+        cause = cause.cause
+      end
+      texts.each { |t| forms.each { |f| refute_includes t, f } }
+    end
+    $logs = StringIO.new
+  end
+
+  # The decrypted value keeps its confidential flag where the SDK exposes the
+  # value hash (Resolver results), and the details report the secret type.
+  def test_decrypted_value_keeps_its_confidential_flag
+    p = positive('short-ascii')
+    with_keysets(vectors['positiveEnv']) do
+      client = client_for(secret_config(p['ciphertext']))
+      result = client.resolver.get(KEY, Quonfig::Context.new({}))
+      assert_equal true, result.value['confidential']
+      assert_equal p['plaintext'], result.value['value']
+      details = client.get_string_details(KEY)
+      assert_equal p['plaintext'], details.value
+      assert_equal 'secret', details.flag_metadata['config_type']
+    end
+  end
+
+  # Junk in secrets/ never stops startup: each bad entry is skipped with one
+  # warning naming the path only, never its content. (configs/ on main
+  # raises for a non-JSON *.json file or one with no key; unchanged.)
+  def test_junk_in_secrets_dir_is_skipped_with_a_path_only_warning
+    make_workspace
+    write_doc('configs', workspace_doc('plain.value', 'config', { 'type' => 'string', 'value' => 'visible' }))
+    write_doc('secrets', workspace_doc(KEY, 'secret', { 'type' => 'string', 'value' => positive('short-ascii')['ciphertext'],
+                                                        'confidential' => true }))
+    dir = File.join(@workspace, 'secrets')
+    File.write(File.join(dir, 'broken.json'), "{ not json JUNKCONTENT-1 qf1-priv-#{'Q' * 43}")
+    File.write(File.join(dir, 'nokey.json'), JSON.generate({ 'value' => 'JUNKCONTENT-2' }))
+    File.write(File.join(dir, 'array.json'), JSON.generate(['JUNKCONTENT-3']))
+    File.write(File.join(dir, 'README.txt'), 'JUNKCONTENT-4')
+    FileUtils.mkdir_p(File.join(dir, 'nested'))
+    FileUtils.mkdir_p(File.join(dir, 'dir.json'))
+    warns = []
+    with_keysets(vectors['positiveEnv']) do
+      Quonfig::Datadir::LOG.stub(:warn, ->(msg = nil, &_) { warns << msg.to_s }) do
+        client = datadir_client
+        assert_equal 'visible', client.get_string('plain.value')
+        assert_equal positive('short-ascii')['plaintext'], client.get_string(KEY)
+        client.stop
+      end
+    end
+    log = warns.join("\n") + $logs.string
+    %w[broken.json nokey.json array.json dir.json].each do |f|
+      assert_equal 1, log.lines.grep(/skipping .*#{Regexp.escape(f)}/).size, "#{f}: #{log}"
+    end
+    refute_match(/JUNKCONTENT|qf1-priv-/, log)
+    refute_match(/README\.txt|nested/, log)
+    $logs = StringIO.new
+  end
+
+  # A runtime whose OpenSSL refuses X25519 (FIPS) fails per value with a
+  # message naming the restriction, never blaming the key entry.
+  def test_openssl_refusing_x25519_fails_per_value_naming_the_runtime
+    p = positive('short-ascii')
+    refuse = ->(*) { raise OpenSSL::PKey::PKeyError, 'unsupported algorithm (FIPS)' }
+    with_keysets(vectors['positiveEnv']) do
+      client = client_for(secret_config(p['ciphertext']), plain_config('plain', 'ok'))
+      saved = Qf1.instance_variable_get(:@supported)
+      [true, nil].each do |probe|
+        Qf1.instance_variable_set(:@supported, probe)
+        Qf1.clear_keyset_cache!
+        OpenSSL::PKey.stub(:read, refuse) do
+          assert_equal 'ok', client.get_string('plain')
+          err = assert_raises(Quonfig::Errors::DecryptionError) { client.get_or_raise(KEY) }
+          assert_equal 'unsupported_platform', err.qf1_code, probe.inspect
+          assert_match(/FIPS/, err.message)
+          refute_match(/entry \d|not a qf1 private key|keyset_invalid/, err.message)
+          assert_equal 'd', client.get_string(KEY, default: 'd')
+        end
+      end
+    ensure
+      Qf1.instance_variable_set(:@supported, saved)
     end
     $logs = StringIO.new
   end
