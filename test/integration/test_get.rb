@@ -6,10 +6,18 @@
 # Source: integration-test-data/generators/src/targets/ruby.ts
 # Do NOT edit by hand — changes will be overwritten.
 
+require 'digest'
 require 'test_helper'
 require 'integration/test_helpers'
 
 class TestGet < Minitest::Test
+  def qf1_test_keyset(*labels)
+    labels.map do |label|
+      digest = Digest::SHA256.digest("qf1 test vector private key: #{label}")
+      "qf1-priv-#{[digest].pack('m0').tr('+/', '-_').delete('=')}"
+    end.join(',')
+  end
+
   # get returns a found value for key
   def test_get_returns_a_found_value_for_key
     client = IntegrationTestHelpers.build_client
@@ -60,10 +68,12 @@ class TestGet < Minitest::Test
 
   # can return a value provided by an environment variable
   def test_can_return_a_value_provided_by_an_environment_variable
-    client = IntegrationTestHelpers.build_client
-    actual = client.get_string('prefab.secrets.encryption.key')
-    assert_equal 'c87ba22d8662282abe8a0e4651327b579cb64a454ab0f4c170b45b15f049a221', actual, 'client.get_string(prefab.secrets.encryption.key)'
-    IntegrationTestHelpers.acknowledge_expected_warnings
+    IntegrationTestHelpers.with_env({ 'GREETING' => 'hello from the environment' }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('greeting.from.env')
+      assert_equal 'hello from the environment', actual, 'client.get_string(greeting.from.env)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
   end
 
   # can return a value provided by an environment variable after type coercion
@@ -74,19 +84,189 @@ class TestGet < Minitest::Test
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
-  # can decrypt and return a secret value (with decryption key in in env var)
-  def test_can_decrypt_and_return_a_secret_value_with_decryption_key_in_in_env_var
+  # decrypts a qf1 secret
+  def test_decrypts_a_qf1_secret
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.short')
+      assert_equal 'hello', actual, 'client.get_string(qf1.secret.short)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # decrypts a qf1 secret whose value is the empty string
+  def test_decrypts_a_qf1_secret_whose_value_is_the_empty_string
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.empty')
+      assert_equal '', actual, 'client.get_string(qf1.secret.empty)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # decrypts a qf1 secret with multi-byte UTF-8
+  def test_decrypts_a_qf1_secret_with_multi_byte_utf_8
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.multibyte')
+      assert_equal 'pässwörd 日本語 🔑', actual, 'client.get_string(qf1.secret.multibyte)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # decrypts a qf1 secret and keeps its leading U+FEFF
+  def test_decrypts_a_qf1_secret_and_keeps_its_leading_u_feff
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.leading.bom')
+      assert_equal "\ufeffbom stays", actual, 'client.get_string(qf1.secret.leading.bom)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # decrypts a qf1 secret with quotes, backslash, newline, tab and colons
+  def test_decrypts_a_qf1_secret_with_quotes_backslash_newline_tab_and_colons
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.json.special')
+      assert_equal "a\"b\\c\nd\te:f,g qf1:x", actual, 'client.get_string(qf1.secret.json.special)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # decrypts a qf1 secret on the bare QUONFIG_KEYSET keyset
+  def test_decrypts_a_qf1_secret_on_the_bare_quonfig_keyset_keyset
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.default.keyset')
+      assert_equal 'sk_test_default_keyset_value', actual, 'client.get_string(qf1.secret.default.keyset)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # decrypts a qf1 secret encrypted to the second key of a two-key keyset
+  def test_decrypts_a_qf1_secret_encrypted_to_the_second_key_of_a_two_key_keyset
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.older.key')
+      assert_equal 'written before rotation', actual, 'client.get_string(qf1.secret.older.key)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # decrypts the environment-scoped value of a qf1 secret on a second keyset
+  def test_decrypts_the_environment_scoped_value_of_a_qf1_secret_on_a_second_keyset
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.env.scoped')
+      assert_equal 'written with the first public key', actual, 'client.get_string(qf1.secret.env.scoped)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # a qf1 secret shadows a document with the same key in configs
+  def test_a_qf1_secret_shadows_a_document_with_the_same_key_in_configs
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.shadowed')
+      assert_equal 'hello', actual, 'client.get_string(qf1.secret.shadowed)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # qf1 secret on a keyset the environment does not hold returns the default
+  def test_qf1_secret_on_a_keyset_the_environment_does_not_hold_returns_the_default
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.keyset.missing', default: 'DEFAULT')
+      assert_equal 'DEFAULT', actual, 'client.get_string(qf1.secret.keyset.missing, default: DEFAULT)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # qf1 secret on a keyset the environment does not hold with no default returns nil
+  def test_qf1_secret_on_a_keyset_the_environment_does_not_hold_with_no_default_returns_nil
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :return_nil)
+      actual = client.get_string('qf1.secret.keyset.missing')
+      assert_nil actual, 'client.get_string(qf1.secret.keyset.missing)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # qf1 secret whose fingerprint is not held returns the default
+  def test_qf1_secret_whose_fingerprint_is_not_held_returns_the_default
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.key.not.held', default: 'DEFAULT')
+      assert_equal 'DEFAULT', actual, 'client.get_string(qf1.secret.key.not.held, default: DEFAULT)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # qf1 secret is looked up by keyset and fingerprint, never in another keyset
+  def test_qf1_secret_is_looked_up_by_keyset_and_fingerprint_never_in_another_keyset
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.cross.keyset', default: 'DEFAULT')
+      assert_equal 'DEFAULT', actual, 'client.get_string(qf1.secret.cross.keyset, default: DEFAULT)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # qf1 secret with a tampered header returns the default
+  def test_qf1_secret_with_a_tampered_header_returns_the_default
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.tampered.header', default: 'DEFAULT')
+      assert_equal 'DEFAULT', actual, 'client.get_string(qf1.secret.tampered.header, default: DEFAULT)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # qf1 secret whose keyset name is invalid is refused even when that env var holds its key
+  def test_qf1_secret_whose_keyset_name_is_invalid_is_refused_even_when_that_env_var_holds_its_key
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.keyset.name.invalid', default: 'DEFAULT')
+      assert_equal 'DEFAULT', actual, 'client.get_string(qf1.secret.keyset.name.invalid, default: DEFAULT)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # qf1 secret with a trailing colon is refused
+  def test_qf1_secret_with_a_trailing_colon_is_refused
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.trailing.colon', default: 'DEFAULT')
+      assert_equal 'DEFAULT', actual, 'client.get_string(qf1.secret.trailing.colon, default: DEFAULT)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # qf1 secret whose ephemeral key gives an all-zero shared secret is refused
+  def test_qf1_secret_whose_ephemeral_key_gives_an_all_zero_shared_secret_is_refused
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.low.order.ephemeral', default: 'DEFAULT')
+      assert_equal 'DEFAULT', actual, 'client.get_string(qf1.secret.low.order.ephemeral, default: DEFAULT)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # a value that still carries decryptWith returns the default
+  def test_a_value_that_still_carries_decryptwith_returns_the_default
     client = IntegrationTestHelpers.build_client
-    actual = client.get_string('a.secret.config')
-    assert_equal 'hello.world', actual, 'client.get_string(a.secret.config)'
+    actual = client.get_string('qf1.legacy.decrypt.with', default: 'DEFAULT')
+    assert_equal 'DEFAULT', actual, 'client.get_string(qf1.legacy.decrypt.with, default: DEFAULT)'
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
-  # decrypts a secret whose key config has an environment rule
-  def test_decrypts_a_secret_whose_key_config_has_an_environment_rule
-    client = IntegrationTestHelpers.build_client
-    actual = client.get_string('env.scoped.secret')
-    assert_equal 'hello.world', actual, 'client.get_string(env.scoped.secret)'
+  # a value that still carries decryptWith with no default returns nil
+  def test_a_value_that_still_carries_decryptwith_with_no_default_returns_nil
+    client = IntegrationTestHelpers.build_client(on_no_default: :return_nil)
+    actual = client.get_string('qf1.legacy.decrypt.with')
+    assert_nil actual, 'client.get_string(qf1.legacy.decrypt.with)'
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
@@ -1394,18 +1574,22 @@ class TestGet < Minitest::Test
 
   # STRING getter on a decryption failure returns the default
   def test_string_getter_on_a_decryption_failure_returns_the_default
-    client = IntegrationTestHelpers.build_client
-    actual = client.get_string('a.broken.secret.config', default: 'DEFAULT')
-    assert_equal 'DEFAULT', actual, 'client.get_string(a.broken.secret.config, default: DEFAULT)'
-    IntegrationTestHelpers.acknowledge_expected_warnings
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.get_string('qf1.secret.key.not.held', default: 'DEFAULT')
+      assert_equal 'DEFAULT', actual, 'client.get_string(qf1.secret.key.not.held, default: DEFAULT)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
   end
 
   # STRING getter on a decryption failure with no default returns nil
   def test_string_getter_on_a_decryption_failure_with_no_default_returns_nil
-    client = IntegrationTestHelpers.build_client(on_no_default: :return_nil)
-    actual = client.get_string('a.broken.secret.config')
-    assert_nil actual, 'client.get_string(a.broken.secret.config)'
-    IntegrationTestHelpers.acknowledge_expected_warnings
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :return_nil)
+      actual = client.get_string('qf1.secret.key.not.held')
+      assert_nil actual, 'client.get_string(qf1.secret.key.not.held)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
   end
 
   # BOOLEAN getter on a missing bool env var returns the default

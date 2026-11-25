@@ -6,10 +6,18 @@
 # Source: integration-test-data/generators/src/targets/ruby.ts
 # Do NOT edit by hand — changes will be overwritten.
 
+require 'digest'
 require 'test_helper'
 require 'integration/test_helpers'
 
 class TestTelemetry < Minitest::Test
+  def qf1_test_keyset(*labels)
+    labels.map do |label|
+      digest = Digest::SHA256.digest("qf1 test vector private key: #{label}")
+      "qf1-priv-#{[digest].pack('m0').tr('+/', '-_').delete('=')}"
+    end.join(',')
+  end
+
   # Matches a telemetry selectedValue of exactly { 'string' => '*****<5 hex>' }:
   # the redaction shape, without pinning the hash input (YAML
   # `selected_value: { redacted: true }`).
@@ -320,17 +328,19 @@ class TestTelemetry < Minitest::Test
     sink&.stop
   end
 
-  # confidential encrypted string is redacted using ciphertext hash
-  def test_confidential_encrypted_string_is_redacted_using_ciphertext_hash
-    sink = IntegrationTestHelpers::TelemetrySink.start
-    client = IntegrationTestHelpers.build_telemetry_client(sink)
-    returned = Hash.new { |h, k| h[k] = [] }
-    returned['a.secret.config'] << client.get_or_raise('a.secret.config')
-    IntegrationTestHelpers.assert_telemetry_post(self, client, sink, :evaluation_summary, [{ 'key' => 'a.secret.config', 'type' => 'CONFIG', 'value' => 'hello.world', 'value_type' => 'string', 'count' => 1, 'reason' => 1, 'selected_value' => { 'string' => '*****936c9' }, 'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0 } }],
-                                                 endpoint: '/api/v1/telemetry', returned: returned)
-  ensure
-    client&.stop
-    sink&.stop
+  # qf1 secret is redacted using the ciphertext hash and reported as a secret
+  def test_qf1_secret_is_redacted_using_the_ciphertext_hash_and_reported_as_a_secret
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      sink = IntegrationTestHelpers::TelemetrySink.start
+      client = IntegrationTestHelpers.build_telemetry_client(sink)
+      returned = Hash.new { |h, k| h[k] = [] }
+      returned['qf1.secret.short'] << client.get_or_raise('qf1.secret.short')
+      IntegrationTestHelpers.assert_telemetry_post(self, client, sink, :evaluation_summary, [{ 'key' => 'qf1.secret.short', 'type' => 'SECRET', 'value' => 'hello', 'value_type' => 'string', 'count' => 1, 'reason' => 1, 'selected_value' => { 'string' => '*****73985' }, 'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0 } }],
+                                                   endpoint: '/api/v1/telemetry', returned: returned)
+    ensure
+      client&.stop
+      sink&.stop
+    end
   end
 
   # confidential weighted variant is redacted in selectedValue
@@ -367,6 +377,20 @@ class TestTelemetry < Minitest::Test
     returned = Hash.new { |h, k| h[k] = [] }
     returned['provided.a.number'] << client.get_or_raise('provided.a.number')
     IntegrationTestHelpers.assert_telemetry_post(self, client, sink, :evaluation_summary, [{ 'key' => 'provided.a.number', 'type' => 'CONFIG', 'value' => 1234, 'value_type' => 'int', 'count' => 1, 'reason' => 1, 'selected_value' => { 'int' => 1234 }, 'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0 } }],
+                                                 endpoint: '/api/v1/telemetry', returned: returned)
+  ensure
+    client&.stop
+    sink&.stop
+  end
+
+  # weighted ENV_VAR variant is reported as its resolved value with reason SPLIT
+  def test_weighted_env_var_variant_is_reported_as_its_resolved_value_with_reason_split
+    sink = IntegrationTestHelpers::TelemetrySink.start
+    client = IntegrationTestHelpers.build_telemetry_client(sink)
+    returned = Hash.new { |h, k| h[k] = [] }
+    scope = client.with_context({ 'user' => { 'tracking_id' => '92a202f2' } })
+    returned['weighted.variant.provided.int'] << scope.get_or_raise('weighted.variant.provided.int')
+    IntegrationTestHelpers.assert_telemetry_post(self, client, sink, :evaluation_summary, [{ 'key' => 'weighted.variant.provided.int', 'type' => 'CONFIG', 'value' => 1234, 'value_type' => 'int', 'count' => 1, 'reason' => 3, 'selected_value' => { 'int' => 1234 }, 'summary' => { 'config_row_index' => 0, 'conditional_value_index' => 0, 'weighted_value_index' => 0 } }],
                                                  endpoint: '/api/v1/telemetry', returned: returned)
   ensure
     client&.stop

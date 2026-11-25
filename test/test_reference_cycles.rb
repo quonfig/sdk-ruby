@@ -7,7 +7,8 @@ require 'test_helper'
 # Semantics match sdk-go (qfg-9dxb.4):
 # - IN_SEG / NOT_IN_SEG cycle -> treated as a MISSING segment
 #   (IN_SEG false, NOT_IN_SEG true).
-# - decryptWith cycle -> a decryption error, like any other decryption failure.
+# - decryptWith is no longer read (qfg-8seuf.11, spec 13.3 R1): a value that
+#   carries it fails at once, so a decryptWith "cycle" cannot recurse at all.
 class TestReferenceCycles < Minitest::Test
   def config(key, rules, value_type: 'string')
     {
@@ -86,7 +87,7 @@ class TestReferenceCycles < Minitest::Test
     key = confidential('key.a', 'key.a')
     secret = confidential('the.secret', 'key.a')
     err = assert_raises(Quonfig::Errors::DecryptionError) { resolver_for(key, secret).get('the.secret', {}) }
-    assert_match(/cycle/, err.message)
+    assert_match(/decryptWith/, err.message)
   end
 
   def test_decrypt_with_two_hop_cycle_raises_decryption_error
@@ -94,6 +95,6 @@ class TestReferenceCycles < Minitest::Test
     b = confidential('key.b', 'key.a')
     secret = confidential('the.secret', 'key.a')
     err = assert_raises(Quonfig::Errors::DecryptionError) { resolver_for(a, b, secret).get('the.secret', {}) }
-    assert_match(/cycle/, err.message)
+    assert_match(/decryptWith/, err.message)
   end
 end

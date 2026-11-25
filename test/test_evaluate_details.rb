@@ -169,16 +169,16 @@ class TestEvaluateDetails < Minitest::Test
   end
 
   def test_decrypted_secret_returns_plaintext
-    secret_key = '0' * 64
-    ciphertext = Quonfig::Encryption.new(secret_key).encrypt('hello.world')
-    key_cfg = config(key: 'eval.details.key', type: 'string',
-                     rules: [rule({ 'type' => 'string', 'value' => secret_key })])
+    keyset = 'QUONFIG_KEYSET_EVAL_DETAILS_TEST'
+    ciphertext = Qf1TestSecret.seal(keyset, 'eval-details', 'hello.world')
     secret_cfg = config(type: 'string', rules: [rule({ 'type' => 'string', 'value' => ciphertext,
-                                                       'confidential' => true,
-                                                       'decryptWith' => 'eval.details.key' })])
-    details = client_for(key_cfg, secret_cfg).evaluate_details(KEY)
-    assert_equal 'hello.world', details.value
-    assert_equal Details::REASON_STATIC, details.reason
+                                                       'confidential' => true })])
+    secret_cfg['type'] = 'secret'
+    with_env(keyset, Qf1TestSecret.private_entry('eval-details')) do
+      details = client_for(secret_cfg).evaluate_details(KEY)
+      assert_equal 'hello.world', details.value
+      assert_equal Details::REASON_STATIC, details.reason
+    end
   end
 
   # ---- missing key -------------------------------------------------------

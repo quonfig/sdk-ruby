@@ -12,6 +12,7 @@ module Quonfig
   #   <datadir>/feature-flags/*.json
   #   <datadir>/segments/*.json
   #   <datadir>/log-levels/*.json
+  #   <datadir>/secrets/*.json   (qf1 secrets, loaded LAST)
   #
   # schemas/ is intentionally excluded — those files are raw JSON Schema
   # documents, not Configs, and SDKs do not consume them (qfg-uzsl).
@@ -20,7 +21,11 @@ module Quonfig
   # it down to the ConfigResponse shape that the SSE/HTTP delivery path emits,
   # so ConfigStore consumes both transports uniformly.
   module Datadir
-    CONFIG_SUBDIRS = %w[configs feature-flags segments log-levels].freeze
+    # secrets/ MUST stay last (spec 13.7): the store is a map by key and the
+    # last write wins, so a secret shadows a same-key document in configs/.
+    CONFIG_SUBDIRS = %w[configs feature-flags segments log-levels secrets].freeze
+    SECRETS_SUBDIR = 'secrets'
+    LOG = Quonfig::InternalLogger.new(self)
 
     module_function
 
@@ -42,9 +47,11 @@ module Quonfig
           # Always read as UTF-8: under LANG unset / LANG=C the process
           # default is US-ASCII and JSON.parse would raise on any non-ASCII
           # byte (qfg-goi1.2.11 / qfg-xy92).
-          raw = JSON.parse(File.read(path, encoding: 'UTF-8'))
-          raise ArgumentError, "[quonfig] config has empty key — file is not a Quonfig Config: #{path}" if raw['key'].nil? || raw['key'].to_s.empty?
+          raw = subdir == SECRETS_SUBDIR ? read_secret_document(path) : read_document(path)
+          next if raw.nil?
 
+          # The directory, not the stored type, makes a document a secret.
+          raw['type'] = 'secret' if subdir == SECRETS_SUBDIR
           coerce_numeric_values(raw)
           configs << to_config_response(raw, env_id)
         end
@@ -56,6 +63,29 @@ module Quonfig
         configs: Quonfig::ConfigShape.filter(configs, version: version),
         meta: { 'version' => version, 'environment' => env_id }
       )
+    end
+
+    def read_document(path)
+      raw = JSON.parse(File.read(path, encoding: 'UTF-8'))
+      raise ArgumentError, "[quonfig] config has empty key — file is not a Quonfig Config: #{path}" if raw['key'].nil? || raw['key'].to_s.empty?
+
+      raw
+    end
+
+    # A file in secrets/ that is not a secret document (not JSON, not an
+    # object, no key, a directory named *.json) is skipped with one warning
+    # that names the path only: never the content, which may be key
+    # material. One bad file never stops startup.
+    def read_secret_document(path)
+      raw = JSON.parse(File.read(path, encoding: 'UTF-8'))
+      return raw if raw.is_a?(Hash) && raw['key'].is_a?(String) && !raw['key'].empty?
+
+      LOG.warn "[quonfig] skipping #{path}: not a secret document (no key)"
+      nil
+    rescue JSON::ParserError, EncodingError, SystemCallError, IOError
+      # The exception text can quote the file's content; it is not logged.
+      LOG.warn "[quonfig] skipping #{path}: not a readable JSON secret document"
+      nil
     end
 
     # Convenience: load the envelope and populate a fresh ConfigStore.

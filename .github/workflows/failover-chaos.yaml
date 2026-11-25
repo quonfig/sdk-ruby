@@ -68,7 +68,9 @@ jobs:
           # qfg-7h5d.1.14: the parallel-failover hedge makes these green.
           # v2026.10.21.1 (the unit pin, qfg-6vno.7) adds the f01/f04 rule
           # that a boot the secondary rescues logs no init WARN or ERROR.
-          ref: v2026.10.26
+          # TEMPORARY (qfg-8seuf.11): commit 2e5b948 carries the qf1 cases; move
+          # to the ITD tag that includes it before merge.
+          ref: 2e5b948b09f38922824a96bce94b746a8ce3e655
 
       - name: Checkout api-delivery
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

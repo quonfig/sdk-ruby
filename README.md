@@ -252,10 +252,66 @@ is meaningfully too slow for your use case.
 See the [open-source / local how-to](https://docs.quonfig.com/docs/how-tos/open-source-local)
 for the cross-SDK story (sdk-node, sdk-go, sdk-ruby, sdk-python, sdk-java).
 
+## Secrets
+
+Secrets live in your workspace's `secrets/` directory as qf1 values
+(`qf1:<KEYSET>:<fingerprint>:<payload>`), encrypted to a public key with
+X25519, HKDF-SHA256 and AES-256-GCM. You create and change them with the
+`qfg` CLI; the SDK only decrypts. Read one like any string config:
+
+```ruby
+client.get_string('stripe.webhook.secret')
+```
+
+The private keys come from the environment variable named by the value's
+keyset, for example `QUONFIG_KEYSET` or `QUONFIG_KEYSET_PROD` (names match
+`^QUONFIG_KEYSET(_[A-Z0-9]+)*$`). It holds one or more `qf1-priv-...` entries
+separated by commas; spaces, tabs and newlines around an entry are ignored.
+The SDK finds the key by keyset name and fingerprint and never tries keys one
+after another, and it never reads any other variable for a secret.
+
+- **Decryption is lazy, per value.** Startup never reads a keyset. A missing
+  or unparseable keyset, or a key this runtime does not hold, fails only the
+  secrets that need it, with `Quonfig::Errors::DecryptionError` (so a typed
+  getter with a `default:` returns the default, as for any decryption
+  failure). The message names the config key, the qf1 error class (for
+  example `qf1 key_not_held`), the keyset and the fingerprints held and
+  needed; it never contains key material, the keyset's value or the secret.
+  An invalid keyset name is reported by its length, never quoted. Detect the
+  failure by class (`DecryptionError`) and `DecryptionError#qf1_code` (the
+  class name, or `nil` for a `decryptWith` value), not by parsing the text.
+- **Datadir mode** reads `secrets/` after the other directories, so a secret
+  replaces a document with the same key in `configs/`. A file in `secrets/`
+  that is not a secret document (not JSON, no key) is skipped with one
+  warning naming its path, never its content.
+- **Telemetry** reports secret evaluations with type `secret` and the value
+  redacted (`*****` plus a short hash of the stored ciphertext), never the
+  plaintext.
+- **The old format is not read.** A value that still carries `decryptWith`
+  (the old `ct--iv--tag` format keyed by a config; any non-empty value of
+  the field, whatever its type) fails with `DecryptionError` instead of being
+  returned, and no key config is read. Move it to `secrets/` with the
+  CLI. `Quonfig::Encryption` is deprecated and unused by the SDK.
+- **Platform.** X25519 needs Ruby 3.1+ with the openssl gem 3.0+ on OpenSSL
+  1.1.1 or later; this gem requires Ruby 3.2. On a build without X25519
+  (LibreSSL, an old openssl gem) the SDK still loads and serves every other
+  config; the first secret read fails with a `DecryptionError` naming the
+  requirement (`qf1 unsupported_platform`). The same applies when OpenSSL
+  refuses X25519 at run time, for example in FIPS mode: each secret read
+  fails, and the message names the runtime restriction, not your keys.
+
+Older SDKs do not read secrets. Over the wire, an older SDK returns the raw
+`qf1:` string as the value. In datadir mode an older SDK never opens
+`secrets/`: a key that exists only there is missing (your default applies),
+and a key that still has a copy in `configs/` serves that old copy. Upgrade
+every backend service that reads a secret, in either mode, before you create
+or migrate it.
+
 ## Environment variables
 
 | Variable                    | Purpose                                                                                  |
 |-----------------------------|------------------------------------------------------------------------------------------|
+| `QUONFIG_KEYSET*`           | Private keys of a secrets keyset (`qf1-priv-...`, comma-separated), read only when a secret on that keyset is read. See [Secrets](#secrets). |
 | `QUONFIG_BACKEND_SDK_KEY`   | SDK key used to authenticate against the Quonfig API. Used when `sdk_key:` is omitted.   |
 | `QUONFIG_DIR`               | Path to a workspace directory. When set, the SDK runs in datadir/offline mode.           |
 | `QUONFIG_ENVIRONMENT`       | Environment name (`production`, `staging`, `development`) evaluated in datadir mode.     |

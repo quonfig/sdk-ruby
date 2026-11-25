@@ -29,7 +29,9 @@ jobs:
           # Pinned to a tag (not main) so a typo in shared YAML can't
           # break every SDK's CI at once. Bump to a newer tag when
           # adopting new test cases. See integration-test-data/RELEASING.md.
-          ref: v2026.10.26
+          # TEMPORARY (qfg-8seuf.11): commit 2e5b948 carries the qf1 cases; move
+          # to the ITD tag that includes it before merge.
+          ref: 2e5b948b09f38922824a96bce94b746a8ce3e655
 
       # Every workflow's integration-test-data checkout (this one, release,
       # chaos, failover-chaos) must pin the same ref (qfg-6vno.7).

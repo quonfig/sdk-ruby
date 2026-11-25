@@ -171,4 +171,45 @@ class TestGetWeightedValues < Minitest::Test
                  'expected values seen over 200 evaluations'
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
+
+  # weighted json variant returns the json object
+  def test_weighted_json_variant_returns_the_json_object
+    client = IntegrationTestHelpers.build_client
+    actual = client.get_json('weighted.variant.json', context: { 'user' => { 'tracking_id' => '92a202f2' } })
+    assert_equal({ 'variant' => 'json', 'n' => 1 }, actual, 'client.get_json(weighted.variant.json, context: { user => { tracking_id => 92a202f2 } })')
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # weighted duration variant returns the duration
+  def test_weighted_duration_variant_returns_the_duration
+    client = IntegrationTestHelpers.build_client
+    actual = client.get_duration('weighted.variant.duration', context: { 'user' => { 'tracking_id' => '92a202f2' } })
+    assert_kind_of Integer, actual, 'client.get_duration(weighted.variant.duration, context: { user => { tracking_id => 92a202f2 } })'
+    assert_equal 90_000, actual, 'client.get_duration(weighted.variant.duration, context: { user => { tracking_id => 92a202f2 } })'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # weighted ENV_VAR variant reads the env var coerced to int
+  def test_weighted_env_var_variant_reads_the_env_var_coerced_to_int
+    client = IntegrationTestHelpers.build_client
+    actual = client.get_int('weighted.variant.provided.int', context: { 'user' => { 'tracking_id' => '92a202f2' } })
+    assert_equal 1234, actual, 'client.get_int(weighted.variant.provided.int, context: { user => { tracking_id => 92a202f2 } })'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # weighted ENV_VAR variant with a missing env var returns the default
+  def test_weighted_env_var_variant_with_a_missing_env_var_returns_the_default
+    client = IntegrationTestHelpers.build_client
+    actual = client.get_string('weighted.variant.provided.missing', default: 'DEFAULT', context: { 'user' => { 'tracking_id' => '92a202f2' } })
+    assert_equal 'DEFAULT', actual, 'client.get_string(weighted.variant.provided.missing, default: DEFAULT, context: { user => { tracking_id => 92a202f2 } })'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # weighted ENV_VAR variant with a missing env var and no default returns nil
+  def test_weighted_env_var_variant_with_a_missing_env_var_and_no_default_returns_nil
+    client = IntegrationTestHelpers.build_client(on_no_default: :return_nil)
+    actual = client.get_string('weighted.variant.provided.missing', context: { 'user' => { 'tracking_id' => '92a202f2' } })
+    assert_nil actual, 'client.get_string(weighted.variant.provided.missing, context: { user => { tracking_id => 92a202f2 } })'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
 end
