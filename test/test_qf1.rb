@@ -15,18 +15,10 @@ require 'openssl'
 # keyEntryCases[]. publicKeyEntry cases and writerCases[] are writer/verify
 # rules this SDK does not implement (it never encrypts).
 class TestQf1 < Minitest::Test
-  VECTORS_PATH = File.expand_path('../../integration-test-data/tests/secrets/qf1-vectors.json', __dir__)
   Qf1 = Quonfig::Qf1
 
   def self.vectors
-    @vectors ||= begin
-      unless File.exist?(VECTORS_PATH)
-        raise "[qf1 tests] vectors not found at #{VECTORS_PATH}: clone quonfig/integration-test-data " \
-              'as a sibling of sdk-ruby (CI checks it out there).'
-      end
-
-      JSON.parse(File.read(VECTORS_PATH, encoding: 'UTF-8'))
-    end
+    Qf1Vectors.load
   end
 
   def vectors
@@ -274,13 +266,66 @@ class TestQf1 < Minitest::Test
     assert_equal [p['keyset']], reads.uniq
   end
 
-  def test_invalid_keyset_name_quote_is_truncated_and_escaped
-    name = "QUONFIG_KEYSET_#{'x' * 80}\u0007"
-    value = "qf1:#{name}:b3f48931:#{'A' * 64}"
-    err = assert_raises(Qf1::Error) { Qf1.parse(value) }
+  # An invalid keyset name is never quoted (a pasted key or plaintext there
+  # would reach logs): only its length is reported.
+  def test_invalid_keyset_name_is_reported_by_length_only
+    pasted = "qf1-priv-#{'Z' * 43}"
+    err = assert_raises(Qf1::Error) { Qf1.parse("qf1:#{pasted}:b3f48931:#{'A' * 64}") }
     assert_equal 'invalid_keyset_name', err.code
-    refute_includes err.message, "\u0007"
-    refute_includes err.message, 'x' * 60
+    refute_includes err.message, pasted
+    refute_includes err.message, 'Z' * 8
+    assert_includes err.message, "(#{pasted.bytesize} bytes)"
+    assert_nil err.keyset
+  end
+
+  # A valid keyset name is truncated to 64 characters wherever it is echoed.
+  def test_valid_keyset_name_is_truncated_to_64_characters
+    name = "QUONFIG_KEYSET_#{'A' * 100}"
+    err = assert_raises(Qf1::Error) { Qf1.decrypt("qf1:#{name}:b3f48931:#{'A' * 64}", {}) }
+    assert_equal 'keyset_missing', err.code
+    refute_includes err.message, name
+    assert_includes err.message, "#{name[0, 64]}..."
+  end
+
+  # Spec 3.5 step 1: only qf<N> with N a positive integer without a leading
+  # zero is unsupported_version.
+  def test_qf0_and_qf01_are_malformed
+    %w[qf0 qf01 qf00 qf].each do |v|
+      err = assert_raises(Qf1::Error) { Qf1.parse("#{v}:QUONFIG_KEYSET:b3f48931:#{'A' * 64}") }
+      assert_equal 'malformed', err.code, v
+    end
+    %w[qf2 qf10 qf99].each do |v|
+      err = assert_raises(Qf1::Error) { Qf1.parse("#{v}:QUONFIG_KEYSET:b3f48931:#{'A' * 64}") }
+      assert_equal 'unsupported_version', err.code, v
+    end
+  end
+
+  # Spec 3.5 order: the keyset name (step 3) is checked before the
+  # fingerprint (step 4) and the payload (step 5).
+  def test_parse_order_keyset_name_before_fingerprint_and_payload
+    err = assert_raises(Qf1::Error) { Qf1.parse('qf1:HOME:NOTHEX:***') }
+    assert_equal 'invalid_keyset_name', err.code
+    err = assert_raises(Qf1::Error) { Qf1.parse('qf1:QUONFIG_KEYSET:NOTHEX:***') }
+    assert_equal 'malformed', err.code
+    assert_includes err.message, 'fingerprint'
+  end
+
+  # Narrow rescues: only GCM's CipherError means decrypt_failed (nil from
+  # open_gcm); a wrong-length key is a bug and propagates.
+  def test_only_cipher_errors_map_to_decrypt_failed
+    key = "\x00".b * 32
+    nonce = "\x00".b * 12
+    assert_nil Qf1.open_gcm(key, nonce, 'aad'.b, "\x01".b * 20)
+    assert_raises(ArgumentError) { Qf1.open_gcm("\x00".b * 5, nonce, 'aad'.b, "\x01".b * 20) }
+  end
+
+  def test_held_key_inspect_never_shows_the_private_key
+    ks = vectors['keysets'].find { |k| k['name'] == 'QUONFIG_KEYSET_TEST' }
+    held = Qf1.parse_keyset_env(ks['name'], ks['envValue'])
+    text = "#{held.inspect} #{held.values.first}"
+    assert_includes text, ks['keys'][0]['fingerprint']
+    refute_includes text, ks['keys'][0]['privateKeyHex'][0, 16]
+    refute_includes text.b, Qf1.parse_private_key_entry(ks['keys'][0]['privateKeyEntry'])
   end
 
   def test_non_string_value_is_malformed

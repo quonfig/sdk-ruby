@@ -37,7 +37,15 @@ module Quonfig
       end
     end
 
-    HeldKey = Struct.new(:private_key, :public_key)
+    # +pkey+ is the parsed OpenSSL key, kept with the cached keyset so a read
+    # does not re-parse the DER each time.
+    HeldKey = Struct.new(:private_key, :public_key, :pkey) do
+      # Never print the private key.
+      def inspect
+        "#<Quonfig::Qf1::HeldKey fingerprint=#{Quonfig::Qf1.fingerprint(public_key)}>"
+      end
+      alias_method :to_s, :inspect
+    end
     Parsed = Struct.new(:keyset, :fingerprint, :ephemeral_public_key, :ciphertext_and_tag, :aad)
 
     HKDF_INFO = 'quonfig.com/qf1/X25519'.b.freeze
@@ -82,15 +90,15 @@ module Quonfig
       if key.nil?
         fps = held.keys.sort
         raise Error.new('key_not_held',
-                        "value is encrypted to #{parsed.keyset} fingerprint #{parsed.fingerprint}; " \
-                        "this runtime holds #{parsed.keyset} fingerprints [#{fps.join(', ')}]",
+                        "value is encrypted to #{shown_keyset(parsed.keyset)} fingerprint #{parsed.fingerprint}; " \
+                        "this runtime holds #{shown_keyset(parsed.keyset)} fingerprints [#{fps.join(', ')}]",
                         keyset: parsed.keyset, fingerprint: parsed.fingerprint, held: fps)
       end
 
-      shared = x25519(key.private_key, parsed.ephemeral_public_key)
+      shared = x25519(key.pkey || key.private_key, parsed.ephemeral_public_key)
       if shared == ZERO32
         raise Error.new('invalid_ephemeral_key',
-                        "the ephemeral key of a value on #{parsed.keyset} fingerprint #{parsed.fingerprint} " \
+                        "the ephemeral key of a value on #{shown_keyset(parsed.keyset)} fingerprint #{parsed.fingerprint} " \
                         'gives an all-zero shared secret', keyset: parsed.keyset, fingerprint: parsed.fingerprint)
       end
 
@@ -98,7 +106,7 @@ module Quonfig
       plaintext = open_gcm(derived[:key], derived[:nonce], parsed.aad, parsed.ciphertext_and_tag)
       if plaintext.nil?
         raise Error.new('decrypt_failed',
-                        "authentication failed for a value on #{parsed.keyset} fingerprint #{parsed.fingerprint}",
+                        "authentication failed for a value on #{shown_keyset(parsed.keyset)} fingerprint #{parsed.fingerprint}",
                         keyset: parsed.keyset, fingerprint: parsed.fingerprint)
       end
 
@@ -106,7 +114,7 @@ module Quonfig
       plaintext.force_encoding(Encoding::UTF_8)
       unless plaintext.valid_encoding?
         raise Error.new('decrypt_failed',
-                        "the value on #{parsed.keyset} fingerprint #{parsed.fingerprint} is not valid UTF-8",
+                        "the value on #{shown_keyset(parsed.keyset)} fingerprint #{parsed.fingerprint} is not valid UTF-8",
                         keyset: parsed.keyset, fingerprint: parsed.fingerprint)
       end
 
@@ -130,8 +138,10 @@ module Quonfig
 
       _version, keyset_name, fp, payload_text = fields
       unless keyset_name.match?(KEYSET_NAME_RE)
+        # Never quote it: a writer-controlled field may hold a pasted key or
+        # plaintext, and this text reaches logs.
         raise Error.new('invalid_keyset_name',
-                        "keyset name #{quote_untrusted(keyset_name)} does not match #{KEYSET_NAME_PATTERN}")
+                        "keyset name (#{keyset_name.bytesize} bytes) does not match #{KEYSET_NAME_PATTERN}")
       end
       raise Error.new('malformed', 'fingerprint is not 8 lowercase hex characters') unless fp.match?(FINGERPRINT_RE)
 
@@ -170,6 +180,10 @@ module Quonfig
       @keyset_cache_mutex.synchronize { @keyset_cache.clear }
     end
 
+    def keyset_cache_size
+      @keyset_cache_mutex.synchronize { @keyset_cache.size }
+    end
+
     # Parse a keyset env var value (nil = unset) into fingerprint => HeldKey.
     def parse_keyset_env(name, value, needed: nil)
       raise Error.new('keyset_missing', missing_detail(name, needed), keyset: name) if value.nil?
@@ -177,7 +191,7 @@ module Quonfig
       pieces = value.to_s.b.split(',', -1)
                     .map { |piece| piece.sub(ENV_TRIM_LEADING_RE, '').sub(ENV_TRIM_TRAILING_RE, '') }
                     .reject(&:empty?)
-      raise Error.new('keyset_missing', "#{name} is set but holds no keys", keyset: name) if pieces.empty?
+      raise Error.new('keyset_missing', "#{shown_keyset(name)} is set but holds no keys", keyset: name) if pieces.empty?
 
       held = {}
       pieces.each_with_index do |piece, index|
@@ -187,7 +201,7 @@ module Quonfig
           rescue Error => e
             raise unless e.code == 'invalid_key_entry'
 
-            raise Error.new('keyset_invalid', "#{name} entry #{index + 1} is not a qf1 private key",
+            raise Error.new('keyset_invalid', "#{shown_keyset(name)} entry #{index + 1} is not a qf1 private key",
                             keyset: name, entry: index + 1), cause: nil
           end
 
@@ -197,10 +211,10 @@ module Quonfig
         if existing
           next if existing.public_key == public_key # one key, written twice or clamp-equivalent
 
-          raise Error.new('keyset_invalid', "#{name} holds two different keys with fingerprint #{fp}",
+          raise Error.new('keyset_invalid', "#{shown_keyset(name)} holds two different keys with fingerprint #{fp}",
                           keyset: name, fingerprint: fp)
         end
-        held[fp] = HeldKey.new(private_key.freeze, public_key.freeze).freeze
+        held[fp] = HeldKey.new(private_key.freeze, public_key.freeze, private_pkey(private_key)).freeze
       end
       held.freeze
     end
@@ -253,10 +267,12 @@ module Quonfig
     # "failed during derivation"; ONLY that refusal becomes 32 zero bytes, so
     # the caller's all-zero check covers both behaviours (spec 5.2). Any other
     # error propagates as the bug it is.
+    # +scalar+ is the 32 private bytes or an OpenSSL key from #private_pkey.
     def x25519(scalar, u)
-      raise ArgumentError, 'x25519 needs 32-byte inputs' unless scalar.bytesize == 32 && u.bytesize == 32
+      pkey = scalar.is_a?(OpenSSL::PKey::PKey)
+      raise ArgumentError, 'x25519 needs 32-byte inputs' unless (pkey || scalar.bytesize == 32) && u.bytesize == 32
 
-      private_key = OpenSSL::PKey.read(PKCS8_X25519_PREFIX + scalar.b)
+      private_key = pkey ? scalar : private_pkey(scalar)
       public_key = OpenSSL::PKey.read(SPKI_X25519_PREFIX + u.b)
       begin
         private_key.derive(public_key).b
@@ -265,6 +281,10 @@ module Quonfig
 
         ZERO32.dup
       end
+    end
+
+    def private_pkey(scalar)
+      OpenSSL::PKey.read(PKCS8_X25519_PREFIX + scalar.b)
     end
 
     def derivation_refusal?(error)
@@ -345,19 +365,19 @@ module Quonfig
     end
 
     def missing_detail(name, needed)
-      return "this runtime has no #{name}" if needed.nil?
+      return "this runtime has no #{shown_keyset(name)}" if needed.nil?
 
-      "value is encrypted to #{name} fingerprint #{needed}; this runtime has no #{name}"
+      "value is encrypted to #{shown_keyset(name)} fingerprint #{needed}; this runtime has no #{shown_keyset(name)}"
     end
 
-    # Spec 9.2: an invalid keyset name may be quoted, truncated to 64
-    # characters, with control (and non-ASCII) bytes escaped.
-    def quote_untrusted(name)
-      shown = name.b.byteslice(0, 64).each_byte.map do |byte|
-        byte < 0x20 || byte >= 0x7f || byte == 0x22 || byte == 0x5c ? format('\\x%02x', byte) : byte.chr
-      end.join
-      suffix = name.bytesize > 64 ? '...' : ''
-      "\"#{shown}\"#{suffix}"
+    # A keyset name as error text shows it: a valid name truncated to 64
+    # characters; anything else only by its length (never its content).
+    def shown_keyset(name)
+      text = name.to_s.b
+      return "<invalid keyset name, #{text.bytesize} bytes>" unless text.match?(KEYSET_NAME_RE)
+      return text if text.bytesize <= 64
+
+      "#{text.byteslice(0, 64)}..."
     end
   end
 end

@@ -17,7 +17,7 @@ class TestSecrets < Minitest::Test
   Qf1 = Quonfig::Qf1
 
   def vectors
-    TestQf1.vectors
+    Qf1Vectors.load
   end
 
   def positive(name)
@@ -181,6 +181,56 @@ class TestSecrets < Minitest::Test
     assert_logged([/decryptWith/])
   end
 
+  # R1 for every shape: anything but absent, nil or "" fails, and no key
+  # config is read (the named key config here would be found otherwise).
+  def test_decrypt_with_of_any_type_fails_without_reading_a_key_config
+    ['legacy.key', 1, 0, 1.5, true, false, [], ['legacy.key'], {}, { 'k' => 'v' }].each do |shape|
+      cfg = plain_config('legacy.secret', 'stored-old-ciphertext')
+      cfg['default']['rules'][0]['value'].merge!('confidential' => true, 'decryptWith' => shape)
+      store = Quonfig::ConfigStore.new('legacy.secret' => cfg, 'legacy.key' => plain_config('legacy.key', '0' * 64))
+      reads = []
+      store.define_singleton_method(:get) do |key|
+        reads << key
+        super(key)
+      end
+      client = Quonfig::Client.new(Quonfig::Options.new, store: store)
+      err = assert_raises(Quonfig::Errors::DecryptionError, shape.inspect) { client.get_or_raise('legacy.secret') }
+      assert_includes err.message, 'decryptWith', shape.inspect
+      refute_includes err.message, 'stored-old-ciphertext', shape.inspect
+      assert_equal 'd', client.get_string('legacy.secret', default: 'd'), shape.inspect
+      refute_includes reads, 'legacy.key', "#{shape.inspect} read the key config"
+    end
+    assert_logged([/decryptWith/])
+  end
+
+  def test_absent_nil_or_empty_decrypt_with_is_a_plain_value
+    [nil, ''].each do |shape|
+      cfg = plain_config('plain.value', 'as-stored')
+      cfg['default']['rules'][0]['value']['decryptWith'] = shape
+      assert_equal 'as-stored', client_for(cfg).get_string('plain.value'), shape.inspect
+    end
+  end
+
+  # A provided (ENV_VAR) value carrying decryptWith fails too: R1 runs before
+  # every other branch.
+  def test_decrypt_with_on_a_provided_value_fails
+    cfg = plain_config('legacy.provided', nil)
+    cfg['default']['rules'][0]['value'] = { 'type' => 'provided', 'decryptWith' => 'legacy.key',
+                                            'value' => { 'source' => 'ENV_VAR', 'lookup' => 'HOME' } }
+    err = assert_raises(Quonfig::Errors::DecryptionError) { client_for(cfg).get_or_raise('legacy.provided') }
+    assert_includes err.message, 'decryptWith'
+  end
+
+  # Spec 10.2 forbids decryptWith in secrets/; R1 applies there too.
+  def test_decrypt_with_on_a_secret_value_fails
+    cfg = secret_config(positive('short-ascii')['ciphertext'])
+    cfg['default']['rules'][0]['value']['decryptWith'] = 'legacy.key'
+    with_keysets(vectors['positiveEnv']) do
+      err = assert_raises(Quonfig::Errors::DecryptionError) { client_for(cfg).get_or_raise(KEY) }
+      assert_includes err.message, 'decryptWith'
+    end
+  end
+
   def test_decrypt_with_fails_even_without_confidential
     cfg = plain_config('legacy.secret', 'ct')
     cfg['default']['rules'][0]['value']['decryptWith'] = 'legacy.key'
@@ -294,6 +344,81 @@ class TestSecrets < Minitest::Test
       end
     end
     $logs = StringIO.new
+  end
+
+  # Known plaintext on the invalid-UTF-8 path: a sentinel sealed in front of
+  # invalid bytes (key minted at run time) appears nowhere in the error, its
+  # causes, its backtrace or the log.
+  def test_invalid_utf8_plaintext_never_leaks_its_valid_prefix
+    sentinel = 'SENTINEL-7f3a9c-do-not-leak'
+    keyset = 'QUONFIG_KEYSET_SENTINEL_TEST'
+    ciphertext = Qf1TestSecret.seal(keyset, 'sentinel', "#{sentinel}\xff\xfe\xc0\x80".b)
+    $logs = StringIO.new
+    with_keysets(keyset => Qf1TestSecret.private_entry('sentinel')) do
+      client = client_for(secret_config(ciphertext))
+      err = assert_raises(Quonfig::Errors::DecryptionError) { client.get_or_raise(KEY) }
+      assert_equal 'decrypt_failed', err.qf1_code
+      assert_equal 'd', client.get_string(KEY, default: 'd')
+      texts = [err.message, err.inspect, err.full_message(highlight: false), Array(err.backtrace).join("\n"),
+               $logs.string]
+      cause = err.cause
+      while cause
+        texts << cause.message << cause.inspect << cause.full_message(highlight: false) << Array(cause.backtrace).join("\n")
+        cause = cause.cause
+      end
+      texts.each { |t| refute_includes t.b, sentinel.b }
+      refute_includes $logs.string.b, sentinel[0, 8].b
+    end
+    $logs = StringIO.new
+  end
+
+  # The keyset cache hits: once a keyset is parsed, a read does exactly one
+  # X25519 (the ECDH); a first read also derives each held public key.
+  # Plaintext is never cached. Changing, emptying, removing and restoring the
+  # env var takes effect on the next read.
+  def test_keyset_cache_hits_and_follows_the_env
+    p = positive('two-key-keyset-write-key')
+    keyset = p['keyset']
+    good = vectors['positiveEnv'][keyset]
+    calls = 0
+    original = Qf1.method(:x25519)
+    counting = lambda do |*args|
+      calls += 1
+      original.call(*args)
+    end
+    client = client_for(secret_config(p['ciphertext']))
+    Qf1.stub(:x25519, counting) do
+      with_keysets(keyset => good) do
+        assert_equal p['plaintext'], client.get_string(KEY)
+        assert_equal 3, calls, 'first read: two public keys + one ECDH'
+        calls = 0
+        assert_equal p['plaintext'], client.get_string(KEY)
+        assert_equal 1, calls, 'second read: the ECDH only (keyset cached)'
+
+        ENV[keyset] = vectors['positiveEnv']['QUONFIG_KEYSET']
+        err = assert_raises(Quonfig::Errors::DecryptionError) { client.get_or_raise(KEY) }
+        assert_equal 'key_not_held', err.qf1_code
+        ENV[keyset] = ''
+        err = assert_raises(Quonfig::Errors::DecryptionError) { client.get_or_raise(KEY) }
+        assert_equal 'keyset_missing', err.qf1_code
+        ENV.delete(keyset)
+        err = assert_raises(Quonfig::Errors::DecryptionError) { client.get_or_raise(KEY) }
+        assert_equal 'keyset_missing', err.qf1_code
+        ENV[keyset] = good
+        assert_equal p['plaintext'], client.get_string(KEY)
+      end
+    end
+  end
+
+  # Writer-chosen keyset names cannot grow the cache without bound, and a
+  # name whose env var is unset is never cached.
+  def test_keyset_cache_is_bounded_and_skips_unset_names
+    entry = Qf1TestSecret.private_entry('bounded')
+    200.times { |i| Qf1.keyset("QUONFIG_KEYSET_B#{i}", entry) }
+    assert_operator Qf1.keyset_cache_size, :<=, Qf1::KEYSET_CACHE_MAX
+    Qf1.clear_keyset_cache!
+    assert_raises(Qf1::Error) { Qf1.keyset('QUONFIG_KEYSET_UNSET', nil) }
+    assert_equal 0, Qf1.keyset_cache_size
   end
 
   # ---- builds without X25519 ---------------------------------------------------------

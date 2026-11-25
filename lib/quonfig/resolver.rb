@@ -115,6 +115,8 @@ module Quonfig
                               &on_weighted_index)
       return nil if value.nil?
 
+      reject_decrypt_with!(value, config)
+
       # A secret's value is decrypted whatever else it carries: the directory
       # (type "secret"), not the value, marks it as encrypted (spec 10.2).
       return resolve_secret(value, config) if secret_config?(config)
@@ -128,17 +130,23 @@ module Quonfig
                                 &on_weighted_index)
       end
 
-      decrypt_with = vget(value, :decryptWith, 'decryptWith', :decrypt_with, 'decrypt_with')
-      unless decrypt_with.nil? || decrypt_with.to_s.empty?
-        # Spec 13.3 R1: never return old-format ciphertext as a value.
-        raise Quonfig::Errors::DecryptionError.new(
-          config_key(config),
-          'value carries decryptWith (the old secrets format), which this SDK no longer reads; ' \
-          'move it to secrets/ as a qf1 secret'
-        )
-      end
-
       value
+    end
+
+    # Spec 13.3 R1: a value carrying decryptWith (anything but absent, nil or
+    # "": a string, number, boolean, array or hash) is never returned and
+    # never triggers a key-config read. Checked before every other branch.
+    def reject_decrypt_with!(value, config)
+      return unless value.is_a?(Hash)
+
+      decrypt_with = vget(value, :decryptWith, 'decryptWith', :decrypt_with, 'decrypt_with')
+      return if decrypt_with.nil? || decrypt_with == ''
+
+      raise Quonfig::Errors::DecryptionError.new(
+        config_key(config),
+        'value carries decryptWith (the old secrets format), which this SDK no longer reads; ' \
+        'move it to secrets/ as a qf1 secret'
+      )
     end
 
     # If +value+ is confidential or has a decryptWith key, return the
