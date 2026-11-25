@@ -6,12 +6,20 @@
 # Source: integration-test-data/generators/src/targets/ruby.ts
 # Do NOT edit by hand — changes will be overwritten.
 
+require 'digest'
 require 'test_helper'
 require 'integration/test_helpers'
 require 'stringio'
 require 'webrick'
 
 class TestGetOrRaise < Minitest::Test
+  def qf1_test_keyset(*labels)
+    labels.map do |label|
+      digest = Digest::SHA256.digest("qf1 test vector private key: #{label}")
+      "qf1-priv-#{[digest].pack('m0').tr('+/', '-_').delete('=')}"
+    end.join(',')
+  end
+
   def init_failure_client(on_init_failure, api_urls, api_statuses, api_body, init_timeout_ms)
     servers = []
     unless api_statuses.empty?
@@ -316,6 +324,21 @@ class TestGetOrRaise < Minitest::Test
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 
+  # raises an error if a weighted variant is provided by a missing environment variable
+  def test_raises_an_error_if_a_weighted_variant_is_provided_by_a_missing_environment_variable
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    assert_raises(Quonfig::Errors::MissingEnvVarError) { client.get_string('weighted.variant.provided.missing', context: { 'user' => { 'tracking_id' => '92a202f2' } }) }
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
+  # get_or_raise on a weighted ENV_VAR variant returns the env var coerced to int
+  def test_get_or_raise_on_a_weighted_env_var_variant_returns_the_env_var_coerced_to_int
+    client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+    actual = client.get_int('weighted.variant.provided.int', context: { 'user' => { 'tracking_id' => '92a202f2' } })
+    assert_equal 1234, actual, 'client.get_int(weighted.variant.provided.int, context: { user => { tracking_id => 92a202f2 } })'
+    IntegrationTestHelpers.acknowledge_expected_warnings
+  end
+
   # raises an error if an env-var-provided config cannot be coerced to configured type
   def test_raises_an_error_if_an_env_var_provided_config_cannot_be_coerced_to_configured_type
     client = IntegrationTestHelpers.build_client(on_no_default: :raise)
@@ -347,10 +370,90 @@ class TestGetOrRaise < Minitest::Test
     end
   end
 
-  # raises an error for decryption failure
-  def test_raises_an_error_for_decryption_failure
+  # get_or_raise decrypts a qf1 secret
+  def test_get_or_raise_decrypts_a_qf1_secret
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      actual = client.get_string('qf1.secret.short')
+      assert_equal 'hello', actual, 'client.get_string(qf1.secret.short)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # raises unable_to_decrypt for a qf1 secret on a keyset the environment does not hold
+  def test_raises_unable_to_decrypt_for_a_qf1_secret_on_a_keyset_the_environment_does_not_hold
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      error = assert_raises(Quonfig::Errors::DecryptionError) { client.get_string('qf1.secret.keyset.missing') }
+      refute_includes error.message, 'qf1-priv-'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # raises unable_to_decrypt for a qf1 secret whose fingerprint is not held
+  def test_raises_unable_to_decrypt_for_a_qf1_secret_whose_fingerprint_is_not_held
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      error = assert_raises(Quonfig::Errors::DecryptionError) { client.get_string('qf1.secret.key.not.held') }
+      refute_includes error.message, 'qf1-priv-'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # raises unable_to_decrypt for a qf1 secret held only under another keyset
+  def test_raises_unable_to_decrypt_for_a_qf1_secret_held_only_under_another_keyset
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      error = assert_raises(Quonfig::Errors::DecryptionError) { client.get_string('qf1.secret.cross.keyset') }
+      refute_includes error.message, 'qf1-priv-'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # raises unable_to_decrypt for a qf1 secret with a tampered header
+  def test_raises_unable_to_decrypt_for_a_qf1_secret_with_a_tampered_header
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      error = assert_raises(Quonfig::Errors::DecryptionError) { client.get_string('qf1.secret.tampered.header') }
+      refute_includes error.message, 'qf1-priv-'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # raises unable_to_decrypt for a qf1 secret whose keyset name is invalid even when that env var holds its key
+  def test_raises_unable_to_decrypt_for_a_qf1_secret_whose_keyset_name_is_invalid_even_when_that_env_var_holds_its_key
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      error = assert_raises(Quonfig::Errors::DecryptionError) { client.get_string('qf1.secret.keyset.name.invalid') }
+      refute_includes error.message, 'qf1-priv-'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # raises unable_to_decrypt for a qf1 secret with a trailing colon
+  def test_raises_unable_to_decrypt_for_a_qf1_secret_with_a_trailing_colon
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      error = assert_raises(Quonfig::Errors::DecryptionError) { client.get_string('qf1.secret.trailing.colon') }
+      refute_includes error.message, 'qf1-priv-'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # raises unable_to_decrypt for a qf1 secret whose shared secret is all zero
+  def test_raises_unable_to_decrypt_for_a_qf1_secret_whose_shared_secret_is_all_zero
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client(on_no_default: :raise)
+      error = assert_raises(Quonfig::Errors::DecryptionError) { client.get_string('qf1.secret.low.order.ephemeral') }
+      refute_includes error.message, 'qf1-priv-'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
+  end
+
+  # raises unable_to_decrypt for a value that still carries decryptWith
+  def test_raises_unable_to_decrypt_for_a_value_that_still_carries_decryptwith
     client = IntegrationTestHelpers.build_client(on_no_default: :raise)
-    assert_raises(Quonfig::Errors::DecryptionError) { client.get_string('a.broken.secret.config') }
+    assert_raises(Quonfig::Errors::DecryptionError) { client.get_string('qf1.legacy.decrypt.with') }
     IntegrationTestHelpers.acknowledge_expected_warnings
   end
 

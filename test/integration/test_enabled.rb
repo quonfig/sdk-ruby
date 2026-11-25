@@ -6,10 +6,18 @@
 # Source: integration-test-data/generators/src/targets/ruby.ts
 # Do NOT edit by hand — changes will be overwritten.
 
+require 'digest'
 require 'test_helper'
 require 'integration/test_helpers'
 
 class TestEnabled < Minitest::Test
+  def qf1_test_keyset(*labels)
+    labels.map do |label|
+      digest = Digest::SHA256.digest("qf1 test vector private key: #{label}")
+      "qf1-priv-#{[digest].pack('m0').tr('+/', '-_').delete('=')}"
+    end.join(',')
+  end
+
   # returns the correct value for a simple flag
   def test_returns_the_correct_value_for_a_simple_flag
     client = IntegrationTestHelpers.build_client
@@ -1359,9 +1367,11 @@ class TestEnabled < Minitest::Test
 
   # enabled on a decryption failure returns false
   def test_enabled_on_a_decryption_failure_returns_false
-    client = IntegrationTestHelpers.build_client
-    actual = client.enabled?('a.broken.secret.config')
-    assert_equal false, actual, 'client.enabled?(a.broken.secret.config)'
-    IntegrationTestHelpers.acknowledge_expected_warnings
+    IntegrationTestHelpers.with_env({ 'QUONFIG_KEYSET' => qf1_test_keyset('QUONFIG_KEYSET/1'), 'QUONFIG_KEYSETX' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST' => qf1_test_keyset('QUONFIG_KEYSET_TEST/1'), 'QUONFIG_KEYSET_TEST_PROD' => qf1_test_keyset('QUONFIG_KEYSET_TEST_PROD/new', 'QUONFIG_KEYSET_TEST_PROD/old') }) do
+      client = IntegrationTestHelpers.build_client
+      actual = client.enabled?('qf1.secret.key.not.held')
+      assert_equal false, actual, 'client.enabled?(qf1.secret.key.not.held)'
+      IntegrationTestHelpers.acknowledge_expected_warnings
+    end
   end
 end
