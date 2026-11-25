@@ -281,7 +281,9 @@ after another, and it never reads any other variable for a secret.
   failure by class (`DecryptionError`) and `DecryptionError#qf1_code` (the
   class name, or `nil` for a `decryptWith` value), not by parsing the text.
 - **Datadir mode** reads `secrets/` after the other directories, so a secret
-  replaces a document with the same key in `configs/`.
+  replaces a document with the same key in `configs/`. A file in `secrets/`
+  that is not a secret document (not JSON, no key) is skipped with one
+  warning naming its path, never its content.
 - **Telemetry** reports secret evaluations with type `secret` and the value
   redacted (`*****` plus a short hash of the stored ciphertext), never the
   plaintext.
@@ -294,7 +296,9 @@ after another, and it never reads any other variable for a secret.
   1.1.1 or later; this gem requires Ruby 3.2. On a build without X25519
   (LibreSSL, an old openssl gem) the SDK still loads and serves every other
   config; the first secret read fails with a `DecryptionError` naming the
-  requirement (`qf1 unsupported_platform`).
+  requirement (`qf1 unsupported_platform`). The same applies when OpenSSL
+  refuses X25519 at run time, for example in FIPS mode: each secret read
+  fails, and the message names the runtime restriction, not your keys.
 
 Older SDKs do not read secrets. Over the wire, an older SDK returns the raw
 `qf1:` string as the value. In datadir mode an older SDK never opens
