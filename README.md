@@ -277,15 +277,18 @@ after another, and it never reads any other variable for a secret.
   failure). The message names the config key, the qf1 error class (for
   example `qf1 key_not_held`), the keyset and the fingerprints held and
   needed; it never contains key material, the keyset's value or the secret.
-  `DecryptionError#qf1_code` returns the class name.
+  An invalid keyset name is reported by its length, never quoted. Detect the
+  failure by class (`DecryptionError`) and `DecryptionError#qf1_code` (the
+  class name, or `nil` for a `decryptWith` value), not by parsing the text.
 - **Datadir mode** reads `secrets/` after the other directories, so a secret
   replaces a document with the same key in `configs/`.
 - **Telemetry** reports secret evaluations with type `secret` and the value
   redacted (`*****` plus a short hash of the stored ciphertext), never the
   plaintext.
 - **The old format is not read.** A value that still carries `decryptWith`
-  (the old `ct--iv--tag` format keyed by a config) fails with
-  `DecryptionError` instead of being returned. Move it to `secrets/` with the
+  (the old `ct--iv--tag` format keyed by a config; any non-empty value of
+  the field, whatever its type) fails with `DecryptionError` instead of being
+  returned, and no key config is read. Move it to `secrets/` with the
   CLI. `Quonfig::Encryption` is deprecated and unused by the SDK.
 - **Platform.** X25519 needs Ruby 3.1+ with the openssl gem 3.0+ on OpenSSL
   1.1.1 or later; this gem requires Ruby 3.2. On a build without X25519
@@ -293,9 +296,12 @@ after another, and it never reads any other variable for a secret.
   config; the first secret read fails with a `DecryptionError` naming the
   requirement (`qf1 unsupported_platform`).
 
-An older SDK that reads a secret over the wire returns the raw `qf1:` string
-as the value, and in datadir mode never sees `secrets/`. Upgrade every
-backend service that reads a secret before you create it.
+Older SDKs do not read secrets. Over the wire, an older SDK returns the raw
+`qf1:` string as the value. In datadir mode an older SDK never opens
+`secrets/`: a key that exists only there is missing (your default applies),
+and a key that still has a copy in `configs/` serves that old copy. Upgrade
+every backend service that reads a secret, in either mode, before you create
+or migrate it.
 
 ## Environment variables
 
