@@ -1,6 +1,15 @@
 # frozen_string_literal: true
 
 module Quonfig
+  # The OLD secrets format (`ct--iv--tag` hex, AES-256-GCM with a key from a
+  # `decryptWith` config).
+  #
+  # @deprecated The SDK no longer reads this format: secrets are qf1 values in
+  #   `secrets/`, decrypted with `QUONFIG_KEYSET*` keys (qfg-8seuf.11), and a
+  #   value that still carries `decryptWith` fails with
+  #   Quonfig::Errors::DecryptionError. Nothing in the SDK calls this class.
+  #   It stays only so code that referenced it keeps loading; it will be
+  #   removed in a future major version.
   class Encryption
     CIPHER_TYPE = 'aes-256-gcm' # 32/12
     SEPARATOR = '--'

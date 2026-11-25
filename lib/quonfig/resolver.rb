@@ -46,9 +46,9 @@ module Quonfig
     # the legacy "return nil if absent" shape can rescue and recover (see
     # IntegrationTestHelpers.assert_resolved, which folds a missing-key
     # raise into the test's expected default).
-    # The whole lookup reads one store snapshot (qfg-i86q): the flag, the
-    # segments it references and any decryptWith key all come from the same
-    # envelope even if an install lands mid-evaluation.
+    # The whole lookup reads one store snapshot (qfg-i86q): the flag and the
+    # segments it references all come from the same envelope even if an
+    # install lands mid-evaluation.
     def get(key, context = nil)
       return get_unpinned(key, context) unless @store.respond_to?(:pinned)
 
@@ -57,8 +57,10 @@ module Quonfig
 
     # Post-evaluation value resolution. Mirrors sdk-node Resolver#resolveValue
     # and sdk-go resolver.Resolve:
+    # - a value of a secret (type "secret", from secrets/) → qf1 decrypt
     # - "provided" + ENV_VAR  → read ENV[lookup], coerce to config's valueType
-    # - confidential + decryptWith → look up the key config, decrypt
+    # - a value carrying decryptWith → DecryptionError (the old format is no
+    #   longer read; spec 13.3 R1)
     # - everything else passes through unchanged
     def resolve_value(value, config, context = nil, &on_weighted_index)
       resolve_value_on_path(value, config, context, [], &on_weighted_index)
@@ -87,9 +89,12 @@ module Quonfig
         weighted_index = idx
       end
       # Redact from the selected rollout variant, not only the outer
-      # weighted_values wrapper (which is never flagged), so a confidential or
-      # decryptWith variant never reaches telemetry in plaintext (qfg-goi1.2.39).
-      reportable = redacted_reportable_value(eval_result.value) || redacted_reportable_value(selected_variants.last)
+      # weighted_values wrapper (which is never flagged), so a confidential
+      # variant never reaches telemetry in plaintext (qfg-goi1.2.39). A
+      # secret is always redacted, flagged confidential or not.
+      secret = secret_config?(config)
+      reportable = redacted_reportable_value(eval_result.value, force: secret) ||
+                   redacted_reportable_value(selected_variants.last, force: secret)
       EvalResult.new(
         value: resolved_value,
         rule_index: eval_result.rule_index,
@@ -100,17 +105,19 @@ module Quonfig
       )
     end
 
-    # resolve_value plus +key_path+: the config keys already being resolved
-    # above this one through decryptWith, so a decryptWith cycle raises a
-    # DecryptionError instead of recursing until SystemStackError
-    # (qfg-9dxb.7, matching sdk-go qfg-9dxb.4). +hash_missing+, when given,
+    # resolve_value plus +key_path+ (kept for the call shape; nothing
+    # recurses across configs since decryptWith is gone). +hash_missing+, when given,
     # gets an entry for each weighted rollout whose hash property was missing
     # from the context (qfg-9dxb.8). +selected_variants+, when given, gets the
     # stored (pre-resolution) Value of each weighted variant picked, so get()
-    # can redact a confidential/decryptWith variant (qfg-goi1.2.39).
+    # can redact a confidential variant (qfg-goi1.2.39).
     def resolve_value_on_path(value, config, context, key_path, hash_missing = nil, selected_variants = nil,
                               &on_weighted_index)
       return nil if value.nil?
+
+      # A secret's value is decrypted whatever else it carries: the directory
+      # (type "secret"), not the value, marks it as encrypted (spec 10.2).
+      return resolve_secret(value, config) if secret_config?(config)
 
       type = vget(value, :type, 'type')
 
@@ -121,11 +128,14 @@ module Quonfig
                                 &on_weighted_index)
       end
 
-      confidential = vget(value, :confidential, 'confidential')
       decrypt_with = vget(value, :decryptWith, 'decryptWith', :decrypt_with, 'decrypt_with')
-      if confidential && decrypt_with && !decrypt_with.to_s.empty?
-        return resolve_decryption(value, config, context,
-                                  decrypt_with, key_path)
+      unless decrypt_with.nil? || decrypt_with.to_s.empty?
+        # Spec 13.3 R1: never return old-format ciphertext as a value.
+        raise Quonfig::Errors::DecryptionError.new(
+          config_key(config),
+          'value carries decryptWith (the old secrets format), which this SDK no longer reads; ' \
+          'move it to secrets/ as a qf1 secret'
+        )
       end
 
       value
@@ -138,12 +148,13 @@ module Quonfig
     # plaintext-as-stored when only `confidential: true`) — matches
     # ReforgeHQ/sdk-ruby ConfigValueUnwrapper#reportable_wrapped_value
     # (CONFIDENTIAL_PREFIX + first 5 chars of MD5).
-    def redacted_reportable_value(value)
+    # +force+ redacts whatever the value's flags say (a secret).
+    def redacted_reportable_value(value, force: false)
       return nil if value.nil?
 
       confidential = vget(value, :confidential, 'confidential')
       decrypt_with = vget(value, :decryptWith, 'decryptWith', :decrypt_with, 'decrypt_with')
-      return nil unless confidential || (decrypt_with && !decrypt_with.to_s.empty?)
+      return nil unless force || confidential || (decrypt_with && !decrypt_with.to_s.empty?)
 
       raw = vget(value, :value, 'value')
       return nil if raw.nil?
@@ -246,43 +257,24 @@ module Quonfig
                'which is missing from context; hashing an empty value instead'
     end
 
-    # Recursively resolve the decryption-key config (it may itself be a
-    # provided ENV_VAR), then AES-GCM decrypt the value with that key.
-    def resolve_decryption(value, config, context, decrypt_with, key_path)
-      key_path += [config_key(config).to_s]
-      if key_path.include?(decrypt_with.to_s)
-        raise Quonfig::Errors::DecryptionError.new(
-          config_key(config), %(decryption key config "#{decrypt_with}" is part of a decryptWith cycle)
-        )
-      end
+    def secret_config?(config)
+      !config.nil? && vget(config, :type, 'type').to_s == 'secret'
+    end
 
-      # A missing, unmatched or empty key is a decryption failure too, so the
-      # typed getters apply the caller's default (qfg-zvyy). DecryptionError is
-      # a Quonfig::Error, so rescuing Quonfig::Error still catches it.
-      key_cfg = @store.get(decrypt_with)
-      if key_cfg.nil?
-        raise Quonfig::Errors::DecryptionError.new(config_key(config),
-                                                   %(decryption key config "#{decrypt_with}" not found))
-      end
-
-      key_match = @evaluator.evaluate_config(key_cfg, context, resolver: self)
-      if key_match.nil?
-        raise Quonfig::Errors::DecryptionError.new(config_key(config),
-                                                   %(decryption key config "#{decrypt_with}" did not match))
-      end
-
-      resolved_key = resolve_value_on_path(key_match.value, key_cfg, context, key_path)
-      secret_key = vget(resolved_key, :value, 'value').to_s
-      if secret_key.empty?
-        raise Quonfig::Errors::DecryptionError.new(config_key(config),
-                                                   %(decryption key from "#{decrypt_with}" is empty))
-      end
-
-      ciphertext = vget(value, :value, 'value').to_s
+    # Decrypt a secret's rule value with the qf1 reader (spec 8), lazily on
+    # get. The keyset env var is read here, never at startup, so a missing
+    # keyset fails only this value (spec 9.3). The DecryptionError carries the
+    # qf1 class, keyset and fingerprints only; its cause is the Qf1::Error,
+    # whose text follows the same rules.
+    def resolve_secret(value, config)
+      stored = vget(value, :value, 'value')
+      type = vget(value, :type, 'type')
       begin
-        plaintext = Quonfig::Encryption.new(secret_key).decrypt(ciphertext)
-      rescue StandardError => e
-        raise Quonfig::Errors::DecryptionError.new(config_key(config), e.message), cause: e
+        raise Quonfig::Qf1::Error.new('malformed', "a secret's value must have type string, not #{type.to_s[0, 32].inspect}") unless type.to_s == 'string'
+
+        plaintext = Quonfig::Qf1.decrypt(stored, ENV)
+      rescue Quonfig::Qf1::Error => e
+        raise Quonfig::Errors::DecryptionError.new(config_key(config), e)
       end
 
       {

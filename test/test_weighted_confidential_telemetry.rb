@@ -8,16 +8,18 @@ require 'digest'
 require 'tmpdir'
 require 'fileutils'
 
-# qfg-goi1.2.39 — a weighted-rollout variant marked confidential (or carrying
-# decryptWith) must reach telemetry redacted. Resolver#get used to redact from
-# the OUTER weighted_values Value, which is never flagged, so the selected
-# variant's plaintext (or the decrypted secret) went out as selectedValue.
+# qfg-goi1.2.39 — a weighted-rollout variant marked confidential must reach
+# telemetry redacted. Resolver#get used to redact from the OUTER
+# weighted_values Value, which is never flagged, so the selected variant's
+# plaintext went out as selectedValue. A qf1 secret (secrets/, never
+# weighted) read alongside it must be redacted too (qfg-8seuf.11).
 #
 # Public path only: a real datadir Client, Client#get, then Client#stop drains
 # telemetry to a real local capture server. The assertion is on the bytes.
 class TestWeightedConfidentialTelemetry < Minitest::Test
   PLAIN_SECRET = 'plain-rollout-secret'
   DECRYPTED_SECRET = 'decrypted-rollout-secret'
+  KEYSET = 'QUONFIG_KEYSET_WEIGHTED_TELEMETRY_TEST'
 
   def setup
     super
@@ -26,15 +28,16 @@ class TestWeightedConfidentialTelemetry < Minitest::Test
     FileUtils.mkdir_p(File.join(@workspace, 'configs'))
     File.write(File.join(@workspace, 'quonfig.json'), JSON.generate({ environments: ['Production'] }))
 
-    @hex_key = Quonfig::Encryption.generate_new_hex_key
-    @ciphertext = Quonfig::Encryption.new(@hex_key).encrypt(DECRYPTED_SECRET)
+    @ciphertext = Qf1TestSecret.seal(KEYSET, 'weighted-telemetry', DECRYPTED_SECRET)
+    @saved_keyset = ENV.fetch(KEYSET, nil)
+    ENV[KEYSET] = Qf1TestSecret.private_entry('weighted-telemetry')
 
-    write_config(plain_config('rollout.key', @hex_key))
     write_config(weighted_config('rollout.confidential',
                                  { 'type' => 'string', 'value' => PLAIN_SECRET, 'confidential' => true }))
-    write_config(weighted_config('rollout.encrypted',
-                                 { 'type' => 'string', 'value' => @ciphertext, 'confidential' => true,
-                                   'decryptWith' => 'rollout.key' }))
+    FileUtils.mkdir_p(File.join(@workspace, 'secrets'))
+    secret = plain_config('rollout.encrypted', @ciphertext).merge('type' => 'secret')
+    secret['default']['rules'][0]['value']['confidential'] = true
+    File.write(File.join(@workspace, 'secrets', 'rollout.encrypted.json'), JSON.generate(secret))
     @server = start_capture_server
   end
 
@@ -42,10 +45,11 @@ class TestWeightedConfidentialTelemetry < Minitest::Test
     @client&.stop
     @server&.shutdown
     FileUtils.remove_entry(@workspace) if @workspace && Dir.exist?(@workspace)
+    @saved_keyset.nil? ? ENV.delete(KEYSET) : ENV[KEYSET] = @saved_keyset
     super
   end
 
-  def test_weighted_confidential_and_decrypt_with_variants_are_redacted_on_the_wire
+  def test_weighted_confidential_variant_and_qf1_secret_are_redacted_on_the_wire
     @client = Quonfig::Client.new(
       sdk_key: 'qf_sk_dev_abc_deadbeef', datadir: @workspace, environment: 'Production',
       telemetry_url: "http://127.0.0.1:#{@port}", enable_sse: false, fallback_poll_enabled: false,
@@ -61,7 +65,7 @@ class TestWeightedConfidentialTelemetry < Minitest::Test
     wire = @telemetry_posts.join
     refute_empty @telemetry_posts, 'expected a telemetry POST'
     refute_includes wire, PLAIN_SECRET, 'confidential weighted variant leaked in plaintext'
-    refute_includes wire, DECRYPTED_SECRET, 'decryptWith weighted variant leaked decrypted secret'
+    refute_includes wire, DECRYPTED_SECRET, 'qf1 secret leaked its decrypted value'
 
     summaries = JSON.parse(@telemetry_posts.last)['events'].filter_map { |e| e['summaries'] }.first['summaries']
     by_key = summaries.to_h { |s| [s['key'], s['counters'][0]] }
@@ -69,7 +73,6 @@ class TestWeightedConfidentialTelemetry < Minitest::Test
                  by_key['rollout.confidential']['selectedValue'])
     assert_equal({ 'string' => "*****#{Digest::MD5.hexdigest(@ciphertext)[0, 5]}" },
                  by_key['rollout.encrypted']['selectedValue'])
-    assert_equal 0, by_key['rollout.encrypted']['weightedValueIndex']
   end
 
   private

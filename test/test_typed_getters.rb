@@ -266,23 +266,25 @@ class TestTypedGetters < Minitest::Test
   end
   # ---- error messages never carry the value (qfg-goi1.2.11) -------------
 
-  # A decryptWith secret read through the wrong typed getter must not put the
+  # A qf1 secret read through the wrong typed getter must not put the
   # decrypted plaintext into the exception message or into
   # *_details.error_message (both end up in logs and error trackers).
+  SECRET_KEYSET = 'QUONFIG_KEYSET_TYPED_GETTERS_TEST'
+
   def secret_client
-    hex_key = Quonfig::Encryption.generate_new_hex_key
-    ciphertext = Quonfig::Encryption.new(hex_key).encrypt('hello.world')
     store = Quonfig::ConfigStore.new
-    key_cfg = make_config(value: hex_key, type: 'string')
-    key_cfg['key'] = 'the.key'
-    store.set('the.key', key_cfg)
-    secret_cfg = make_config(value: ciphertext, type: 'string')
-    secret_cfg['default']['rules'][0]['value'].merge!('confidential' => true, 'decryptWith' => 'the.key')
+    secret_cfg = make_config(value: Qf1TestSecret.seal(SECRET_KEYSET, 'typed-getters', 'hello.world'), type: 'string')
+    secret_cfg['type'] = 'secret'
+    secret_cfg['default']['rules'][0]['value']['confidential'] = true
     store.set(KEY, secret_cfg)
     Quonfig::Client.new(Quonfig::Options.new, store: store)
   end
 
   def test_type_mismatch_message_omits_decrypted_secret
+    with_env(SECRET_KEYSET, Qf1TestSecret.private_entry('typed-getters')) { type_mismatch_omits_decrypted_secret }
+  end
+
+  def type_mismatch_omits_decrypted_secret
     client = secret_client
     assert_equal 'hello.world', client.get_string(KEY)
 

@@ -179,23 +179,27 @@ class TestClientTelemetry < Minitest::Test
   end
 
   # Regression (qfg-2agi.15): record_evaluation_for_telemetry passed the
-  # DECRYPTED plaintext of a decryptWith secret as selectedValue. It must
-  # send the `*****<md5[0,5]>` redacted form computed over the ciphertext.
-  def test_decrypt_with_config_reports_redacted_selected_value
-    hex_key = Quonfig::Encryption.generate_new_hex_key
-    ciphertext = Quonfig::Encryption.new(hex_key).encrypt('hello.world')
+  # DECRYPTED plaintext of a secret as selectedValue. It must send the
+  # `*****<md5[0,5]>` redacted form computed over the stored ciphertext, and
+  # report the secret's type (qfg-8seuf.11, spec 13.5).
+  def test_secret_reports_redacted_selected_value_and_type_secret
+    keyset = 'QUONFIG_KEYSET_CLIENT_TELEMETRY_TEST'
+    ciphertext = Qf1TestSecret.seal(keyset, 'client-telemetry', 'hello.world')
 
     store = Quonfig::ConfigStore.new
-    store.set('the.key', make_config(key: 'the.key', value: hex_key))
     secret_cfg = make_config(key: 'a.secret.config', value: ciphertext)
-    secret_cfg['default']['rules'][0]['value'].merge!('confidential' => true, 'decryptWith' => 'the.key')
+    secret_cfg['type'] = 'secret'
+    secret_cfg['default']['rules'][0]['value']['confidential'] = true
     store.set('a.secret.config', secret_cfg)
 
     client, _reporter, summaries_agg, _conn = make_client_with_telemetry(store)
-    assert_equal 'hello.world', client.get('a.secret.config', Quonfig::NO_DEFAULT_PROVIDED, {})
+    with_env(keyset, Qf1TestSecret.private_entry('client-telemetry')) do
+      assert_equal 'hello.world', client.get('a.secret.config', Quonfig::NO_DEFAULT_PROVIDED, {})
+    end
 
     summary = summaries_agg.drain_event['summaries']['summaries'].find { |s| s['key'] == 'a.secret.config' }
     refute_nil summary
+    assert_equal 'secret', summary['type']
     selected = summary['counters'][0]['selectedValue']
     expected = "*****#{Digest::MD5.hexdigest(ciphertext)[0, 5]}"
     assert_equal({ 'string' => expected }, selected)

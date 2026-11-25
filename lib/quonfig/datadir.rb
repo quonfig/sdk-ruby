@@ -12,6 +12,7 @@ module Quonfig
   #   <datadir>/feature-flags/*.json
   #   <datadir>/segments/*.json
   #   <datadir>/log-levels/*.json
+  #   <datadir>/secrets/*.json   (qf1 secrets, loaded LAST)
   #
   # schemas/ is intentionally excluded — those files are raw JSON Schema
   # documents, not Configs, and SDKs do not consume them (qfg-uzsl).
@@ -20,7 +21,10 @@ module Quonfig
   # it down to the ConfigResponse shape that the SSE/HTTP delivery path emits,
   # so ConfigStore consumes both transports uniformly.
   module Datadir
-    CONFIG_SUBDIRS = %w[configs feature-flags segments log-levels].freeze
+    # secrets/ MUST stay last (spec 13.7): the store is a map by key and the
+    # last write wins, so a secret shadows a same-key document in configs/.
+    CONFIG_SUBDIRS = %w[configs feature-flags segments log-levels secrets].freeze
+    SECRETS_SUBDIR = 'secrets'
 
     module_function
 
@@ -45,6 +49,8 @@ module Quonfig
           raw = JSON.parse(File.read(path, encoding: 'UTF-8'))
           raise ArgumentError, "[quonfig] config has empty key — file is not a Quonfig Config: #{path}" if raw['key'].nil? || raw['key'].to_s.empty?
 
+          # The directory, not the stored type, makes a document a secret.
+          raw['type'] = 'secret' if subdir == SECRETS_SUBDIR
           coerce_numeric_values(raw)
           configs << to_config_response(raw, env_id)
         end

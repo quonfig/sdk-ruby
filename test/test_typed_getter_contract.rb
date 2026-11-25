@@ -49,12 +49,13 @@ class TestTypedGetterContract < Minitest::Test
     client_for(config, **opts)
   end
 
+  # A qf1 secret on a keyset this process does not hold: every read of it is
+  # a decryption failure (qf1 keyset_missing).
   def secret_client(**opts)
-    ciphertext = Quonfig::Encryption.new('0' * 64).encrypt('hello.world')
-    key_cfg = make_config(value: '1' * 64, type: 'string', key: 'wrong.key') # not the key it was encrypted with
-    secret_cfg = make_config(value: ciphertext, type: 'string')
-    secret_cfg['default']['rules'][0]['value'].merge!('confidential' => true, 'decryptWith' => 'wrong.key')
-    client_for(key_cfg, secret_cfg, **opts)
+    secret_cfg = make_config(value: "qf1:QUONFIG_KEYSET_CONTRACT_TEST:00000000:#{'A' * 64}", type: 'string')
+    secret_cfg['type'] = 'secret'
+    secret_cfg['default']['rules'][0]['value']['confidential'] = true
+    client_for(secret_cfg, **opts)
   end
 
   def warn_lines
@@ -136,16 +137,17 @@ class TestTypedGetterContract < Minitest::Test
     assert_logged([/Decryption failed/])
   end
 
-  # A decryptWith key config that is missing is a decryption failure too.
-  def test_missing_decryption_key_config_returns_default
+  # A value that still carries decryptWith is a decryption failure too: the
+  # old format is no longer read (spec 13.3 R1).
+  def test_leftover_decrypt_with_value_returns_default
     secret_cfg = make_config(value: 'ciphertext', type: 'string')
     secret_cfg['default']['rules'][0]['value'].merge!('confidential' => true, 'decryptWith' => 'no.such.key')
     client = client_for(secret_cfg)
     assert_equal 'fallback', client.get_string(KEY, default: 'fallback')
     refute client.enabled?(KEY)
     err = assert_raises(Quonfig::Errors::DecryptionError) { client.get_string(KEY) }
-    assert_includes err.message, 'no.such.key'
-    assert_logged([/Decryption failed for config 'contract.key': decryption key config "no.such.key" not found/])
+    assert_includes err.message, 'decryptWith'
+    assert_logged([/Decryption failed for config 'contract.key': value carries decryptWith/])
   end
 
   def test_malformed_stored_int
